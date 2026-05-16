@@ -1013,6 +1013,9 @@ dependencies = [
  "nix-search-core",
  "nix-search-index",
  "nix-search-ingest",
+ "nix-search-source",
+ "nix-search-store",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]
@@ -1058,6 +1061,20 @@ dependencies = [
  "nix-search-core",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "nix-search-source"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "nix-search-core",
+ "nix-search-ingest",
+ "nix-search-store",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

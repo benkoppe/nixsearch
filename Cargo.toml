@@ -6,6 +6,7 @@ members = [
   "crates/core",
   "crates/index",
   "crates/ingest",
+  "crates/source",
   "crates/store",
 ]
 
@@ -16,6 +17,7 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 anyhow = "1"
+async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
 figment = { version = "0.10", features = ["toml", "env"] }
 object_store = "0.13"
@@ -24,7 +26,7 @@ serde_json = "1"
 thiserror = "2"
 time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
 tantivy = "0.26.1"
-tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "fs", "rt", "rt-multi-thread"] }
 tracing = "0.1"
 tempfile = "3"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -37,3 +39,4 @@ nix-search-ingest = { path = "crates/ingest" }
 nix-search-index = { path = "crates/index" }
 nix-search-config = { path = "crates/config" }
 nix-search-store = { path = "crates/store" }
+nix-search-source = { path = "crates/source" }

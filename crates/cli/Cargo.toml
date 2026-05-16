@@ -9,8 +9,11 @@ nix-search-core.workspace = true
 nix-search-ingest.workspace = true
 nix-search-index.workspace = true
 nix-search-config.workspace = true
+nix-search-store.workspace = true
+nix-search-source.workspace = true
 
 anyhow.workspace = true
 clap.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+tokio.workspace = true

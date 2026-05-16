@@ -1,4 +1,3 @@
-use std::fs::File;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -6,9 +5,12 @@ use clap::{Parser, Subcommand};
 use tracing::info;
 
 use nix_search_config::AppConfig;
-use nix_search_core::IngestContext;
+use nix_search_core::ArtifactKind;
 use nix_search_index::SearchIndex;
-use nix_search_ingest::parse_options_json;
+use nix_search_source::{
+    Consumer, ExistingFileProducer, OptionsJsonConsumer, ProduceRequest, Producer,
+};
+use nix_search_store::ArtifactStore;
 
 #[derive(Debug, Parser)]
 #[command(name = "nix-search")]
@@ -56,7 +58,8 @@ enum Command {
     },
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
@@ -73,7 +76,7 @@ fn main() -> Result<()> {
             dataset,
             ref_id,
             revision,
-        } => index_options(options_json, index_dir, project, dataset, ref_id, revision),
+        } => index_options(options_json, index_dir, project, dataset, ref_id, revision).await,
 
         Command::Search {
             query,
@@ -85,7 +88,7 @@ fn main() -> Result<()> {
     }
 }
 
-fn index_options(
+async fn index_options(
     options_json: PathBuf,
     index_dir: PathBuf,
     project: String,
@@ -93,19 +96,43 @@ fn index_options(
     ref_id: String,
     revision: Option<String>,
 ) -> Result<()> {
-    let file = File::open(&options_json)
-        .with_context(|| format!("failed to open {}", options_json.display()))?;
+    let artifact_store_dir = index_dir
+        .parent()
+        .map(|path| path.join("artifacts"))
+        .unwrap_or_else(|| PathBuf::from("artifacts"));
 
-    let context = IngestContext {
+    let store = ArtifactStore::local(&artifact_store_dir).with_context(|| {
+        format!(
+            "failed to open artifact store {}",
+            artifact_store_dir.display()
+        )
+    })?;
+
+    let producer = ExistingFileProducer::new(&options_json, ArtifactKind::OptionsJson);
+    let request = ProduceRequest {
         project,
         dataset,
         ref_id,
-        revision,
-        repo: None,
     };
 
-    let documents = parse_options_json(file, &context)
-        .with_context(|| format!("failed to ingest {}", options_json.display()))?;
+    let mut produced = producer
+        .produce(&store, &request)
+        .await
+        .context("failed to produce options artifact")?;
+
+    if revision.is_some() {
+        produced.metadata.revision = revision;
+        store
+            .put_metadata(&produced.artifact_ref, &produced.metadata)
+            .await
+            .context("failed to update artifact metadata")?;
+    }
+
+    let consumer = OptionsJsonConsumer;
+    let documents = consumer
+        .consume(&store, &produced)
+        .await
+        .context("failed to consume options artifact")?;
 
     info!(count = documents.len(), "parsed options");
 
