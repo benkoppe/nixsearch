@@ -1,0 +1,52 @@
+[data]
+artifact_url = "file://./data/artifacts"
+index_dir = "./data/indexes"
+
+[server]
+listen = "127.0.0.1:3000"
+
+[projects.nixpkgs]
+name = "Nixpkgs"
+
+[[projects.nixpkgs.datasets]]
+id = "nixos-options"
+name = "NixOS Options"
+kind = "options"
+
+[[projects.nixpkgs.datasets.refs]]
+id = "unstable"
+
+[projects.nixpkgs.datasets.refs.producer]
+type = "nix-build-options-json"
+ref = "github:NixOS/nixpkgs/nixos-unstable"
+attribute = "options"
+import_path = "nixos/release.nix"
+output_path = "share/doc/nixos/options.json"
+
+[[projects.nixpkgs.datasets]]
+id = "packages"
+name = "Nix Packages"
+kind = "packages"
+
+[[projects.nixpkgs.datasets.refs]]
+id = "unstable"
+
+[projects.nixpkgs.datasets.refs.producer]
+type = "channel-packages-json"
+channel = "nixos-unstable"
+
+[projects.fixtures]
+name = "Fixtures"
+
+[[projects.fixtures.datasets]]
+id = "options"
+name = "Fixture Options"
+kind = "options"
+
+[[projects.fixtures.datasets.refs]]
+id = "small"
+
+[projects.fixtures.datasets.refs.producer]
+type = "existing-file"
+path = "fixtures/options-small.json"
+artifact = "options-json"
