@@ -99,12 +99,14 @@ Suggested structure:
 
 ```text
 crates/
-  core/          shared domain types, config, errors
-  source/        source/ref resolution, fetchers, Nix evaluators
-  ingest/        parsers/converters into normalized documents
+  core/          shared domain types, errors
+  config/        Figment-based typed configuration and validation
+  store/         artifact storage built on object_store
+  source/        source/ref resolution, producers, Nix evaluators
+  ingest/        artifact consumers and parsers into normalized documents
   index/         Tantivy schema, ranking, facets, index lifecycle
   api/           HTTP/search API, frontend-agnostic
-  cli/           commands: fetch, ingest, index, update, serve, inspect
+  cli/           commands: produce, consume, index, update, serve, inspect
   web/           optional website shell/assets later
 ```
 
@@ -189,7 +191,18 @@ Future agents may decide whether physical Tantivy indexes should be global, per 
 
 ## Configuration design
 
-Use a declarative config format such as TOML, with optional Nix-generated config later.
+Use a declarative config format such as TOML, with optional Nix-generated config later. Prefer `figment` for configuration loading so settings can be layered from defaults, config files, environment variables, and CLI overrides.
+
+Recommended config source order:
+
+```text
+built-in defaults
+  -> nix-search.toml
+  -> NIX_SEARCH_* environment variables
+  -> CLI overrides
+```
+
+The server/importer should generally be configured with projects, datasets, refs, and producers rather than direct paths to `options.json` or `packages.json`. Direct file paths should still be supported as a low-level/debug producer.
 
 Conceptual example:
 
@@ -205,12 +218,12 @@ kind = "packages"
 [[projects.nixpkgs.datasets.refs]]
 id = "unstable"
 ref = "github:NixOS/nixpkgs/nixos-unstable"
-fetcher = "channel-packages-json"
+producer = "channel-packages-json"
 
 [[projects.nixpkgs.datasets.refs]]
 id = "25.05"
 ref = "github:NixOS/nixpkgs/nixos-25.05"
-fetcher = "channel-packages-json"
+producer = "channel-packages-json"
 
 [[projects.nixpkgs.datasets]]
 id = "nixos-options"
@@ -220,7 +233,7 @@ kind = "options"
 [[projects.nixpkgs.datasets.refs]]
 id = "unstable"
 ref = "github:NixOS/nixpkgs/nixos-unstable"
-fetcher = "nix-build-options-json"
+producer = "nix-build-options-json"
 attribute = "options"
 import_path = "nixos/release.nix"
 output_path = "share/doc/nixos/options.json"
@@ -240,7 +253,7 @@ kind = "options"
 [[projects.hjem.datasets.refs]]
 id = "main"
 ref = "github:feel-co/hjem"
-fetcher = "eval-modules"
+producer = "eval-modules"
 modules_attr = "nixosModules.default"
 options_prefix = "hjem"
 url_prefix = "https://github.com/feel-co/hjem/blob/main/"
@@ -256,23 +269,91 @@ Prefer built-in presets for common cases, but ensure all presets expand to regul
 
 ## Pipeline
 
-Use a staged pipeline:
+Use a producer/consumer pipeline:
 
 ```text
-Resolve ref
-  -> Fetch/evaluate raw artifact
-  -> Parse raw artifact
-  -> Normalize document
-  -> Enrich document
-  -> Index document
+Figment config
+  -> Resolve project/dataset/ref
+  -> Producer fetches/evaluates source data
+  -> Artifact store writes raw artifacts and metadata
+  -> Consumer reads artifact
+  -> Parser normalizes documents
+  -> Enrich documents
+  -> Index documents
   -> Atomically publish index generation
 ```
 
-Each stage should be independently testable.
+Each stage should be independently testable. The current low-level `options.json -> index` flow is still valuable, but it should be treated as one producer/consumer path rather than the long-term primary interface.
 
-## Fetchers and evaluators
+## Artifact storage
 
-Suggested fetcher types:
+Use an artifact abstraction backed by `object_store`. The default backend should be local filesystem storage, but the abstraction should allow S3/GCS/Azure-compatible stores later.
+
+Example config:
+
+```toml
+[data]
+artifact_url = "file://./data/artifacts"
+index_dir = "./data/indexes"
+```
+
+Remote artifact storage should be possible later:
+
+```toml
+[data]
+artifact_url = "s3://my-bucket/nix-search/artifacts"
+```
+
+Artifacts are the boundary between production and ingestion. They allow caching, debugging, reindexing without rerunning Nix, CI-produced artifacts, and clear separation between producer failures and parser/indexer failures.
+
+Recommended artifact keys:
+
+```text
+artifacts/{project}/{dataset}/{ref}/latest/options.json
+artifacts/{project}/{dataset}/{ref}/latest/packages.json
+artifacts/{project}/{dataset}/{ref}/latest/meta.json
+artifacts/{project}/{dataset}/{ref}/revisions/{revision}/options.json
+artifacts/{project}/{dataset}/{ref}/revisions/{revision}/packages.json
+artifacts/{project}/{dataset}/{ref}/revisions/{revision}/meta.json
+```
+
+Keep `latest` for convenience, but prefer revision-addressed or content-addressed storage for reproducibility.
+
+Metadata should include:
+
+- project
+- dataset
+- ref
+- artifact kind
+- producer name/config hash
+- resolved revision
+- content hash
+- produced timestamp
+- source URL/ref
+- artifact size
+- warnings/errors
+
+Do not store live Tantivy indexes in `object_store` initially. Tantivy should open local filesystem indexes. Later, completed index generations can optionally be archived to object storage as snapshots.
+
+## Producers and consumers
+
+Use producer/consumer terminology rather than fetcher/importer where possible.
+
+A producer turns a configured source/ref into a raw artifact:
+
+```text
+source/ref -> options.json/packages.json/flake-info.json/etc
+```
+
+A consumer turns an artifact into normalized documents:
+
+```text
+artifact -> SearchDocument stream
+```
+
+This separation is important. For example, an `options.json` consumer should not care whether the file came from `nix-build`, `evalModules`, a download, S3, or a local fixture.
+
+Suggested producer types:
 
 ### `channel-packages-json`
 
@@ -332,7 +413,13 @@ Escape hatch. Runs a command that outputs a known JSON schema.
 
 This should be treated as advanced/unsafe but useful for flexibility.
 
-## Parsers
+## Consumers and parsers
+
+Initial consumers:
+
+- `OptionsJsonConsumer`
+- `PackagesJsonConsumer`
+- later `FlakeInfoConsumer`
 
 Support known raw formats:
 
@@ -353,6 +440,8 @@ Important Rust crates to consider:
 - `anyhow`
 - `tokio`
 - `reqwest`
+- `figment = 0.10.19`
+- `object_store = 0.13.2`
 - `tantivy = 0.26.1`
 - `axum = 0.8.9`
 - compression crates as needed for `.br`/`.zst`/`.gz`
@@ -564,8 +653,8 @@ Provide a CLI that can run without the web server.
 Potential commands:
 
 ```text
-nix-search fetch
-nix-search ingest
+nix-search produce
+nix-search consume
 nix-search index
 nix-search update
 nix-search serve
@@ -575,6 +664,8 @@ nix-search list-projects
 nix-search list-datasets
 nix-search list-refs
 ```
+
+Low-level file commands such as `index-options --options-json ./options.json` should remain available for tests/debugging, but internally they should eventually go through an `ExistingFileProducer` and the normal artifact consumer path.
 
 The CLI is important for testing the backend before a serious frontend exists.
 
@@ -701,25 +792,30 @@ Ranking tests should assert relative ordering for key queries, not exact scores.
 Recommended vertical-slice order:
 
 1. Create Rust workspace.
-2. Implement core domain types and config loading.
+2. Implement core domain types.
 3. Implement parser for existing `options.json`.
 4. Implement normalized `OptionDoc`.
 5. Implement a minimal Tantivy index for options.
 6. Implement CLI command to index an `options.json` file.
 7. Implement CLI search command.
-8. Add package parser for nixpkgs `packages.json`.
-9. Add normalized `PackageDoc`.
-10. Add project/dataset/ref config model.
-11. Add `download` fetcher.
-12. Add `channel-packages-json` fetcher.
-13. Add `nix-build-options-json` fetcher.
-14. Add Axum API.
-15. Add index generations and metadata.
-16. Add source link generation.
-17. Add `programs.sqlite` enrichment.
-18. Add `eval-modules` fetcher inspired by NuschtOS.
-19. Add built-in presets for nixpkgs/NixOS/Home Manager/nix-darwin.
-20. Start serious frontend work.
+8. Add `crates/config` with Figment-based typed config loading.
+9. Add `crates/store` with artifact storage backed by `object_store`.
+10. Add artifact types: `ArtifactKind`, `ArtifactRef`, `ArtifactMetadata`.
+11. Add producer/consumer traits.
+12. Add `ExistingFileProducer` and refactor `index-options` to use the artifact path internally.
+13. Add project/dataset/ref config model.
+14. Add `NixBuildOptionsProducer`.
+15. Add `ChannelPackagesJsonProducer`.
+16. Add package parser for nixpkgs `packages.json`.
+17. Add normalized `PackageDoc`.
+18. Add package indexing/search.
+19. Add Axum API.
+20. Add index generations and metadata.
+21. Add source link generation.
+22. Add `programs.sqlite` enrichment.
+23. Add `EvalModulesProducer` inspired by NuschtOS.
+24. Add built-in presets for nixpkgs/NixOS/Home Manager/nix-darwin.
+25. Start serious frontend work.
 
 This order gives future agents a working vertical slice early while preserving flexibility.
 
