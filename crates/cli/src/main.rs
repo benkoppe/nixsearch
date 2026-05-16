@@ -653,6 +653,10 @@ fn print_search_hit(hit: SearchHit) {
         name = common.name,
     );
 
+    if !common.name_parts.groups.is_empty() {
+        println!("       groups: {}", common.name_parts.groups.join(", "));
+    }
+
     match hit.document {
         SearchDocument::Option(option) => {
             if let Some(description) = option.description {

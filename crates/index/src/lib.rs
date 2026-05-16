@@ -20,6 +20,9 @@ struct IndexFields {
     kind: Field,
     name_exact: Field,
     name_text: Field,
+    name_root: Field,
+    name_groups: Field,
+    name_leaf: Field,
     description: Field,
     option_set: Field,
     parents: Field,
@@ -50,6 +53,15 @@ impl IndexFields {
             name_text: schema
                 .get_field("name_text")
                 .context("missing field name_text")?,
+            name_root: schema
+                .get_field("name_root")
+                .context("missing field name_root")?,
+            name_groups: schema
+                .get_field("name_groups")
+                .context("missing field name_groups")?,
+            name_leaf: schema
+                .get_field("name_leaf")
+                .context("missing field name_leaf")?,
             description: schema
                 .get_field("description")
                 .context("missing field description")?,
@@ -156,6 +168,9 @@ impl SearchIndex {
             vec![
                 self.fields.name_exact,
                 self.fields.name_text,
+                self.fields.name_root,
+                self.fields.name_groups,
+                self.fields.name_leaf,
                 self.fields.description,
                 self.fields.option_set,
                 self.fields.parents,
@@ -170,6 +185,9 @@ impl SearchIndex {
 
         parser.set_field_boost(self.fields.name_exact, 20.0);
         parser.set_field_boost(self.fields.name_text, 10.0);
+        parser.set_field_boost(self.fields.name_groups, 15.0);
+        parser.set_field_boost(self.fields.name_root, 8.0);
+        parser.set_field_boost(self.fields.name_leaf, 6.0);
         parser.set_field_boost(self.fields.option_set, 3.0);
         parser.set_field_boost(self.fields.parents, 2.0);
         parser.set_field_boost(self.fields.option_type, 1.5);
@@ -246,6 +264,8 @@ impl SearchIndexWriter {
             self.fields.stored_json => stored_json,
         );
 
+        add_name_parts(&mut document, &self.fields, common);
+
         if let Some(description) = &option.description {
             document.add_text(self.fields.description, description);
         }
@@ -287,6 +307,8 @@ impl SearchIndexWriter {
             self.fields.stored_json => stored_json,
         );
 
+        add_name_parts(&mut document, &self.fields, common);
+
         if let Some(description) = &package.description {
             document.add_text(self.fields.description, description);
         }
@@ -311,6 +333,24 @@ impl SearchIndexWriter {
     }
 }
 
+fn add_name_parts(
+    document: &mut TantivyDocument,
+    fields: &IndexFields,
+    common: &nix_search_core::CommonDoc,
+) {
+    if let Some(root) = &common.name_parts.root {
+        document.add_text(fields.name_root, root);
+    }
+
+    if let Some(leaf) = &common.name_parts.leaf {
+        document.add_text(fields.name_leaf, leaf);
+    }
+
+    for group in &common.name_parts.groups {
+        document.add_text(fields.name_groups, group);
+    }
+}
+
 fn build_schema() -> Schema {
     let mut builder = Schema::builder();
 
@@ -322,6 +362,9 @@ fn build_schema() -> Schema {
 
     builder.add_text_field("name_exact", STRING | STORED);
     builder.add_text_field("name_text", TEXT | STORED);
+    builder.add_text_field("name_root", STRING | STORED);
+    builder.add_text_field("name_groups", STRING | STORED);
+    builder.add_text_field("name_leaf", STRING | STORED);
     builder.add_text_field("description", TEXT);
     builder.add_text_field("option_set", STRING | STORED);
     builder.add_text_field("parents", STRING | STORED);
@@ -450,5 +493,63 @@ mod tests {
 
         assert!(!hits.is_empty());
         assert_eq!(hits[0].document.name(), "boot.loader.systemd-boot.enable");
+    }
+
+    #[test]
+    fn group_query_finds_nested_option() {
+        let tempdir = tempdir().unwrap();
+
+        let index = SearchIndex::create_or_replace(tempdir.path()).unwrap();
+        let mut writer = index.writer().unwrap();
+
+        writer
+            .add_document(&option_doc(
+                "services.tailscale.enable",
+                "Whether to enable Tailscale.",
+                &["services", "tailscale", "enable"],
+            ))
+            .unwrap();
+
+        writer
+            .add_document(&option_doc(
+                "services.nginx.enable",
+                "Whether to enable Nginx.",
+                &["services", "nginx", "enable"],
+            ))
+            .unwrap();
+
+        writer.commit().unwrap();
+
+        let index = SearchIndex::open(tempdir.path()).unwrap();
+
+        let hits = index.search("services.tailscale", 10).unwrap();
+
+        assert!(!hits.is_empty());
+        assert_eq!(hits[0].document.name(), "services.tailscale.enable");
+    }
+
+    #[test]
+    fn leaf_query_finds_option() {
+        let tempdir = tempdir().unwrap();
+
+        let index = SearchIndex::create_or_replace(tempdir.path()).unwrap();
+        let mut writer = index.writer().unwrap();
+
+        writer
+            .add_document(&option_doc(
+                "services.tailscale.enable",
+                "Whether to enable Tailscale.",
+                &["services", "tailscale", "enable"],
+            ))
+            .unwrap();
+
+        writer.commit().unwrap();
+
+        let index = SearchIndex::open(tempdir.path()).unwrap();
+
+        let hits = index.search("enable", 10).unwrap();
+
+        assert!(!hits.is_empty());
+        assert_eq!(hits[0].document.name(), "services.tailscale.enable");
     }
 }
