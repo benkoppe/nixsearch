@@ -205,6 +205,15 @@ impl Producer for NixBuildOptionsJsonProducer {
         let mut metadata_input = ArtifactMetadataInput::new(self.producer_name.clone());
         metadata_input.source = Some(self.source_ref.clone());
 
+        match resolve_flake_revision(&self.source_ref).await {
+            Ok(Some(revision)) => metadata_input.revision = Some(revision),
+            Ok(None) => {}
+            Err(error) => metadata_input.warnings.push(format!(
+                "failed to resolve flake revision for source ref {:?}: {error:#}",
+                self.source_ref
+            )),
+        }
+
         let metadata = store
             .put_artifact(&artifact_ref, Bytes::from(bytes), metadata_input)
             .await
@@ -298,7 +307,15 @@ impl Producer for EvalModulesProducer {
         let artifact_ref = request.artifact_ref(ArtifactKind::OptionsJson);
 
         let mut metadata_input = ArtifactMetadataInput::new(self.producer_name.clone());
-        metadata_input.source = Some(source_ref);
+        metadata_input.source = Some(source_ref.clone());
+
+        match resolve_flake_revision(&source_ref).await {
+            Ok(Some(revision)) => metadata_input.revision = Some(revision),
+            Ok(None) => {}
+            Err(error) => metadata_input.warnings.push(format!(
+                "failed to resolve flake revision for source ref {source_ref:?}: {error:#}"
+            )),
+        }
 
         if let Some(url_prefix) = &self.url_prefix {
             metadata_input.warnings.push(format!(
@@ -476,7 +493,19 @@ impl Producer for ChannelPackagesJsonProducer {
         let artifact_ref = request.artifact_ref(ArtifactKind::PackagesJson);
 
         let mut metadata_input = ArtifactMetadataInput::new(self.producer_name.clone());
-        metadata_input.source = Some(url);
+        metadata_input.source = Some(url.clone());
+
+        match fetch_channel_git_revision(&self.channel).await {
+            Ok(Some(revision)) => metadata_input.revision = Some(revision),
+            Ok(None) => metadata_input.warnings.push(format!(
+                "channel git-revision was empty for channel {:?}",
+                self.channel
+            )),
+            Err(error) => metadata_input.warnings.push(format!(
+                "failed to fetch channel git-revision for channel {:?}: {error:#}",
+                self.channel
+            )),
+        }
 
         let metadata = store
             .put_artifact(&artifact_ref, Bytes::from(decompressed), metadata_input)
@@ -566,6 +595,67 @@ impl Consumer for PackagesJsonConsumer {
         };
 
         parse_packages_json(bytes.as_ref(), &context).context("failed to parse packages artifact")
+    }
+}
+
+async fn resolve_flake_revision(source_ref: &str) -> Result<Option<String>> {
+    let output = Command::new("nix")
+        .arg("--extra-experimental-features")
+        .arg("nix-command flakes")
+        .arg("flake")
+        .arg("metadata")
+        .arg("--json")
+        .arg(source_ref)
+        .output()
+        .await
+        .with_context(|| format!("failed to run nix flake metadata for {source_ref:?}"))?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "nix flake metadata failed with status {}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    parse_flake_metadata_revision(&output.stdout)
+}
+
+fn parse_flake_metadata_revision(bytes: &[u8]) -> Result<Option<String>> {
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).context("failed to parse nix flake metadata JSON")?;
+
+    Ok(value
+        .get("locked")
+        .and_then(|locked| locked.get("rev"))
+        .and_then(|rev| rev.as_str())
+        .filter(|rev| !rev.trim().is_empty())
+        .map(ToOwned::to_owned))
+}
+
+fn channel_git_revision_url(channel: &str) -> String {
+    format!("https://channels.nixos.org/{channel}/git-revision")
+}
+
+async fn fetch_channel_git_revision(channel: &str) -> Result<Option<String>> {
+    let url = channel_git_revision_url(channel);
+
+    let text = reqwest::get(&url)
+        .await
+        .with_context(|| format!("failed to fetch {url}"))?
+        .error_for_status()
+        .with_context(|| format!("HTTP error fetching {url}"))?
+        .text()
+        .await
+        .with_context(|| format!("failed to read response body from {url}"))?;
+
+    let revision = text.trim();
+
+    if revision.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(revision.to_owned()))
     }
 }
 
@@ -806,5 +896,81 @@ mod tests {
         let normalized = super::normalize_flake_ref(source_ref).unwrap();
 
         assert_eq!(normalized, source_ref);
+    }
+
+    #[test]
+    fn parse_flake_metadata_revision_reads_locked_rev() {
+        let json = br#"
+          {
+            "locked": {
+              "rev": "abc123"
+            }
+          }
+          "#;
+
+        let revision = super::parse_flake_metadata_revision(json).unwrap();
+
+        assert_eq!(revision.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn parse_flake_metadata_revision_returns_none_when_missing() {
+        let json = br#"
+          {
+            "locked": {}
+          }
+          "#;
+
+        let revision = super::parse_flake_metadata_revision(json).unwrap();
+
+        assert_eq!(revision, None);
+    }
+
+    #[test]
+    fn parse_flake_metadata_revision_returns_none_for_path_flake_metadata() {
+        let json = br#"
+          {
+            "path": "/tmp/flake",
+            "resolved": {
+              "type": "path",
+              "path": "/tmp/flake"
+            }
+          }
+          "#;
+
+        let revision = super::parse_flake_metadata_revision(json).unwrap();
+
+        assert_eq!(revision, None);
+    }
+
+    #[test]
+    fn parse_flake_metadata_revision_rejects_malformed_json() {
+        let error = super::parse_flake_metadata_revision(b"{ not json").unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("failed to parse nix flake metadata JSON")
+        );
+    }
+
+    #[test]
+    fn channel_git_revision_url_uses_channel() {
+        assert_eq!(
+            super::channel_git_revision_url("nixos-unstable"),
+            "https://channels.nixos.org/nixos-unstable/git-revision"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires nix and network"]
+    async fn resolves_github_flake_revision() {
+        let revision = super::resolve_flake_revision("github:NixOS/nixpkgs/nixos-unstable")
+            .await
+            .unwrap();
+
+        let revision = revision.expect("expected github flake to resolve to a revision");
+
+        assert!(!revision.is_empty());
     }
 }

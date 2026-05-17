@@ -178,7 +178,7 @@ impl<'a> SourceLinkResolver<'a> {
                 revision,
                 ..
             } => {
-                let revision = revision.as_deref().or(self.revision).unwrap_or("master");
+                let revision = self.revision.or(revision.as_deref()).unwrap_or("master");
 
                 format!(
                     "https://github.com/{owner}/{repo}/blob/{revision}/{path}",
@@ -791,6 +791,25 @@ mod tests {
         assert_eq!(
             resolver.resolve_location("/some/random/local/path.nix"),
             None
+        );
+    }
+
+    #[test]
+    fn github_source_link_prefers_document_revision_over_config_revision() {
+        let config = SourceLinkConfig::Github {
+            owner: "NixOS".into(),
+            repo: "nixpkgs".into(),
+            revision: Some("branch-name".into()),
+            strip_prefixes: Vec::new(),
+        };
+
+        let resolver = SourceLinkResolver::new(&config, Some("exact-commit"));
+
+        assert_eq!(
+            resolver
+                .resolve_location("nixos/modules/foo.nix")
+                .as_deref(),
+            Some("https://github.com/NixOS/nixpkgs/blob/exact-commit/nixos/modules/foo.nix")
         );
     }
 }

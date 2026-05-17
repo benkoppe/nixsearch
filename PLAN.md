@@ -708,6 +708,8 @@ Source links should be resolved as cross-producer enrichment from raw declaratio
 Source-link configuration such as `urlPrefix` is inspired by NüschtOS, but it should be treated as
 cross-producer enrichment rather than as part of artifact production. Producers and consumers should preserve raw declarations/positions from `options.json` and `packages.json`; a later resolver should derive renderable URLs from repo/ref metadata, URL templates, strip prefixes, and revisions. This avoids regenerating artifacts just because source-link policy changes.
 
+Producers should populate artifact metadata revisions when practical. Source-link resolution should prefer exact artifact/document revisions over configured branch names, falling back to configured revisions only when no exact revision is known.
+
 Support at least GitHub initially:
 
 ```text
