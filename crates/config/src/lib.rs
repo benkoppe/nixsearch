@@ -50,7 +50,9 @@ impl AppConfig {
 
         figment = figment.merge(Env::prefixed("NIX_SEARCH_").split("__"));
 
-        let config: Self = figment.extract()?;
+        let raw: RawAppConfig = figment.extract()?;
+        let config = raw.into_app_config()?;
+
         config.validate()?;
 
         Ok(config)
@@ -65,6 +67,33 @@ impl AppConfig {
         }
 
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+struct RawAppConfig {
+    data: DataConfig,
+    server: ServerConfig,
+    projects: BTreeMap<String, RawProjectConfig>,
+}
+
+impl RawAppConfig {
+    fn into_app_config(self) -> Result<AppConfig> {
+        let mut projects = BTreeMap::new();
+
+        for (project_id, project) in self.projects {
+            projects.insert(
+                project_id.clone(),
+                project.into_project_config(&project_id)?,
+            );
+        }
+
+        Ok(AppConfig {
+            data: self.data,
+            server: self.server,
+            projects,
+        })
     }
 }
 
@@ -120,6 +149,150 @@ impl ServerConfig {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
+struct RawProjectConfig {
+    name: Option<String>,
+    datasets: Vec<RawDatasetConfig>,
+}
+
+impl RawProjectConfig {
+    fn into_project_config(self, project_id: &str) -> Result<ProjectConfig> {
+        let mut datasets = Vec::with_capacity(self.datasets.len());
+
+        for dataset in self.datasets {
+            datasets.push(dataset.into_dataset_config(project_id)?);
+        }
+
+        Ok(ProjectConfig {
+            name: self.name,
+            datasets,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+struct RawDatasetConfig {
+    id: Option<String>,
+    name: Option<String>,
+    kind: Option<DatasetKind>,
+    refs: Vec<RefConfig>,
+    preset: Option<DatasetPreset>,
+    #[serde(rename = "ref")]
+    preset_ref: Option<String>,
+}
+
+impl RawDatasetConfig {
+    fn into_dataset_config(self, project_id: &str) -> Result<DatasetConfig> {
+        match self.preset {
+            Some(preset) => self.expand_preset(project_id, preset),
+            None => self.into_explicit_dataset(project_id),
+        }
+    }
+
+    fn into_explicit_dataset(self, project_id: &str) -> Result<DatasetConfig> {
+        let id = self.id.ok_or_else(|| {
+            ConfigError::Validation(format!(
+                "projects.{project_id}.datasets: dataset id is required"
+            ))
+        })?;
+
+        Ok(DatasetConfig {
+            id,
+            name: self.name,
+            kind: self.kind.unwrap_or_default(),
+            refs: self.refs,
+        })
+    }
+
+    fn expand_preset(self, project_id: &str, preset: DatasetPreset) -> Result<DatasetConfig> {
+        if !self.refs.is_empty() {
+            return Err(ConfigError::Validation(format!(
+                "projects.{project_id}.datasets: preset datasets must not also define refs"
+            )));
+        }
+
+        let ref_id = self.preset_ref.clone().ok_or_else(|| {
+            ConfigError::Validation(format!(
+                "projects.{project_id}.datasets: preset datasets require ref"
+            ))
+        })?;
+
+        match preset {
+            DatasetPreset::NixpkgsPackages => self.expand_nixpkgs_packages(ref_id),
+            DatasetPreset::NixosOptions => self.expand_nixos_options(ref_id),
+        }
+    }
+
+    fn expand_nixpkgs_packages(self, ref_id: String) -> Result<DatasetConfig> {
+        reject_conflicting_kind(
+            self.kind,
+            DatasetKind::Packages,
+            DatasetPreset::NixpkgsPackages,
+        )?;
+
+        Ok(DatasetConfig {
+            id: self.id.unwrap_or_else(|| "packages".to_owned()),
+            name: self.name.or_else(|| Some("Nix Packages".to_owned())),
+            kind: DatasetKind::Packages,
+            refs: vec![RefConfig {
+                id: ref_id.clone(),
+                source_links: Some(nixpkgs_source_links(&ref_id)),
+                producer: ProducerConfig::ChannelPackagesJson {
+                    channel: ref_id,
+                    url: None,
+                },
+            }],
+        })
+    }
+
+    fn expand_nixos_options(self, ref_id: String) -> Result<DatasetConfig> {
+        reject_conflicting_kind(self.kind, DatasetKind::Options, DatasetPreset::NixosOptions)?;
+
+        Ok(DatasetConfig {
+            id: self.id.unwrap_or_else(|| "nixos-options".to_owned()),
+            name: self.name.or_else(|| Some("NixOS Options".to_owned())),
+            kind: DatasetKind::Options,
+            refs: vec![RefConfig {
+                id: ref_id.clone(),
+                source_links: Some(nixpkgs_source_links(&ref_id)),
+                producer: ProducerConfig::NixBuildOptionsJson {
+                    source_ref: format!("github:NixOS/nixpkgs/{ref_id}"),
+                    attribute: "options".to_owned(),
+                    import_path: "nixos/release.nix".to_owned(),
+                    output_path: "share/doc/nixos/options.json".to_owned(),
+                },
+            }],
+        })
+    }
+}
+
+fn nixpkgs_source_links(revision: &str) -> SourceLinkConfig {
+    SourceLinkConfig::Github {
+        owner: "NixOS".to_owned(),
+        repo: "nixpkgs".to_owned(),
+        revision: Some(revision.to_owned()),
+        strip_prefixes: Vec::new(),
+    }
+}
+
+fn reject_conflicting_kind(
+    configured: Option<DatasetKind>,
+    expected: DatasetKind,
+    preset: DatasetPreset,
+) -> Result<()> {
+    if let Some(configured) = configured
+        && configured != expected
+    {
+        return Err(ConfigError::Validation(format!(
+            "preset {preset:?} requires dataset kind {expected:?}, got {configured:?}"
+        )));
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ProjectConfig {
     pub name: Option<String>,
     pub datasets: Vec<DatasetConfig>,
@@ -146,6 +319,13 @@ pub struct DatasetConfig {
     pub kind: DatasetKind,
     #[serde(default)]
     pub refs: Vec<RefConfig>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DatasetPreset {
+    NixpkgsPackages,
+    NixosOptions,
 }
 
 impl DatasetConfig {
@@ -734,5 +914,236 @@ mod tests {
             }
             other => panic!("unexpected source links config: {other:?}"),
         }
+    }
+
+    #[test]
+    fn loads_nixpkgs_packages_preset() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("nix-search.toml");
+
+        fs::write(
+            &path,
+            r#"
+              [projects.nixpkgs]
+              name = "Nixpkgs"
+
+              [[projects.nixpkgs.datasets]]
+              preset = "nixpkgs-packages"
+              ref = "nixos-unstable"
+              "#,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(Some(&path)).unwrap();
+
+        let dataset = &config.projects["nixpkgs"].datasets[0];
+
+        assert_eq!(dataset.id, "packages");
+        assert_eq!(dataset.name.as_deref(), Some("Nix Packages"));
+        assert_eq!(dataset.kind, DatasetKind::Packages);
+        assert_eq!(dataset.refs.len(), 1);
+
+        let ref_config = &dataset.refs[0];
+
+        assert_eq!(ref_config.id, "nixos-unstable");
+        assert_eq!(
+            ref_config.producer.kind(),
+            ProducerKind::ChannelPackagesJson
+        );
+
+        match &ref_config.producer {
+            ProducerConfig::ChannelPackagesJson { channel, url } => {
+                assert_eq!(channel, "nixos-unstable");
+                assert_eq!(url, &None);
+            }
+            other => panic!("unexpected producer: {other:?}"),
+        }
+
+        match ref_config.source_links.as_ref().unwrap() {
+            SourceLinkConfig::Github {
+                owner,
+                repo,
+                revision,
+                strip_prefixes,
+            } => {
+                assert_eq!(owner, "NixOS");
+                assert_eq!(repo, "nixpkgs");
+                assert_eq!(revision.as_deref(), Some("nixos-unstable"));
+                assert!(strip_prefixes.is_empty());
+            }
+            other => panic!("unexpected source links config: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn loads_nixos_options_preset() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("nix-search.toml");
+
+        fs::write(
+            &path,
+            r#"
+              [projects.nixpkgs]
+              name = "Nixpkgs"
+
+              [[projects.nixpkgs.datasets]]
+              preset = "nixos-options"
+              ref = "nixos-unstable"
+              "#,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(Some(&path)).unwrap();
+
+        let dataset = &config.projects["nixpkgs"].datasets[0];
+
+        assert_eq!(dataset.id, "nixos-options");
+        assert_eq!(dataset.name.as_deref(), Some("NixOS Options"));
+        assert_eq!(dataset.kind, DatasetKind::Options);
+        assert_eq!(dataset.refs.len(), 1);
+
+        let ref_config = &dataset.refs[0];
+
+        assert_eq!(ref_config.id, "nixos-unstable");
+        assert_eq!(
+            ref_config.producer.kind(),
+            ProducerKind::NixBuildOptionsJson
+        );
+
+        match &ref_config.producer {
+            ProducerConfig::NixBuildOptionsJson {
+                source_ref,
+                attribute,
+                import_path,
+                output_path,
+            } => {
+                assert_eq!(source_ref, "github:NixOS/nixpkgs/nixos-unstable");
+                assert_eq!(attribute, "options");
+                assert_eq!(import_path, "nixos/release.nix");
+                assert_eq!(output_path, "share/doc/nixos/options.json");
+            }
+            other => panic!("unexpected producer: {other:?}"),
+        }
+
+        match ref_config.source_links.as_ref().unwrap() {
+            SourceLinkConfig::Github {
+                owner,
+                repo,
+                revision,
+                strip_prefixes,
+            } => {
+                assert_eq!(owner, "NixOS");
+                assert_eq!(repo, "nixpkgs");
+                assert_eq!(revision.as_deref(), Some("nixos-unstable"));
+                assert!(strip_prefixes.is_empty());
+            }
+            other => panic!("unexpected source links config: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn preset_allows_dataset_id_and_name_overrides() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("nix-search.toml");
+
+        fs::write(
+            &path,
+            r#"
+              [projects.nixpkgs]
+              name = "Nixpkgs"
+
+              [[projects.nixpkgs.datasets]]
+              preset = "nixpkgs-packages"
+              id = "unstable-packages"
+              name = "Unstable Packages"
+              ref = "nixos-unstable"
+              "#,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(Some(&path)).unwrap();
+
+        let dataset = &config.projects["nixpkgs"].datasets[0];
+
+        assert_eq!(dataset.id, "unstable-packages");
+        assert_eq!(dataset.name.as_deref(), Some("Unstable Packages"));
+        assert_eq!(dataset.kind, DatasetKind::Packages);
+    }
+
+    #[test]
+    fn preset_rejects_missing_ref() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("nix-search.toml");
+
+        fs::write(
+            &path,
+            r#"
+              [projects.nixpkgs]
+              name = "Nixpkgs"
+
+              [[projects.nixpkgs.datasets]]
+              preset = "nixpkgs-packages"
+              "#,
+        )
+        .unwrap();
+
+        let error = AppConfig::load(Some(&path)).unwrap_err().to_string();
+
+        assert!(error.contains("preset datasets require ref"));
+    }
+
+    #[test]
+    fn preset_rejects_explicit_refs() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("nix-search.toml");
+
+        fs::write(
+            &path,
+            r#"
+              [projects.nixpkgs]
+              name = "Nixpkgs"
+
+              [[projects.nixpkgs.datasets]]
+              preset = "nixpkgs-packages"
+              ref = "nixos-unstable"
+
+              [[projects.nixpkgs.datasets.refs]]
+              id = "manual"
+
+              [projects.nixpkgs.datasets.refs.producer]
+              type = "existing-file"
+              path = "fixtures/options-small.json"
+              artifact = "options-json"
+              "#,
+        )
+        .unwrap();
+
+        let error = AppConfig::load(Some(&path)).unwrap_err().to_string();
+
+        assert!(error.contains("preset datasets must not also define refs"));
+    }
+
+    #[test]
+    fn preset_rejects_conflicting_kind() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("nix-search.toml");
+
+        fs::write(
+            &path,
+            r#"
+              [projects.nixpkgs]
+              name = "Nixpkgs"
+
+              [[projects.nixpkgs.datasets]]
+              preset = "nixpkgs-packages"
+              kind = "options"
+              ref = "nixos-unstable"
+              "#,
+        )
+        .unwrap();
+
+        let error = AppConfig::load(Some(&path)).unwrap_err().to_string();
+
+        assert!(error.contains("requires dataset kind"));
     }
 }
