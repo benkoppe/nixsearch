@@ -1,14 +1,16 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
-use tracing::info;
 
 use nix_search_config::{
     AppConfig, DatasetConfig, DatasetKind, ProducerConfig, ProjectConfig, RefConfig,
 };
 use nix_search_core::{ArtifactKind, SearchDocument};
-use nix_search_index::{IndexStore, SearchHit, SearchIndex, SearchOptions};
+use nix_search_index::{
+    IndexGenerationManifest, IndexStore, IndexTargetManifest, SearchHit, SearchIndex, SearchOptions,
+};
 use nix_search_source::{
     ChannelPackagesJsonProducer, Consumer, ExistingFileProducer, NixBuildOptionsJsonProducer,
     OptionsJsonConsumer, PackagesJsonConsumer, ProduceRequest, ProducedArtifact, Producer,
@@ -58,8 +60,11 @@ enum ArtifactCommand {
 
 #[derive(Debug, Subcommand)]
 enum IndexCommand {
-    /// Build indexes from already-produces artifacts.
-    Build(SelectionArgs),
+    /// Rebuild the current index from exactly the selected refs.
+    Rebuild(SelectionArgs),
+
+    /// Inspect the current published index generation.
+    Inspect(ConfigArgs),
 }
 
 #[derive(Debug, Args)]
@@ -122,6 +127,47 @@ struct TargetRef {
     ref_config: RefConfig,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct TargetKey {
+    project: String,
+    dataset: String,
+    ref_id: String,
+}
+
+impl TargetKey {
+    fn new(
+        project: impl Into<String>,
+        dataset: impl Into<String>,
+        ref_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            project: project.into(),
+            dataset: dataset.into(),
+            ref_id: ref_id.into(),
+        }
+    }
+}
+
+impl From<&TargetRef> for TargetKey {
+    fn from(target: &TargetRef) -> Self {
+        Self::new(
+            target.project_id.clone(),
+            target.dataset_id.clone(),
+            target.ref_config.id.clone(),
+        )
+    }
+}
+
+impl From<&IndexTargetManifest> for TargetKey {
+    fn from(target: &IndexTargetManifest) -> Self {
+        Self::new(
+            target.project.clone(),
+            target.dataset.clone(),
+            target.ref_id.clone(),
+        )
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -141,7 +187,8 @@ async fn main() -> Result<()> {
             ArtifactCommand::Inspect(args) => artifact_inspect(args).await,
         },
         Command::Index { command } => match command {
-            IndexCommand::Build(args) => index_build(args).await,
+            IndexCommand::Rebuild(args) => index_rebuild(args).await,
+            IndexCommand::Inspect(args) => index_inspect(args),
         },
     }
 }
@@ -165,54 +212,32 @@ fn check_config(args: ConfigArgs) -> Result<()> {
 async fn update(args: SelectionArgs) -> Result<()> {
     let config = load_required_config(&args.config)?;
     let store = artifact_store_from_config(&config)?;
-    let targets = select_targets(&config, &args)?;
+    let selected_targets = select_targets(&config, &args)?;
 
-    if targets.is_empty() {
+    if selected_targets.is_empty() {
         bail!("no refs matched selection");
     }
 
     let index_store = IndexStore::new(&config.data.index_dir);
-    let generation_path = index_store.create_generation_path()?;
 
-    let index = SearchIndex::create_or_replace(&generation_path)?;
-    let mut writer = index.writer()?;
+    let mut included_targets = current_manifest_targets(&config, &index_store)?;
+    let selected_keys: BTreeSet<TargetKey> = selected_targets.iter().map(TargetKey::from).collect();
 
-    let mut total_documents = 0usize;
-
-    for target in targets {
-        info!(
-            project = target.project_id,
-            dataset = target.dataset_id,
-            ref_id = target.ref_config.id,
-            "updating ref"
-        );
-
-        let produced = produce_target(&store, &target).await?;
-        let documents = consume_target(&store, &target, &produced).await?;
-
-        for document in &documents {
-            writer.add_document(document)?;
-        }
-
-        total_documents += documents.len();
-
-        println!(
-            "added {} documents: {}/{}/{}",
-            documents.len(),
-            target.project_id,
-            target.dataset_id,
-            target.ref_config.id
-        );
+    for target in selected_targets {
+        included_targets.insert(TargetKey::from(&target), target);
     }
 
-    writer.commit()?;
-    index_store.publish(&generation_path)?;
+    if included_targets.is_empty() {
+        bail!("no refs available to index");
+    }
 
-    println!("published index generation");
-    println!("  generation = {}", generation_path.display());
-    println!("  documents = {total_documents}");
-
-    Ok(())
+    build_and_publish_generation(
+        &index_store,
+        &store,
+        included_targets.into_values().collect(),
+        &selected_keys,
+    )
+    .await
 }
 
 async fn artifact_produce(args: SelectionArgs) -> Result<()> {
@@ -273,7 +298,7 @@ async fn artifact_inspect(args: SelectionArgs) -> Result<()> {
     Ok(())
 }
 
-async fn index_build(args: SelectionArgs) -> Result<()> {
+async fn index_rebuild(args: SelectionArgs) -> Result<()> {
     let config = load_required_config(&args.config)?;
     let store = artifact_store_from_config(&config)?;
     let targets = select_targets(&config, &args)?;
@@ -283,29 +308,35 @@ async fn index_build(args: SelectionArgs) -> Result<()> {
     }
 
     let index_store = IndexStore::new(&config.data.index_dir);
+    let refresh_keys: BTreeSet<TargetKey> = targets.iter().map(TargetKey::from).collect();
+
+    build_and_publish_generation(&index_store, &store, targets, &refresh_keys).await
+}
+
+async fn build_and_publish_generation(
+    index_store: &IndexStore,
+    artifact_store: &ArtifactStore,
+    targets: Vec<TargetRef>,
+    refresh_keys: &BTreeSet<TargetKey>,
+) -> Result<()> {
     let generation_path = index_store.create_generation_path()?;
 
     let index = SearchIndex::create_or_replace(&generation_path)?;
     let mut writer = index.writer()?;
 
     let mut total_documents = 0usize;
+    let mut manifest_targets = Vec::new();
 
     for target in targets {
-        let artifact_ref = latest_artifact_ref_for_target(&target);
-        let metadata = store.get_metadata(&artifact_ref).await.with_context(|| {
-                   format!(
-                       "failed to read artifact metadata for {}/{}/{}; run `nix-search artifact produce` or
- `nix-search update` first",
-                       target.project_id, target.dataset_id, target.ref_config.id
-                   )
-               })?;
+        let key = TargetKey::from(&target);
 
-        let produced = ProducedArtifact {
-            artifact_ref,
-            metadata,
+        let produced = if refresh_keys.contains(&key) {
+            produce_target(artifact_store, &target).await?
+        } else {
+            produced_from_existing_artifact(artifact_store, &target).await?
         };
 
-        let documents = consume_target(&store, &target, &produced).await?;
+        let documents = consume_target(artifact_store, &target, &produced).await?;
 
         for document in &documents {
             writer.add_document(document)?;
@@ -313,8 +344,23 @@ async fn index_build(args: SelectionArgs) -> Result<()> {
 
         total_documents += documents.len();
 
+        manifest_targets.push(IndexTargetManifest {
+            project: target.project_id.clone(),
+            dataset: target.dataset_id.clone(),
+            ref_id: target.ref_config.id.clone(),
+            artifact_kind: produced.artifact_ref.kind,
+            document_count: documents.len(),
+            artifact_hash: Some(produced.metadata.content_hash.clone()),
+            revision: produced.metadata.revision.clone(),
+        });
+
         println!(
-            "added {} documents: {}/{}/{}",
+            "{} {} documents: {}/{}/{}",
+            if refresh_keys.contains(&key) {
+                "refreshed"
+            } else {
+                "retained"
+            },
             documents.len(),
             target.project_id,
             target.dataset_id,
@@ -323,11 +369,50 @@ async fn index_build(args: SelectionArgs) -> Result<()> {
     }
 
     writer.commit()?;
+
+    let manifest = IndexGenerationManifest::new(total_documents, manifest_targets);
+    index_store.write_manifest(&generation_path, &manifest)?;
     index_store.publish(&generation_path)?;
 
     println!("published index generation");
     println!("  generation = {}", generation_path.display());
     println!("  documents = {total_documents}");
+
+    Ok(())
+}
+
+fn index_inspect(args: ConfigArgs) -> Result<()> {
+    let config = AppConfig::load(args.config.as_deref()).context("failed to load config")?;
+    let index_store = IndexStore::new(&config.data.index_dir);
+
+    let current_path = index_store.current_path()?;
+    let manifest = index_store.current_manifest()?;
+
+    println!("current index");
+    println!("  path = {}", current_path.display());
+    println!("  schema_version = {}", manifest.schema_version);
+    println!("  generated_at = {}", manifest.generated_at);
+    println!("  documents = {}", manifest.document_count);
+    println!("  targets = {}", manifest.targets.len());
+
+    for target in manifest.targets {
+        println!(
+            "    {}/{}/{} {:?} documents={}",
+            target.project,
+            target.dataset,
+            target.ref_id,
+            target.artifact_kind,
+            target.document_count
+        );
+
+        if let Some(revision) = target.revision {
+            println!("      revision = {revision}");
+        }
+
+        if let Some(hash) = target.artifact_hash {
+            println!("      artifact_hash = {hash}");
+        }
+    }
 
     Ok(())
 }
@@ -408,6 +493,24 @@ async fn produce_target(store: &ArtifactStore, target: &TargetRef) -> Result<Pro
             unsupported.kind()
         ),
     }
+}
+
+async fn produced_from_existing_artifact(
+    store: &ArtifactStore,
+    target: &TargetRef,
+) -> Result<ProducedArtifact> {
+    let artifact_ref = latest_artifact_ref_for_target(target);
+    let metadata = store.get_metadata(&artifact_ref).await.with_context(|| {
+        format!(
+            "failed to read artifact metadata for retained target {}/{}/{}",
+            target.project_id, target.dataset_id, target.ref_config.id
+        )
+    })?;
+
+    Ok(ProducedArtifact {
+        artifact_ref,
+        metadata,
+    })
 }
 
 async fn consume_target(
@@ -657,4 +760,66 @@ fn print_search_hit(hit: SearchHit) {
             }
         }
     }
+}
+
+fn current_manifest_targets(
+    config: &AppConfig,
+    index_store: &IndexStore,
+) -> Result<BTreeMap<TargetKey, TargetRef>> {
+    let Some(manifest) = index_store.try_current_manifest()? else {
+        return Ok(BTreeMap::new());
+    };
+
+    let mut targets = BTreeMap::new();
+
+    for manifest_target in &manifest.targets {
+        let target = resolve_manifest_target(config, manifest_target)?;
+        targets.insert(TargetKey::from(manifest_target), target);
+    }
+
+    Ok(targets)
+}
+
+fn resolve_manifest_target(
+    config: &AppConfig,
+    manifest_target: &IndexTargetManifest,
+) -> Result<TargetRef> {
+    let project = config
+        .projects
+        .get(&manifest_target.project)
+        .with_context(|| {
+            format!(
+                "current index manifest contains unknown project {:?}",
+                manifest_target.project
+            )
+        })?;
+
+    let dataset = project
+        .datasets
+        .iter()
+        .find(|dataset| dataset.id == manifest_target.dataset)
+        .with_context(|| {
+            format!(
+                "current index manifest contains unknown dataset {:?} in project {:?}",
+                manifest_target.dataset, manifest_target.project
+            )
+        })?;
+
+    let ref_config = dataset
+        .refs
+        .iter()
+        .find(|ref_config| ref_config.id == manifest_target.ref_id)
+        .with_context(|| {
+            format!(
+                "current index manifest contains unknown ref {:?} in project {:?}, dataset {:?}",
+                manifest_target.ref_id, manifest_target.project, manifest_target.dataset
+            )
+        })?;
+
+    Ok(TargetRef {
+        project_id: manifest_target.project.clone(),
+        dataset_id: manifest_target.dataset.clone(),
+        dataset_kind: dataset.kind,
+        ref_config: ref_config.clone(),
+    })
 }

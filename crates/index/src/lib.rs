@@ -8,9 +8,11 @@ use tantivy::schema::{Field, STORED, STRING, Schema, TEXT, TantivyDocument, Valu
 use tantivy::{Index, IndexReader, IndexWriter, doc};
 use time::OffsetDateTime;
 
-use nix_search_core::{OptionDoc, PackageDoc, SearchDocument};
+use nix_search_core::{ArtifactKind, OptionDoc, PackageDoc, SearchDocument};
 
 const WRITER_MEMORY_BYTES: usize = 50_000_000;
+
+pub const INDEX_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone)]
 struct IndexFields {
@@ -506,6 +508,80 @@ impl IndexStore {
 
         Ok(path)
     }
+
+    pub fn manifest_path(&self, generation_path: &Path) -> PathBuf {
+        generation_path.join("index-manifest.json")
+    }
+
+    pub fn write_manifest(
+        &self,
+        generation_path: &Path,
+        manifest: &IndexGenerationManifest,
+    ) -> Result<()> {
+        let path = self.manifest_path(generation_path);
+        let bytes = serde_json::to_vec_pretty(manifest)
+            .context("failed to serialize index generation manifest")?;
+
+        fs::write(&path, bytes)
+            .with_context(|| format!("failed to write index metadata {}", path.display()))?;
+
+        Ok(())
+    }
+
+    pub fn read_manifest(&self, generation_path: &Path) -> Result<IndexGenerationManifest> {
+        let path = self.manifest_path(generation_path);
+        let bytes = fs::read(&path)
+            .with_context(|| format!("failed to read index metadata {}", path.display()))?;
+
+        serde_json::from_slice(&bytes)
+            .with_context(|| format!("failed to parse index metadata {}", path.display()))
+    }
+
+    pub fn current_manifest(&self) -> Result<IndexGenerationManifest> {
+        let current = self.current_path()?;
+        self.read_manifest(&current)
+    }
+
+    pub fn try_current_manifest(&self) -> Result<Option<IndexGenerationManifest>> {
+        if !self.current_file().exists() {
+            return Ok(None);
+        }
+
+        self.current_manifest().map(Some)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct IndexGenerationManifest {
+    pub schema_version: u32,
+
+    #[serde(with = "time::serde::rfc3339")]
+    pub generated_at: OffsetDateTime,
+
+    pub document_count: usize,
+    pub targets: Vec<IndexTargetManifest>,
+}
+
+impl IndexGenerationManifest {
+    pub fn new(document_count: usize, targets: Vec<IndexTargetManifest>) -> Self {
+        Self {
+            schema_version: INDEX_SCHEMA_VERSION,
+            generated_at: OffsetDateTime::now_utc(),
+            document_count,
+            targets,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct IndexTargetManifest {
+    pub project: String,
+    pub dataset: String,
+    pub ref_id: String,
+    pub artifact_kind: ArtifactKind,
+    pub document_count: usize,
+    pub artifact_hash: Option<String>,
+    pub revision: Option<String>,
 }
 
 #[cfg(test)]
@@ -733,5 +809,45 @@ mod tests {
         let current = store.current_path().unwrap();
 
         assert_eq!(current, generation.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn index_store_writes_and_reads_generation_manifest() {
+        let tempdir = tempdir().unwrap();
+        let store = super::IndexStore::new(tempdir.path());
+
+        let generation = store.create_generation_path().unwrap();
+
+        let manifest = super::IndexGenerationManifest::new(
+            10,
+            vec![super::IndexTargetManifest {
+                project: "fixtures".into(),
+                dataset: "options".into(),
+                ref_id: "small".into(),
+                artifact_kind: nix_search_core::ArtifactKind::OptionsJson,
+                document_count: 10,
+                artifact_hash: Some("abc123".into()),
+                revision: None,
+            }],
+        );
+
+        store.write_manifest(&generation, &manifest).unwrap();
+        store.publish(&generation).unwrap();
+
+        let loaded = store.current_manifest().unwrap();
+
+        assert_eq!(loaded.document_count, 10);
+        assert_eq!(loaded.targets.len(), 1);
+        assert_eq!(loaded.targets[0].project, "fixtures");
+    }
+
+    #[test]
+    fn index_store_returns_none_when_current_manifest_is_missing() {
+        let tempdir = tempdir().unwrap();
+        let store = super::IndexStore::new(tempdir.path());
+
+        let manifest = store.try_current_manifest().unwrap();
+
+        assert!(manifest.is_none());
     }
 }
