@@ -8,10 +8,7 @@ use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::response::{Html, IntoResponse, Sse, sse::Event};
 use axum::routing::get;
-use datastar::{
-    axum::ReadSignals,
-    prelude::{ExecuteScript, PatchElements},
-};
+use datastar::prelude::{ExecuteScript, PatchElements};
 use futures_util::stream;
 use html_escape::{encode_double_quoted_attribute, encode_text};
 use serde::Deserialize;
@@ -27,6 +24,8 @@ use nix_search_index::{
 };
 
 const DEFAULT_LIMIT: usize = 20;
+const RECONCILE_EVENTS_URL: &str = "/-/state/events";
+const EMPTY_MODAL_HTML: &str = r#"<div id="entry-modal-container"></div>"#;
 
 #[derive(Debug, Clone)]
 struct AppState {
@@ -51,26 +50,9 @@ struct PageRequest {
     query: PageQuery,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-struct SearchSignals {
-    q: Option<String>,
-    source: Option<String>,
-
-    #[serde(rename = "ref")]
-    ref_id: Option<String>,
-
-    kind: Option<String>,
-}
-
 #[derive(Debug, Clone, Deserialize)]
-struct EntryEventQuery {
-    source: String,
-    entry: String,
-
-    #[serde(rename = "ref")]
-    ref_id: Option<String>,
-
-    kind: Option<String>,
+struct StateQuery {
+    url: String,
 }
 
 pub async fn serve(config: AppConfig) -> Result<()> {
@@ -94,9 +76,7 @@ pub async fn serve(config: AppConfig) -> Result<()> {
 
     let app = Router::new()
         .route("/-/health", get(health))
-        .route("/-/search/events", get(search_events))
-        .route("/-/entry/events", get(entry_events))
-        .route("/-/entry/close", get(entry_close_events))
+        .route(RECONCILE_EVENTS_URL, get(state_events))
         .route("/", get(root_page))
         .route("/{source}", get(source_page))
         .route("/{source}/{*entry}", get(entry_page))
@@ -124,13 +104,14 @@ async fn root_page(
     State(state): State<AppState>,
     Query(query): Query<PageQuery>,
 ) -> impl IntoResponse {
-    let request = PageRequest {
-        source: None,
-        entry: None,
-        query,
-    };
-
-    render_page_response(&state, request)
+    render_full_page_response(
+        &state,
+        PageRequest {
+            source: None,
+            entry: None,
+            query,
+        },
+    )
 }
 
 async fn source_page(
@@ -138,13 +119,14 @@ async fn source_page(
     Path(source): Path<String>,
     Query(query): Query<PageQuery>,
 ) -> impl IntoResponse {
-    let request = PageRequest {
-        source: Some(source),
-        entry: None,
-        query,
-    };
-
-    render_page_response(&state, request)
+    render_full_page_response(
+        &state,
+        PageRequest {
+            source: Some(source),
+            entry: None,
+            query,
+        },
+    )
 }
 
 async fn entry_page(
@@ -154,108 +136,60 @@ async fn entry_page(
 ) -> impl IntoResponse {
     let entry = decode_path_value(&entry).unwrap_or(entry);
 
-    let request = PageRequest {
-        source: Some(source),
-        entry: Some(entry),
-        query,
-    };
-
-    render_page_response(&state, request)
-}
-
-fn render_page_response(state: &AppState, request: PageRequest) -> Html<String> {
-    match run_page_search(state, &request) {
-        Ok(hits) => Html(render_page(state, &request, Some(Ok(&hits)))),
-        Err(error) => Html(render_page(
-            state,
-            &request,
-            Some(Err(&format!("{error:#}"))),
-        )),
-    }
-}
-
-async fn search_events(
-    State(state): State<AppState>,
-    ReadSignals(signals): ReadSignals<SearchSignals>,
-) -> impl IntoResponse {
-    let request = PageRequest {
-        source: signals
-            .source
-            .clone()
-            .and_then(|value| non_empty_owned(value)),
-        entry: None,
-        query: PageQuery {
-            q: signals.q,
-            ref_id: signals.ref_id,
-            kind: signals.kind,
+    render_full_page_response(
+        &state,
+        PageRequest {
+            source: Some(source),
+            entry: Some(entry),
+            query,
         },
-    };
-
-    let results_html = match run_page_search(&state, &request) {
-        Ok(hits) => render_results_container(&request, &hits, &state.config),
-        Err(error) => render_error_container(&format!("{error:#}")),
-    };
-
-    let event = PatchElements::new(results_html).write_as_axum_sse_event();
-
-    Sse::new(stream::once(async move { Ok::<Event, Infallible>(event) }))
+    )
 }
 
-async fn entry_events(
-    State(state): State<AppState>,
-    Query(entry_query): Query<EntryEventQuery>,
-    ReadSignals(signals): ReadSignals<SearchSignals>,
-) -> impl IntoResponse {
-    let entry = decode_path_value(&entry_query.entry).unwrap_or(entry_query.entry);
+fn render_full_page_response(state: &AppState, request: PageRequest) -> Html<String> {
+    let search_result = run_page_search(state, &request);
+    let error_message = search_result
+        .as_ref()
+        .err()
+        .map(|error| format!("{error:#}"));
 
-    let request = PageRequest {
-        source: Some(entry_query.source.clone()),
-        entry: Some(entry.clone()),
-        query: PageQuery {
-            q: signals.q,
-            ref_id: entry_query.ref_id.or(signals.ref_id),
-            kind: entry_query.kind.or(signals.kind),
-        },
+    let view = match (&search_result, &error_message) {
+        (Ok(hits), _) => Ok(hits.as_slice()),
+        (Err(_), Some(error)) => Err(error.as_str()),
+        (Err(_), None) => unreachable!(),
     };
 
-    let modal_html = render_entry_modal_for_request(&state, &request);
-    let next_url = entry_url_for_request(&request, &entry);
+    Html(render_full_page(state, &request, view))
+}
 
-    let script = format!(
-        r#"
-history.pushState(null, "", {});
-document.getElementById("entry-modal")?.showModal();
-    "#,
-        js_string(&next_url)
-    );
+async fn state_events(
+    State(state): State<AppState>,
+    Query(query): Query<StateQuery>,
+) -> impl IntoResponse {
+    let request = match page_request_from_public_url(&query.url) {
+        Ok(request) => request,
+        Err(error) => {
+            let html = render_error_results_html(&error);
+            let event = PatchElements::new(html).write_as_axum_sse_event();
+            let events: Vec<std::result::Result<Event, Infallible>> = vec![Ok(event)];
 
-    let events: Vec<Result<Event, Infallible>> = vec![
+            return Sse::new(stream::iter(events));
+        }
+    };
+
+    let search_result = run_page_search(&state, &request);
+
+    let results_html = match &search_result {
+        Ok(hits) => render_results_html(&request, hits, &state.config),
+        Err(error) => render_error_results_html(&format!("{error:#}")),
+    };
+
+    let modal_html = render_modal_html(&state, &request);
+
+    let events: Vec<std::result::Result<Event, Infallible>> = vec![
+        Ok(PatchElements::new(results_html).write_as_axum_sse_event()),
         Ok(PatchElements::new(modal_html).write_as_axum_sse_event()),
-        Ok(ExecuteScript::new(script).write_as_axum_sse_event()),
-    ];
-
-    Sse::new(stream::iter(events))
-}
-
-async fn entry_close_events() -> impl IntoResponse {
-    let html = r#"<div id="entry-modal-container"></div>"#;
-
-    let script = r#"
-const url = new URL(window.location.href);
-const parts = url.pathname.split("/").filter(Boolean);
-
-if (parts.length >= 2) {
-    url.pathname = "/" + parts[0];
-} else {
-    url.pathname = "/";
-}
-
-history.pushState(null, "", url);
-    "#;
-
-    let events: Vec<Result<Event, Infallible>> = vec![
-        Ok(PatchElements::new(html).write_as_axum_sse_event()),
-        Ok(ExecuteScript::new(script).write_as_axum_sse_event()),
+        Ok(ExecuteScript::new(dialog_reconcile_script()).write_as_axum_sse_event()),
     ];
 
     Sse::new(stream::iter(events))
@@ -306,35 +240,23 @@ fn non_empty(value: &str) -> Option<&str> {
     if value.is_empty() { None } else { Some(value) }
 }
 
-fn non_empty_owned(value: String) -> Option<String> {
-    if value.trim().is_empty() {
-        None
-    } else {
-        Some(value)
-    }
-}
-
-fn render_page(
+fn render_full_page(
     state: &AppState,
     request: &PageRequest,
-    results: Option<std::result::Result<&[SearchHit], &str>>,
+    search_result: std::result::Result<&[SearchHit], &str>,
 ) -> String {
     let q = request.query.q.as_deref().unwrap_or("");
-    let source = request.source.as_deref().unwrap_or("");
     let ref_id = request.query.ref_id.as_deref().unwrap_or("");
-    let kind = request.query.kind.as_deref().unwrap_or("");
 
-    let results_html = match results {
-        Some(Ok(hits)) => render_results_container(request, hits, &state.config),
-        Some(Err(error)) => render_error_container(error),
-        None => render_empty_results_container(),
+    let results_html = match search_result {
+        Ok(hits) if normalized_query(&request.query).is_some() => {
+            render_results_html(request, hits, &state.config)
+        }
+        Ok(_) => render_empty_results_html(),
+        Err(error) => render_error_results_html(error),
     };
 
-    let modal_html = if request.entry.is_some() {
-        render_entry_modal_for_request(state, request)
-    } else {
-        r#"<div id="entry-modal-container"></div>"#.to_owned()
-    };
+    let modal_html = render_modal_html(state, request);
 
     let form_action = request
         .source
@@ -351,197 +273,18 @@ fn render_page(
      <title>Nix Search</title>
      <script type="module"
  src="https://cdn.jsdelivr.net/gh/starfederation/datastar@main/bundles/datastar.js"></script>
-     <style>
-       :root {{
-         color-scheme: light dark;
-         --bg: #0f172a;
-         --panel: #111827;
-         --text: #e5e7eb;
-         --muted: #9ca3af;
-         --accent: #38bdf8;
-         --border: #374151;
-         --danger: #fecaca;
-       }}
-
-       body {{
-         margin: 0;
-         font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-         background: var(--bg);
-         color: var(--text);
-       }}
-
-       main {{
-         max-width: 960px;
-         margin: 0 auto;
-         padding: 2rem 1rem 4rem;
-       }}
-
-       h1 {{
-         margin-bottom: 0.25rem;
-         font-size: 2rem;
-       }}
-
-       .subtitle {{
-         color: var(--muted);
-         margin-top: 0;
-         margin-bottom: 2rem;
-       }}
-
-       form.search {{
-         display: grid;
-         gap: 0.75rem;
-         background: var(--panel);
-         border: 1px solid var(--border);
-         border-radius: 0.75rem;
-         padding: 1rem;
-         margin-bottom: 1.25rem;
-       }}
-
-       .filters {{
-         display: grid;
-         gap: 0.75rem;
-         grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-       }}
-
-       label {{
-         display: grid;
-         gap: 0.25rem;
-         color: var(--muted);
-         font-size: 0.875rem;
-       }}
-
-       input {{
-         box-sizing: border-box;
-         width: 100%;
-         border: 1px solid var(--border);
-         border-radius: 0.5rem;
-         background: #030712;
-         color: var(--text);
-         padding: 0.7rem 0.8rem;
-         font: inherit;
-       }}
-
-       input[type="search"] {{
-         font-size: 1.1rem;
-       }}
-
-       button {{
-         border: 0;
-         border-radius: 0.5rem;
-         background: var(--accent);
-         color: #082f49;
-         font-weight: 700;
-         padding: 0.65rem 1rem;
-         cursor: pointer;
-       }}
-
-       .status, .error {{
-         border: 1px solid var(--border);
-         border-radius: 0.75rem;
-         padding: 1rem;
-         color: var(--muted);
-         background: var(--panel);
-       }}
-
-       .error {{
-         color: var(--danger);
-         border-color: #7f1d1d;
-       }}
-
-       .results {{
-         display: grid;
-         gap: 0.75rem;
-       }}
-
-       .result {{
-         border: 1px solid var(--border);
-         border-radius: 0.75rem;
-         padding: 1rem;
-         background: var(--panel);
-       }}
-
-       .result h2 {{
-         margin: 0 0 0.35rem;
-         font-size: 1.15rem;
-       }}
-
-       .result h2 code {{
-         color: var(--text);
-       }}
-
-       .meta {{
-         color: var(--muted);
-         font-size: 0.875rem;
-         margin-bottom: 0.5rem;
-       }}
-
-       .summary {{
-         margin: 0.5rem 0;
-       }}
-
-       a {{
-         color: var(--accent);
-       }}
-
-       dialog {{
-         width: min(900px, calc(100vw - 2rem));
-         max-height: calc(100vh - 2rem);
-         border: 1px solid var(--border);
-         border-radius: 1rem;
-         background: var(--panel);
-         color: var(--text);
-         padding: 0;
-       }}
-
-       dialog::backdrop {{
-         background: rgb(0 0 0 / 0.65);
-       }}
-
-       .entry {{
-         padding: 1.25rem;
-       }}
-
-       .entry header {{
-         display: flex;
-         justify-content: space-between;
-         align-items: start;
-         gap: 1rem;
-         border-bottom: 1px solid var(--border);
-         padding-bottom: 1rem;
-         margin-bottom: 1rem;
-       }}
-
-       .entry h2 {{
-         margin: 0;
-         font-size: 1.35rem;
-       }}
-
-       .entry-section {{
-         margin-top: 1rem;
-       }}
-
-       .entry-section h3 {{
-         margin-bottom: 0.35rem;
-       }}
-
-       pre {{
-         overflow: auto;
-         background: #030712;
-         border: 1px solid var(--border);
-         border-radius: 0.5rem;
-         padding: 0.75rem;
-       }}
-
-       ul {{
-         padding-left: 1.25rem;
-       }}
-     </style>
+     <style>{css}</style>
+     <noscript>
+       <style>
+         dialog#entry-modal {{
+           display: block;
+         }}
+       </style>
+     </noscript>
    </head>
    <body
-     data-signals-q="{q_attr}"
-     data-signals-source="{source_attr}"
-     data-signals-ref="{ref_attr}"
-     data-signals-kind="{kind_attr}"
+     data-on:nix-search-reconcile__window="@get('{reconcile_url}?url=' + encodeURIComponent(location.pathname +
+ location.search))"
    >
      <main>
        <h1>Nix Search</h1>
@@ -557,8 +300,7 @@ fn render_page(
              placeholder="git, programs.git.enable, services.nginx..."
              autocomplete="off"
              autofocus
-             data-bind-q
-             data-on-input__debounce.300ms="@get('/-/search/events')"
+             data-nix-search-input="q"
            >
          </label>
 
@@ -569,8 +311,7 @@ fn render_page(
                name="ref"
                value="{ref_attr}"
                placeholder="optional"
-               data-bind-ref
-               data-on-input__debounce.300ms="@get('/-/search/events')"
+               data-nix-search-input="ref"
              >
            </label>
          </div>
@@ -581,23 +322,22 @@ fn render_page(
        {results_html}
        {modal_html}
      </main>
+
+     <script>{nav_script}</script>
    </body>
    </html>"#,
-        q_attr = encode_double_quoted_attribute(q),
-        source_attr = encode_double_quoted_attribute(source),
-        ref_attr = encode_double_quoted_attribute(ref_id),
-        kind_attr = encode_double_quoted_attribute(kind),
+        css = page_css(),
+        reconcile_url = RECONCILE_EVENTS_URL,
         form_action = encode_double_quoted_attribute(&form_action),
+        q_attr = encode_double_quoted_attribute(q),
+        ref_attr = encode_double_quoted_attribute(ref_id),
+        nav_script = navigation_script(),
     )
 }
 
-fn render_results_container(
-    request: &PageRequest,
-    hits: &[SearchHit],
-    config: &AppConfig,
-) -> String {
+fn render_results_html(request: &PageRequest, hits: &[SearchHit], config: &AppConfig) -> String {
     let Some(q) = normalized_query(&request.query) else {
-        return render_empty_results_container();
+        return render_empty_results_html();
     };
 
     if hits.is_empty() {
@@ -623,11 +363,11 @@ fn render_results_container(
     html
 }
 
-fn render_empty_results_container() -> String {
+fn render_empty_results_html() -> String {
     r#"<div id="results" class="status">Enter a search query.</div>"#.to_owned()
 }
 
-fn render_error_container(error: &str) -> String {
+fn render_error_results_html(error: &str) -> String {
     format!(
         r#"<div id="results" class="error"><strong>Search failed:</strong> {}</div>"#,
         encode_text(error)
@@ -639,31 +379,26 @@ fn render_hit(request: &PageRequest, hit: &SearchHit, config: &AppConfig) -> Str
     let summary = summary_for_document(&hit.document);
     let source_link = first_source_link(&hit.document, config);
 
-    let entry_url = entry_url(
+    let entry_href = entry_url_for(
         &common.source,
         &common.name,
-        Some(&common.ref_id),
         Some(common.kind.as_str()),
-        request.query.q.as_deref(),
-    );
-
-    let entry_events = entry_events_url(
-        &common.source,
-        &common.name,
-        Some(&common.ref_id),
-        Some(common.kind.as_str()),
+        &PageQuery {
+            q: request.query.q.clone(),
+            ref_id: Some(common.ref_id.clone()),
+            kind: Some(common.kind.as_str().to_owned()),
+        },
     );
 
     let mut html = format!(
         r#"<article class="result">
      <h2>
-       <a href="{href}" data-on-click__prevent="@get('{events_href}')">
+       <a href="{href}">
          <code>{name}</code>
        </a>
      </h2>
      <div class="meta">{kind} · {source}/{ref_id} · score {score:.3}</div>"#,
-        href = encode_double_quoted_attribute(&entry_url),
-        events_href = encode_double_quoted_attribute(&entry_events),
+        href = encode_double_quoted_attribute(&entry_href),
         name = encode_text(&common.name),
         kind = encode_text(common.kind.as_str()),
         source = encode_text(&common.source),
@@ -691,28 +426,28 @@ fn render_hit(request: &PageRequest, hit: &SearchHit, config: &AppConfig) -> Str
     html
 }
 
-fn render_entry_modal_for_request(state: &AppState, request: &PageRequest) -> String {
+fn render_modal_html(state: &AppState, request: &PageRequest) -> String {
     let Some(source) = request.source.as_deref() else {
-        return render_entry_error_modal("Entry source is missing.");
+        return EMPTY_MODAL_HTML.to_owned();
     };
 
     let Some(entry) = request.entry.as_deref() else {
-        return r#"<div id="entry-modal-container"></div>"#.to_owned();
+        return EMPTY_MODAL_HTML.to_owned();
     };
 
     let ref_id = match resolve_entry_ref(&state.config, source, request.query.ref_id.as_deref()) {
         Ok(ref_id) => ref_id,
-        Err(error) => return render_entry_error_modal(&format!("{error:#}")),
+        Err(error) => return render_entry_error_modal(request, &format!("{error:#}")),
     };
 
     let kind = match parse_document_kind(request.query.kind.as_deref()) {
         Ok(kind) => kind,
-        Err(error) => return render_entry_error_modal(&error),
+        Err(error) => return render_entry_error_modal(request, &error),
     };
 
     let index = match SearchIndex::open(&*state.index_path) {
         Ok(index) => index,
-        Err(error) => return render_entry_error_modal(&format!("{error:#}")),
+        Err(error) => return render_entry_error_modal(request, &format!("{error:#}")),
     };
 
     let lookup = EntryLookup {
@@ -723,39 +458,35 @@ fn render_entry_modal_for_request(state: &AppState, request: &PageRequest) -> St
     };
 
     match index.find_entry(lookup) {
-        Ok(result) => render_entry_lookup_result(request, result, &state.config),
-        Err(error) => render_entry_error_modal(&format!("{error:#}")),
-    }
-}
-
-fn render_entry_lookup_result(
-    request: &PageRequest,
-    result: EntryLookupResult,
-    config: &AppConfig,
-) -> String {
-    match result {
-        EntryLookupResult::Found(document) => render_entry_modal(&document, config),
-        EntryLookupResult::NotFound => render_entry_error_modal("Entry not found."),
-        EntryLookupResult::Ambiguous(documents) => {
+        Ok(EntryLookupResult::Found(document)) => {
+            render_entry_modal(request, &document, &state.config)
+        }
+        Ok(EntryLookupResult::NotFound) => render_entry_error_modal(request, "Entry not found."),
+        Ok(EntryLookupResult::Ambiguous(documents)) => {
             render_ambiguous_entry_modal(request, &documents)
         }
+        Err(error) => render_entry_error_modal(request, &format!("{error:#}")),
     }
 }
 
-fn render_entry_modal(document: &SearchDocument, config: &AppConfig) -> String {
+fn render_entry_modal(
+    request: &PageRequest,
+    document: &SearchDocument,
+    config: &AppConfig,
+) -> String {
     let common = document.common();
+    let close_href = close_url_for(request);
 
     format!(
         r#"<div id="entry-modal-container">
-     <dialog id="entry-modal" open>
+     <dialog id="entry-modal">
        <article class="entry">
          <header>
            <div>
              <h2><code>{name}</code></h2>
              <div class="meta">{kind} · {source}/{ref_id}{revision}</div>
            </div>
-           <button type="button" data-on-click__prevent="@get('/-/entry/close')"
- onclick="this.closest('dialog')?.close()">Close</button>
+           <a href="{close_href}" data-role="entry-close">Close</a>
          </header>
          {detail}
        </article>
@@ -770,39 +501,47 @@ fn render_entry_modal(document: &SearchDocument, config: &AppConfig) -> String {
             .as_deref()
             .map(|revision| format!(" · {}", encode_text(revision)))
             .unwrap_or_default(),
+        close_href = encode_double_quoted_attribute(&close_href),
         detail = render_entry_detail(document, config),
     )
 }
 
-fn render_entry_error_modal(message: &str) -> String {
+fn render_entry_error_modal(request: &PageRequest, message: &str) -> String {
+    let close_href = close_url_for(request);
+
     format!(
         r#"<div id="entry-modal-container">
-     <dialog id="entry-modal" open>
+     <dialog id="entry-modal">
        <article class="entry">
          <header>
            <h2>Entry</h2>
-           <button type="button" data-on-click__prevent="@get('/-/entry/close')"
- onclick="this.closest('dialog')?.close()">Close</button>
+           <a href="{close_href}" data-role="entry-close">Close</a>
          </header>
-         <div class="error">{}</div>
+         <div class="error">{message}</div>
        </article>
      </dialog>
    </div>"#,
-        encode_text(message)
+        close_href = encode_double_quoted_attribute(&close_href),
+        message = encode_text(message),
     )
 }
 
 fn render_ambiguous_entry_modal(request: &PageRequest, documents: &[SearchDocument]) -> String {
+    let close_href = close_url_for(request);
+
     let mut list = String::new();
 
     for document in documents {
         let common = document.common();
-        let href = entry_url(
+        let href = entry_url_for(
             &common.source,
             &common.name,
-            Some(&common.ref_id),
             Some(common.kind.as_str()),
-            request.query.q.as_deref(),
+            &PageQuery {
+                q: request.query.q.clone(),
+                ref_id: Some(common.ref_id.clone()),
+                kind: Some(common.kind.as_str().to_owned()),
+            },
         );
 
         list.push_str(&format!(
@@ -816,18 +555,18 @@ fn render_ambiguous_entry_modal(request: &PageRequest, documents: &[SearchDocume
 
     format!(
         r#"<div id="entry-modal-container">
-     <dialog id="entry-modal" open>
+     <dialog id="entry-modal">
        <article class="entry">
          <header>
            <h2>Multiple entries found</h2>
-           <button type="button" data-on-click__prevent="@get('/-/entry/close')"
- onclick="this.closest('dialog')?.close()">Close</button>
+           <a href="{close_href}" data-role="entry-close">Close</a>
          </header>
          <p>Multiple entries have this name. Choose one:</p>
          <ul>{list}</ul>
        </article>
      </dialog>
    </div>"#,
+        close_href = encode_double_quoted_attribute(&close_href),
     )
 }
 
@@ -1190,47 +929,36 @@ fn source_path(source: &str) -> String {
     format!("/{}", encode_path(source))
 }
 
-fn entry_url(
-    source: &str,
-    entry: &str,
-    ref_id: Option<&str>,
-    kind: Option<&str>,
-    q: Option<&str>,
-) -> String {
-    let mut url = format!("{}/{}", source_path(source), encode_path(entry));
+fn search_url_for(source: Option<&str>, query: &PageQuery) -> String {
+    let path = source.map(source_path).unwrap_or_else(|| "/".to_owned());
 
-    let query = query_string([("q", q), ("ref", ref_id), ("kind", kind)]);
+    let qs = query_string([("q", query.q.as_deref()), ("ref", query.ref_id.as_deref())]);
 
-    if !query.is_empty() {
-        url.push('?');
-        url.push_str(&query);
+    if qs.is_empty() {
+        path
+    } else {
+        format!("{path}?{qs}")
     }
-
-    url
 }
 
-fn entry_url_for_request(request: &PageRequest, entry: &str) -> String {
-    let source = request.source.as_deref().unwrap_or("");
-    entry_url(
-        source,
-        entry,
-        request.query.ref_id.as_deref(),
-        request.query.kind.as_deref(),
-        request.query.q.as_deref(),
-    )
+fn entry_url_for(source: &str, entry: &str, kind: Option<&str>, query: &PageQuery) -> String {
+    let path = format!("{}/{}", source_path(source), encode_path(entry));
+
+    let qs = query_string([
+        ("q", query.q.as_deref()),
+        ("ref", query.ref_id.as_deref()),
+        ("kind", kind.or(query.kind.as_deref())),
+    ]);
+
+    if qs.is_empty() {
+        path
+    } else {
+        format!("{path}?{qs}")
+    }
 }
 
-fn entry_events_url(source: &str, entry: &str, ref_id: Option<&str>, kind: Option<&str>) -> String {
-    let mut url = "/-/entry/events?".to_owned();
-
-    url.push_str(&query_string([
-        ("source", Some(source)),
-        ("entry", Some(entry)),
-        ("ref", ref_id),
-        ("kind", kind),
-    ]));
-
-    url
+fn close_url_for(request: &PageRequest) -> String {
+    search_url_for(request.source.as_deref(), &request.query)
 }
 
 fn query_string<const N: usize>(pairs: [(&str, Option<&str>); N]) -> String {
@@ -1259,8 +987,352 @@ fn decode_path_value(value: &str) -> Option<String> {
         .map(|value| value.into_owned())
 }
 
-fn js_string(value: &str) -> String {
-    serde_json::to_string(value).expect("serializing string cannot fail")
+fn page_request_from_public_url(raw_url: &str) -> std::result::Result<PageRequest, String> {
+    let (raw_path, raw_query) = raw_url
+        .split_once('?')
+        .map_or((raw_url, ""), |(path, query)| (path, query));
+
+    let path_parts = raw_path
+        .trim_start_matches('/')
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+
+    let source = path_parts
+        .first()
+        .map(|value| decode_path_value(value).unwrap_or_else(|| (*value).to_owned()));
+
+    let entry = if path_parts.len() >= 2 {
+        let raw_entry = path_parts[1..].join("/");
+        Some(decode_path_value(&raw_entry).unwrap_or(raw_entry))
+    } else {
+        None
+    };
+
+    let mut q = None;
+    let mut ref_id = None;
+    let mut kind = None;
+
+    for (key, value) in url::form_urlencoded::parse(raw_query.as_bytes()) {
+        match key.as_ref() {
+            "q" => q = Some(value.into_owned()),
+            "ref" => ref_id = Some(value.into_owned()),
+            "kind" => kind = Some(value.into_owned()),
+            _ => {}
+        }
+    }
+
+    Ok(PageRequest {
+        source,
+        entry,
+        query: PageQuery { q, ref_id, kind },
+    })
+}
+
+fn dialog_reconcile_script() -> &'static str {
+    r#"
+   (() => {
+     const dialog = document.getElementById("entry-modal");
+
+     if (dialog) {
+       if (!dialog.open) dialog.showModal();
+     } else {
+       document.querySelectorAll("dialog[open]").forEach((d) => d.close());
+     }
+   })();
+   "#
+}
+
+fn navigation_script() -> &'static str {
+    r#"
+   (() => {
+     const RECONCILE_EVENT = "nix-search-reconcile";
+
+     function paramsFromInputs() {
+       const params = new URLSearchParams();
+       document.querySelectorAll("[data-nix-search-input]").forEach((el) => {
+         const name = el.getAttribute("data-nix-search-input");
+         const value = el.value.trim();
+         if (value) params.set(name, value);
+       });
+       return params;
+     }
+
+     function currentSourcePath() {
+       const parts = window.location.pathname.split("/").filter(Boolean);
+       return parts.length > 0 ? "/" + parts[0] : "/";
+     }
+
+     function buildSearchUrlFromInputs() {
+       const params = paramsFromInputs();
+       const path = currentSourcePath();
+       const qs = params.toString();
+       return qs ? path + "?" + qs : path;
+     }
+
+     function navigate(url, { push = true } = {}) {
+       const next = new URL(url, window.location.href);
+       const target = next.pathname + next.search;
+       const current = window.location.pathname + window.location.search;
+
+       if (push && current !== target) {
+         history.pushState(null, "", target);
+       }
+
+       window.dispatchEvent(new CustomEvent(RECONCILE_EVENT));
+     }
+
+     function syncInputsFromUrl() {
+       const params = new URLSearchParams(window.location.search);
+       document.querySelectorAll("[data-nix-search-input]").forEach((el) => {
+         const name = el.getAttribute("data-nix-search-input");
+         el.value = params.get(name) || "";
+       });
+     }
+
+     document.addEventListener("click", (evt) => {
+       if (evt.defaultPrevented) return;
+       if (evt.button !== 0) return;
+       if (evt.metaKey || evt.ctrlKey || evt.shiftKey || evt.altKey) return;
+
+       const link = evt.target.closest("a[href]");
+       if (!link) return;
+       if (link.target === "_blank") return;
+       if (link.hasAttribute("download")) return;
+
+       const url = new URL(link.href, window.location.href);
+       if (url.origin !== window.location.origin) return;
+       if (link.rel && link.rel.includes("external")) return;
+
+       evt.preventDefault();
+       navigate(url.toString());
+     });
+
+     let debounce;
+     document.addEventListener("input", (evt) => {
+       const el = evt.target;
+       if (!el.matches || !el.matches("[data-nix-search-input]")) return;
+       clearTimeout(debounce);
+       debounce = setTimeout(() => {
+         navigate(buildSearchUrlFromInputs());
+       }, 300);
+     });
+
+     document.addEventListener("submit", (evt) => {
+       const form = evt.target;
+       if (!(form instanceof HTMLFormElement)) return;
+       if (form.method && form.method.toLowerCase() !== "get") return;
+
+       evt.preventDefault();
+       navigate(buildSearchUrlFromInputs());
+     });
+
+     window.addEventListener("popstate", () => {
+       syncInputsFromUrl();
+       window.dispatchEvent(new CustomEvent(RECONCILE_EVENT));
+     });
+
+     window.nixSearchNavigate = navigate;
+
+     // Open the modal once on initial full-page load.
+     (() => {
+       const dialog = document.getElementById("entry-modal");
+       if (dialog && !dialog.open) dialog.showModal();
+     })();
+   })();
+   "#
+}
+
+fn page_css() -> &'static str {
+    r#"
+   :root {
+     color-scheme: light dark;
+     --bg: #0f172a;
+     --panel: #111827;
+     --text: #e5e7eb;
+     --muted: #9ca3af;
+     --accent: #38bdf8;
+     --border: #374151;
+     --danger: #fecaca;
+   }
+
+   body {
+     margin: 0;
+     font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+     background: var(--bg);
+     color: var(--text);
+   }
+
+   main {
+     max-width: 960px;
+     margin: 0 auto;
+     padding: 2rem 1rem 4rem;
+   }
+
+   h1 {
+     margin-bottom: 0.25rem;
+     font-size: 2rem;
+   }
+
+   .subtitle {
+     color: var(--muted);
+     margin-top: 0;
+     margin-bottom: 2rem;
+   }
+
+   form.search {
+     display: grid;
+     gap: 0.75rem;
+     background: var(--panel);
+     border: 1px solid var(--border);
+     border-radius: 0.75rem;
+     padding: 1rem;
+     margin-bottom: 1.25rem;
+   }
+
+   .filters {
+     display: grid;
+     gap: 0.75rem;
+     grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+   }
+
+   label {
+     display: grid;
+     gap: 0.25rem;
+     color: var(--muted);
+     font-size: 0.875rem;
+   }
+
+   input {
+     box-sizing: border-box;
+     width: 100%;
+     border: 1px solid var(--border);
+     border-radius: 0.5rem;
+     background: #030712;
+     color: var(--text);
+     padding: 0.7rem 0.8rem;
+     font: inherit;
+   }
+
+   input[type="search"] {
+     font-size: 1.1rem;
+   }
+
+   button {
+     border: 0;
+     border-radius: 0.5rem;
+     background: var(--accent);
+     color: #082f49;
+     font-weight: 700;
+     padding: 0.65rem 1rem;
+     cursor: pointer;
+   }
+
+   .status, .error {
+     border: 1px solid var(--border);
+     border-radius: 0.75rem;
+     padding: 1rem;
+     color: var(--muted);
+     background: var(--panel);
+   }
+
+   .error {
+     color: var(--danger);
+     border-color: #7f1d1d;
+   }
+
+   .results {
+     display: grid;
+     gap: 0.75rem;
+   }
+
+   .result {
+     border: 1px solid var(--border);
+     border-radius: 0.75rem;
+     padding: 1rem;
+     background: var(--panel);
+   }
+
+   .result h2 {
+     margin: 0 0 0.35rem;
+     font-size: 1.15rem;
+   }
+
+   .result h2 code {
+     color: var(--text);
+   }
+
+   .meta {
+     color: var(--muted);
+     font-size: 0.875rem;
+     margin-bottom: 0.5rem;
+   }
+
+   .summary {
+     margin: 0.5rem 0;
+   }
+
+   a {
+     color: var(--accent);
+   }
+
+   dialog {
+     position: fixed;
+     inset: 50% auto auto 50%;
+     transform: translate(-50%, -50%);
+     width: min(900px, calc(100vw - 2rem));
+     max-height: calc(100vh - 2rem);
+     overflow: auto;
+     border: 1px solid var(--border);
+     border-radius: 1rem;
+     background: var(--panel);
+     color: var(--text);
+     padding: 0;
+   }
+
+   dialog::backdrop {
+     background: rgb(0 0 0 / 0.65);
+   }
+
+   .entry {
+     padding: 1.25rem;
+   }
+
+   .entry header {
+     display: flex;
+     justify-content: space-between;
+     align-items: start;
+     gap: 1rem;
+     border-bottom: 1px solid var(--border);
+     padding-bottom: 1rem;
+     margin-bottom: 1rem;
+   }
+
+   .entry h2 {
+     margin: 0;
+     font-size: 1.35rem;
+   }
+
+   .entry-section {
+     margin-top: 1rem;
+   }
+
+   .entry-section h3 {
+     margin-bottom: 0.35rem;
+   }
+
+   pre {
+     overflow: auto;
+     background: #030712;
+     border: 1px solid var(--border);
+     border-radius: 0.5rem;
+     padding: 0.75rem;
+   }
+
+   ul {
+     padding-left: 1.25rem;
+   }
+   "#
 }
 
 #[cfg(test)]
@@ -1271,7 +1343,10 @@ mod tests {
     use nix_search_config::AppConfig;
     use nix_search_core::{Declaration, OptionDoc, SearchDocument};
 
-    use super::{AppState, PageQuery, PageRequest, first_source_link, render_page};
+    use super::{
+        AppState, PageQuery, PageRequest, close_url_for, dialog_reconcile_script, entry_url_for,
+        first_source_link, page_request_from_public_url, render_full_page, search_url_for,
+    };
 
     #[test]
     fn escapes_query_in_search_input() {
@@ -1281,7 +1356,7 @@ mod tests {
             ..PageQuery::default()
         });
 
-        let html = render_page(&state, &request, None);
+        let html = render_full_page(&state, &request, Ok(&[]));
 
         assert!(!html.contains(r#"<script>alert("x")</script>"#));
         assert!(html.contains("&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;"));
@@ -1292,9 +1367,23 @@ mod tests {
         let state = test_state();
         let request = test_request(PageQuery::default());
 
-        let html = render_page(&state, &request, None);
+        let html = render_full_page(&state, &request, Ok(&[]));
 
         assert!(html.contains("Enter a search query."));
+    }
+
+    #[test]
+    fn renders_reconcile_attribute_and_navigation_script() {
+        let state = test_state();
+        let request = test_request(PageQuery::default());
+
+        let html = render_full_page(&state, &request, Ok(&[]));
+
+        assert!(html.contains("data-on:nix-search-reconcile__window"));
+        assert!(html.contains("/-/state/events"));
+        assert!(html.contains("window.nixSearchNavigate"));
+        assert!(html.contains("data-nix-search-input=\"q\""));
+        assert!(html.contains("data-nix-search-input=\"ref\""));
     }
 
     #[test]
@@ -1321,6 +1410,123 @@ mod tests {
             first_source_link(&document, &config).as_deref(),
             Some("https://github.com/example/repo/blob/abc123/module.nix#L4")
         );
+    }
+
+    #[test]
+    fn search_url_for_root_with_query() {
+        let url = search_url_for(
+            None,
+            &PageQuery {
+                q: Some("git".to_owned()),
+                ..PageQuery::default()
+            },
+        );
+
+        assert_eq!(url, "/?q=git");
+    }
+
+    #[test]
+    fn search_url_for_source_with_query_and_ref() {
+        let url = search_url_for(
+            Some("fixtures"),
+            &PageQuery {
+                q: Some("git".to_owned()),
+                ref_id: Some("small".to_owned()),
+                ..PageQuery::default()
+            },
+        );
+
+        assert_eq!(url, "/fixtures?q=git&ref=small");
+    }
+
+    #[test]
+    fn entry_url_for_includes_kind() {
+        let url = entry_url_for(
+            "fixtures",
+            "programs.git.enable",
+            Some("option"),
+            &PageQuery {
+                q: Some("git".to_owned()),
+                ref_id: Some("small".to_owned()),
+                ..PageQuery::default()
+            },
+        );
+
+        assert_eq!(
+            url,
+            "/fixtures/programs.git.enable?q=git&ref=small&kind=option"
+        );
+    }
+
+    #[test]
+    fn close_url_for_strips_entry_segment() {
+        let request = PageRequest {
+            source: Some("fixtures".to_owned()),
+            entry: Some("programs.git.enable".to_owned()),
+            query: PageQuery {
+                q: Some("git".to_owned()),
+                ref_id: Some("small".to_owned()),
+                kind: Some("option".to_owned()),
+            },
+        };
+
+        assert_eq!(close_url_for(&request), "/fixtures?q=git&ref=small");
+    }
+
+    #[test]
+    fn close_url_for_returns_root_when_no_source() {
+        let request = PageRequest {
+            source: None,
+            entry: None,
+            query: PageQuery {
+                q: Some("git".to_owned()),
+                ..PageQuery::default()
+            },
+        };
+
+        assert_eq!(close_url_for(&request), "/?q=git");
+    }
+
+    #[test]
+    fn parses_root_public_url() {
+        let request = page_request_from_public_url("/").unwrap();
+
+        assert_eq!(request.source, None);
+        assert_eq!(request.entry, None);
+        assert_eq!(request.query.q, None);
+    }
+
+    #[test]
+    fn parses_source_search_public_url() {
+        let request = page_request_from_public_url("/fixtures?q=git&ref=small").unwrap();
+
+        assert_eq!(request.source.as_deref(), Some("fixtures"));
+        assert_eq!(request.entry, None);
+        assert_eq!(request.query.q.as_deref(), Some("git"));
+        assert_eq!(request.query.ref_id.as_deref(), Some("small"));
+    }
+
+    #[test]
+    fn parses_entry_public_url() {
+        let request = page_request_from_public_url(
+            "/fixtures/programs.git.enable?q=git&ref=small&kind=option",
+        )
+        .unwrap();
+
+        assert_eq!(request.source.as_deref(), Some("fixtures"));
+        assert_eq!(request.entry.as_deref(), Some("programs.git.enable"));
+        assert_eq!(request.query.q.as_deref(), Some("git"));
+        assert_eq!(request.query.ref_id.as_deref(), Some("small"));
+        assert_eq!(request.query.kind.as_deref(), Some("option"));
+    }
+
+    #[test]
+    fn dialog_reconcile_script_handles_open_and_close() {
+        let script = dialog_reconcile_script();
+
+        assert!(script.contains("showModal()"));
+        assert!(script.contains("dialog[open]"));
+        assert!(script.contains(".close()"));
     }
 
     fn test_state() -> AppState {

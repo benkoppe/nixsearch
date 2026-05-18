@@ -48,6 +48,7 @@ tempfile = "3"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["trace"] }
+url = "2"
 urlencoding = "2"
 html-escape = "0.2"
 bytes = "1"
