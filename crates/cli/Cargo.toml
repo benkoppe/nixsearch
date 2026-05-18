@@ -18,3 +18,12 @@ nix-search-ingest.workspace = true
 nix-search-source.workspace = true
 nix-search-store.workspace = true
 nix-search-web.workspace = true
+
+[dev-dependencies]
+nix-search-core.workspace = true
+nix-search-index.workspace = true
+nix-search-test-support.workspace = true
+
+assert_cmd.workspace = true
+predicates.workspace = true
+tempfile.workspace = true

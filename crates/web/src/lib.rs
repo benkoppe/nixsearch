@@ -515,12 +515,9 @@ fn source_link_config_for_document<'a>(
 mod tests {
     use time::OffsetDateTime;
 
-    use nix_search_config::{
-        AppConfig, DataConfig, ProducerConfig, RefConfig, ServerConfig, SourceConfig, SourceKind,
-    };
+    use nix_search_config::AppConfig;
     use nix_search_core::{
         CommonDoc, Declaration, DocumentKind, NameParts, OptionDoc, SearchDocument,
-        SourceLinkConfig,
     };
 
     use super::{SearchQuery, first_source_link, render_page};
@@ -574,32 +571,7 @@ mod tests {
     }
 
     fn test_config() -> AppConfig {
-        AppConfig {
-            data: DataConfig::default(),
-            server: ServerConfig::default(),
-            sources: [(
-                "fixtures".to_owned(),
-                SourceConfig {
-                    name: Some("Fixtures".to_owned()),
-                    kind: SourceKind::Options,
-                    default_ref: Some("small".to_owned()),
-                    refs: vec![RefConfig {
-                        id: "small".to_owned(),
-                        source_links: Some(SourceLinkConfig::Github {
-                            owner: "example".to_owned(),
-                            repo: "repo".to_owned(),
-                            revision: Some("main".to_owned()),
-                            strip_prefixes: Vec::new(),
-                        }),
-                        producer: ProducerConfig::ExistingFile {
-                            path: "fixtures/options-small.json".into(),
-                            artifact: nix_search_core::ArtifactKind::OptionsJson,
-                        },
-                    }],
-                },
-            )]
-            .into(),
-        }
+        nix_search_test_support::app_config("./data/indexes")
     }
 
     #[allow(dead_code)]

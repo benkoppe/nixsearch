@@ -606,74 +606,157 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use tempfile::tempdir;
+    use tempfile::{TempDir, tempdir};
 
     use nix_search_core::{ArtifactKind, SourceLinkConfig};
 
     use super::{AppConfig, ProducerConfig, ProducerKind, SourceKind};
+
+    const FIXTURES_SOURCE: &str = "fixtures";
+    const NIXOS_SOURCE: &str = "nixos";
+    const NIXPKGS_SOURCE: &str = "nixpkgs";
+    const SMALL_REF: &str = "small";
+    const STABLE_REF: &str = "stable";
+    const UNSTABLE_REF: &str = "unstable";
+    const NIXOS_UNSTABLE_REF: &str = "nixos-unstable";
+    const FIXTURE_OPTIONS_PATH: &str = "fixtures/search-small/options.json";
+
+    fn load_toml(toml: &str) -> AppConfig {
+        let dir = tempdir().unwrap();
+        let path = write_toml(&dir, toml);
+
+        AppConfig::load(Some(&path)).unwrap()
+    }
+
+    fn load_toml_error(toml: &str) -> String {
+        let dir = tempdir().unwrap();
+        let path = write_toml(&dir, toml);
+
+        AppConfig::load(Some(&path)).unwrap_err().to_string()
+    }
+
+    fn write_toml(dir: &TempDir, toml: &str) -> PathBuf {
+        let path = dir.path().join("nix-search.toml");
+        fs::write(&path, toml).unwrap();
+        path
+    }
+
+    fn fixture_existing_file_source_toml() -> &'static str {
+        r#"
+        [sources.fixtures]
+        name = "Fixtures"
+        kind = "options"
+
+        [[sources.fixtures.refs]]
+        id = "small"
+
+        [sources.fixtures.refs.producer]
+        type = "existing-file"
+        path = "fixtures/search-small/options.json"
+        artifact = "options-json"
+        "#
+    }
+
+    fn fixture_two_ref_source_toml(default_ref: Option<&str>) -> String {
+        let default_ref = default_ref
+            .map(|value| format!(r#"default_ref = "{value}""#))
+            .unwrap_or_default();
+
+        format!(
+            r#"
+            [sources.fixtures]
+            name = "Fixtures"
+            kind = "options"
+            {default_ref}
+
+            [[sources.fixtures.refs]]
+            id = "stable"
+
+            [sources.fixtures.refs.producer]
+            type = "existing-file"
+            path = "fixtures/search-small/options.json"
+            artifact = "options-json"
+
+            [[sources.fixtures.refs]]
+            id = "unstable"
+
+            [sources.fixtures.refs.producer]
+            type = "existing-file"
+            path = "fixtures/search-small/options.json"
+            artifact = "options-json"
+            "#
+        )
+    }
+
+    fn assert_single_scope(
+        scopes: &[super::ResolvedSearchScope],
+        expected_source: &str,
+        expected_ref: &str,
+    ) {
+        assert_eq!(scopes.len(), 1);
+        assert_eq!(scopes[0].source, expected_source);
+        assert_eq!(scopes[0].ref_id, expected_ref);
+    }
+
+    fn assert_error_contains(error: &str, expected: &str) {
+        assert!(
+            error.contains(expected),
+            "expected error to contain {expected:?}, got {error:?}"
+        );
+    }
 
     #[test]
     fn default_config_is_valid() {
         let config = AppConfig::load(None).unwrap();
 
         assert_eq!(config.data.artifact_url, "file://./data/artifacts");
-        assert_eq!(
-            config.data.index_dir,
-            std::path::PathBuf::from("./data/indexes")
-        );
+        assert_eq!(config.data.index_dir, PathBuf::from("./data/indexes"));
         assert_eq!(config.server.listen, "127.0.0.1:3000");
         assert!(config.sources.is_empty());
     }
 
     #[test]
     fn loads_config_file() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("nix-search.toml");
-
-        fs::write(
-            &path,
+        let config = load_toml(
             r#"
-               [data]
-               artifact_url = "file://./tmp/artifacts"
-               index_dir = "./tmp/indexes"
+            [data]
+            artifact_url = "file://./tmp/artifacts"
+            index_dir = "./tmp/indexes"
 
-               [server]
-               listen = "0.0.0.0:8080"
+            [server]
+            listen = "0.0.0.0:8080"
 
-               [sources.nixos]
-               name = "NixOS Options"
-               kind = "options"
+            [sources.nixos]
+            name = "NixOS Options"
+            kind = "options"
 
-               [[sources.nixos.refs]]
-               id = "unstable"
+            [[sources.nixos.refs]]
+            id = "unstable"
 
-               [sources.nixos.refs.producer]
-               type = "nix-build-options-json"
-               ref = "github:NixOS/nixpkgs/nixos-unstable"
-               attribute = "options"
-               import_path = "nixos/release.nix"
-               output_path = "share/doc/nixos/options.json"
+            [sources.nixos.refs.producer]
+            type = "nix-build-options-json"
+            ref = "github:NixOS/nixpkgs/nixos-unstable"
+            attribute = "options"
+            import_path = "nixos/release.nix"
+            output_path = "share/doc/nixos/options.json"
 
-               [sources.nixpkgs]
-               name = "Nixpkgs"
-               kind = "packages"
+            [sources.nixpkgs]
+            name = "Nixpkgs"
+            kind = "packages"
 
-               [[sources.nixpkgs.refs]]
-               id = "unstable"
+            [[sources.nixpkgs.refs]]
+            id = "unstable"
 
-               [sources.nixpkgs.refs.producer]
-               type = "channel-packages-json"
-               channel = "nixos-unstable"
-               "#,
-        )
-        .unwrap();
-
-        let config = AppConfig::load(Some(&path)).unwrap();
+            [sources.nixpkgs.refs.producer]
+            type = "channel-packages-json"
+            channel = "nixos-unstable"
+            "#,
+        );
 
         assert_eq!(config.data.artifact_url, "file://./tmp/artifacts");
         assert_eq!(config.server.listen, "0.0.0.0:8080");
 
-        let options = config.sources.get("nixos").unwrap();
+        let options = &config.sources[NIXOS_SOURCE];
         assert_eq!(options.name.as_deref(), Some("NixOS Options"));
         assert_eq!(options.kind, SourceKind::Options);
         assert_eq!(
@@ -681,7 +764,7 @@ mod tests {
             ProducerKind::NixBuildOptionsJson
         );
 
-        let packages = config.sources.get("nixpkgs").unwrap();
+        let packages = &config.sources[NIXPKGS_SOURCE];
         assert_eq!(packages.name.as_deref(), Some("Nixpkgs"));
         assert_eq!(packages.kind, SourceKind::Packages);
         assert_eq!(
@@ -692,36 +775,14 @@ mod tests {
 
     #[test]
     fn loads_existing_file_producer() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("nix-search.toml");
-
-        fs::write(
-            &path,
-            r#"
-               [sources.fixtures]
-               name = "Fixtures"
-               kind = "options"
-
-               [[sources.fixtures.refs]]
-               id = "small"
-
-               [sources.fixtures.refs.producer]
-               type = "existing-file"
-               path = "fixtures/options-small.json"
-               artifact = "options-json"
-               "#,
-        )
-        .unwrap();
-
-        let config = AppConfig::load(Some(&path)).unwrap();
-
-        let producer = &config.sources["fixtures"].refs[0].producer;
+        let config = load_toml(fixture_existing_file_source_toml());
+        let producer = &config.sources[FIXTURES_SOURCE].refs[0].producer;
 
         assert_eq!(producer.kind(), ProducerKind::ExistingFile);
 
         match producer {
             ProducerConfig::ExistingFile { path, artifact } => {
-                assert_eq!(path, &PathBuf::from("fixtures/options-small.json"));
+                assert_eq!(path, &PathBuf::from(FIXTURE_OPTIONS_PATH));
                 assert_eq!(*artifact, ArtifactKind::OptionsJson);
             }
             other => panic!("unexpected producer: {other:?}"),
@@ -730,31 +791,24 @@ mod tests {
 
     #[test]
     fn loads_eval_modules_producer() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("nix-search.toml");
-
-        fs::write(
-            &path,
+        let config = load_toml(
             r#"
-              [sources.fixtures]
-              name = "Fixtures"
-              kind = "options"
+            [sources.fixtures]
+            name = "Fixtures"
+            kind = "options"
 
-              [[sources.fixtures.refs]]
-              id = "eval"
+            [[sources.fixtures.refs]]
+            id = "eval"
 
-              [sources.fixtures.refs.producer]
-              type = "eval-modules"
-              ref = "path:/some/flake"
-              modules_attr = "nixosModules.default"
-              url_prefix = "https://example.com/blob/main/"
-              "#,
-        )
-        .unwrap();
+            [sources.fixtures.refs.producer]
+            type = "eval-modules"
+            ref = "path:/some/flake"
+            modules_attr = "nixosModules.default"
+            url_prefix = "https://example.com/blob/main/"
+            "#,
+        );
 
-        let config = AppConfig::load(Some(&path)).unwrap();
-
-        let producer = &config.sources["fixtures"].refs[0].producer;
+        let producer = &config.sources[FIXTURES_SOURCE].refs[0].producer;
 
         assert_eq!(producer.kind(), ProducerKind::EvalModules);
 
@@ -777,111 +831,84 @@ mod tests {
 
     #[test]
     fn rejects_invalid_source_ids() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("nix-search.toml");
-
-        fs::write(
-            &path,
+        let error = load_toml_error(
             r#"
-               [sources."bad/source"]
-               name = "Bad Source"
-               kind = "options"
-               "#,
-        )
-        .unwrap();
+            [sources."bad/source"]
+            name = "Bad Source"
+            kind = "options"
+            "#,
+        );
 
-        let error = AppConfig::load(Some(&path)).unwrap_err().to_string();
-
-        assert!(error.contains("must not contain '/'"));
+        assert_error_contains(&error, "must not contain '/'");
     }
 
     #[test]
     fn validates_nix_build_options_required_fields_by_deserialization() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("nix-search.toml");
-
-        fs::write(
-            &path,
+        let error = load_toml_error(
             r#"
-               [sources.nixos]
-               name = "NixOS Options"
-               kind = "options"
+            [sources.nixos]
+            name = "NixOS Options"
+            kind = "options"
 
-               [[sources.nixos.refs]]
-               id = "unstable"
+            [[sources.nixos.refs]]
+            id = "unstable"
 
-               [sources.nixos.refs.producer]
-               type = "nix-build-options-json"
-               ref = "github:NixOS/nixpkgs/nixos-unstable"
-               "#,
-        )
-        .unwrap();
+            [sources.nixos.refs.producer]
+            type = "nix-build-options-json"
+            ref = "github:NixOS/nixpkgs/nixos-unstable"
+            "#,
+        );
 
-        let error = AppConfig::load(Some(&path)).unwrap_err().to_string();
-
-        assert!(error.contains("attribute"));
+        assert_error_contains(&error, "attribute");
     }
 
     #[test]
     fn validates_custom_command_is_not_empty() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("nix-search.toml");
-
-        fs::write(
-            &path,
+        let error = load_toml_error(
             r#"
-               [sources.custom]
-               name = "Custom"
-               kind = "options"
+            [sources.custom]
+            name = "Custom"
+            kind = "options"
 
-               [[sources.custom.refs]]
-               id = "main"
+            [[sources.custom.refs]]
+            id = "main"
 
-               [sources.custom.refs.producer]
-               type = "custom-command"
-               command = []
-               artifact = "options-json"
-               "#,
-        )
-        .unwrap();
+            [sources.custom.refs.producer]
+            type = "custom-command"
+            command = []
+            artifact = "options-json"
+            "#,
+        );
 
-        let error = AppConfig::load(Some(&path)).unwrap_err().to_string();
-
-        assert!(error.contains("command must not be empty"));
+        assert_error_contains(&error, "command must not be empty");
     }
 
     #[test]
     fn loads_ref_source_links() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("nix-search.toml");
-
-        fs::write(
-            &path,
+        let config = load_toml(
             r#"
-              [sources.fixtures]
-              name = "Fixtures"
-              kind = "options"
+            [sources.fixtures]
+            name = "Fixtures"
+            kind = "options"
 
-              [[sources.fixtures.refs]]
-              id = "main"
+            [[sources.fixtures.refs]]
+            id = "main"
 
-              [sources.fixtures.refs.source_links]
-              type = "github"
-              owner = "example"
-              repo = "modules"
-              revision = "abc123"
-              strip_prefixes = ["/build/source/"]
+            [sources.fixtures.refs.source_links]
+            type = "github"
+            owner = "example"
+            repo = "modules"
+            revision = "abc123"
+            strip_prefixes = ["/build/source/"]
 
-              [sources.fixtures.refs.producer]
-              type = "existing-file"
-              path = "fixtures/options-small.json"
-              artifact = "options-json"
-              "#,
-        )
-        .unwrap();
+            [sources.fixtures.refs.producer]
+            type = "existing-file"
+            path = "fixtures/search-small/options.json"
+            artifact = "options-json"
+            "#,
+        );
 
-        let config = AppConfig::load(Some(&path)).unwrap();
-        let source_links = config.sources["fixtures"].refs[0]
+        let source_links = config.sources[FIXTURES_SOURCE].refs[0]
             .source_links
             .as_ref()
             .unwrap();
@@ -904,23 +931,16 @@ mod tests {
 
     #[test]
     fn loads_nixpkgs_packages_preset() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("nix-search.toml");
-
-        fs::write(
-            &path,
+        let config = load_toml(
             r#"
-              [sources.nixpkgs]
-              name = "Nixpkgs"
-              preset = "nixpkgs-packages"
-              ref = "nixos-unstable"
-              "#,
-        )
-        .unwrap();
+            [sources.nixpkgs]
+            name = "Nixpkgs"
+            preset = "nixpkgs-packages"
+            ref = "nixos-unstable"
+            "#,
+        );
 
-        let config = AppConfig::load(Some(&path)).unwrap();
-
-        let source = &config.sources["nixpkgs"];
+        let source = &config.sources[NIXPKGS_SOURCE];
 
         assert_eq!(source.name.as_deref(), Some("Nixpkgs"));
         assert_eq!(source.kind, SourceKind::Packages);
@@ -928,7 +948,7 @@ mod tests {
 
         let ref_config = &source.refs[0];
 
-        assert_eq!(ref_config.id, "nixos-unstable");
+        assert_eq!(ref_config.id, NIXOS_UNSTABLE_REF);
         assert_eq!(
             ref_config.producer.kind(),
             ProducerKind::ChannelPackagesJson
@@ -936,7 +956,7 @@ mod tests {
 
         match &ref_config.producer {
             ProducerConfig::ChannelPackagesJson { channel, url } => {
-                assert_eq!(channel, "nixos-unstable");
+                assert_eq!(channel, NIXOS_UNSTABLE_REF);
                 assert_eq!(url, &None);
             }
             other => panic!("unexpected producer: {other:?}"),
@@ -945,23 +965,16 @@ mod tests {
 
     #[test]
     fn loads_nixos_options_preset() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("nix-search.toml");
-
-        fs::write(
-            &path,
+        let config = load_toml(
             r#"
-              [sources.nixos]
-              name = "NixOS Options"
-              preset = "nixos-options"
-              ref = "nixos-unstable"
-              "#,
-        )
-        .unwrap();
+            [sources.nixos]
+            name = "NixOS Options"
+            preset = "nixos-options"
+            ref = "nixos-unstable"
+            "#,
+        );
 
-        let config = AppConfig::load(Some(&path)).unwrap();
-
-        let source = &config.sources["nixos"];
+        let source = &config.sources[NIXOS_SOURCE];
 
         assert_eq!(source.name.as_deref(), Some("NixOS Options"));
         assert_eq!(source.kind, SourceKind::Options);
@@ -969,7 +982,7 @@ mod tests {
 
         let ref_config = &source.refs[0];
 
-        assert_eq!(ref_config.id, "nixos-unstable");
+        assert_eq!(ref_config.id, NIXOS_UNSTABLE_REF);
         assert_eq!(
             ref_config.producer.kind(),
             ProducerKind::NixBuildOptionsJson
@@ -978,323 +991,154 @@ mod tests {
 
     #[test]
     fn preset_rejects_missing_ref() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("nix-search.toml");
-
-        fs::write(
-            &path,
+        let error = load_toml_error(
             r#"
-              [sources.nixpkgs]
-              name = "Nixpkgs"
-              preset = "nixpkgs-packages"
-              "#,
-        )
-        .unwrap();
+            [sources.nixpkgs]
+            name = "Nixpkgs"
+            preset = "nixpkgs-packages"
+            "#,
+        );
 
-        let error = AppConfig::load(Some(&path)).unwrap_err().to_string();
-
-        assert!(error.contains("preset sources require ref"));
+        assert_error_contains(&error, "preset sources require ref");
     }
 
     #[test]
     fn preset_rejects_explicit_refs() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("nix-search.toml");
-
-        fs::write(
-            &path,
+        let error = load_toml_error(
             r#"
-              [sources.nixpkgs]
-              name = "Nixpkgs"
-              preset = "nixpkgs-packages"
-              ref = "nixos-unstable"
+            [sources.nixpkgs]
+            name = "Nixpkgs"
+            preset = "nixpkgs-packages"
+            ref = "nixos-unstable"
 
-              [[sources.nixpkgs.refs]]
-              id = "manual"
+            [[sources.nixpkgs.refs]]
+            id = "manual"
 
-              [sources.nixpkgs.refs.producer]
-              type = "existing-file"
-              path = "fixtures/options-small.json"
-              artifact = "options-json"
-              "#,
-        )
-        .unwrap();
+            [sources.nixpkgs.refs.producer]
+            type = "existing-file"
+            path = "fixtures/search-small/options.json"
+            artifact = "options-json"
+            "#,
+        );
 
-        let error = AppConfig::load(Some(&path)).unwrap_err().to_string();
-
-        assert!(error.contains("preset sources must not also define refs"));
+        assert_error_contains(&error, "preset sources must not also define refs");
     }
 
     #[test]
     fn preset_rejects_conflicting_kind() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("nix-search.toml");
-
-        fs::write(
-            &path,
+        let error = load_toml_error(
             r#"
-              [sources.nixpkgs]
-              name = "Nixpkgs"
-              preset = "nixpkgs-packages"
-              kind = "options"
-              ref = "nixos-unstable"
-              "#,
-        )
-        .unwrap();
+            [sources.nixpkgs]
+            name = "Nixpkgs"
+            preset = "nixpkgs-packages"
+            kind = "options"
+            ref = "nixos-unstable"
+            "#,
+        );
 
-        let error = AppConfig::load(Some(&path)).unwrap_err().to_string();
-
-        assert!(error.contains("requires source kind"));
+        assert_error_contains(&error, "requires source kind");
     }
 
     #[test]
     fn infers_default_ref_from_single_ref() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("nix-search.toml");
-
-        fs::write(
-            &path,
-            r#"
-             [sources.fixtures]
-             name = "Fixtures"
-             kind = "options"
-
-             [[sources.fixtures.refs]]
-             id = "small"
-
-             [sources.fixtures.refs.producer]
-             type = "existing-file"
-             path = "fixtures/options-small.json"
-             artifact = "options-json"
-             "#,
-        )
-        .unwrap();
-
-        let config = AppConfig::load(Some(&path)).unwrap();
+        let config = load_toml(fixture_existing_file_source_toml());
 
         assert_eq!(
-            config.sources["fixtures"].default_ref.as_deref(),
-            Some("small")
+            config.sources[FIXTURES_SOURCE].default_ref.as_deref(),
+            Some(SMALL_REF)
         );
     }
 
     #[test]
     fn infers_default_ref_from_first_ref() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("nix-search.toml");
-
-        fs::write(
-            &path,
-            r#"
-             [sources.fixtures]
-             name = "Fixtures"
-             kind = "options"
-
-             [[sources.fixtures.refs]]
-             id = "stable"
-
-             [sources.fixtures.refs.producer]
-             type = "existing-file"
-             path = "fixtures/options-stable.json"
-             artifact = "options-json"
-
-             [[sources.fixtures.refs]]
-             id = "unstable"
-
-             [sources.fixtures.refs.producer]
-             type = "existing-file"
-             path = "fixtures/options-unstable.json"
-             artifact = "options-json"
-             "#,
-        )
-        .unwrap();
-
-        let config = AppConfig::load(Some(&path)).unwrap();
+        let config = load_toml(&fixture_two_ref_source_toml(None));
 
         assert_eq!(
-            config.sources["fixtures"].default_ref.as_deref(),
-            Some("stable")
+            config.sources[FIXTURES_SOURCE].default_ref.as_deref(),
+            Some(STABLE_REF)
         );
     }
 
     #[test]
     fn explicit_default_ref_overrides_first_ref() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("nix-search.toml");
-
-        fs::write(
-            &path,
-            r#"
-             [sources.fixtures]
-             name = "Fixtures"
-             kind = "options"
-             default_ref = "unstable"
-
-             [[sources.fixtures.refs]]
-             id = "stable"
-
-             [sources.fixtures.refs.producer]
-             type = "existing-file"
-             path = "fixtures/options-stable.json"
-             artifact = "options-json"
-
-             [[sources.fixtures.refs]]
-             id = "unstable"
-
-             [sources.fixtures.refs.producer]
-             type = "existing-file"
-             path = "fixtures/options-unstable.json"
-             artifact = "options-json"
-             "#,
-        )
-        .unwrap();
-
-        let config = AppConfig::load(Some(&path)).unwrap();
+        let config = load_toml(&fixture_two_ref_source_toml(Some(UNSTABLE_REF)));
 
         assert_eq!(
-            config.sources["fixtures"].default_ref.as_deref(),
-            Some("unstable")
+            config.sources[FIXTURES_SOURCE].default_ref.as_deref(),
+            Some(UNSTABLE_REF)
         );
     }
 
     #[test]
     fn rejects_unknown_default_ref() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("nix-search.toml");
-
-        fs::write(
-            &path,
+        let error = load_toml_error(
             r#"
-             [sources.fixtures]
-             name = "Fixtures"
-             kind = "options"
-             default_ref = "missing"
+            [sources.fixtures]
+            name = "Fixtures"
+            kind = "options"
+            default_ref = "missing"
 
-             [[sources.fixtures.refs]]
-             id = "small"
+            [[sources.fixtures.refs]]
+            id = "small"
 
-             [sources.fixtures.refs.producer]
-             type = "existing-file"
-             path = "fixtures/options-small.json"
-             artifact = "options-json"
-             "#,
-        )
-        .unwrap();
+            [sources.fixtures.refs.producer]
+            type = "existing-file"
+            path = "fixtures/search-small/options.json"
+            artifact = "options-json"
+            "#,
+        );
 
-        let error = AppConfig::load(Some(&path)).unwrap_err().to_string();
-
-        assert!(error.contains("default_ref"));
-        assert!(error.contains("does not match any configured ref"));
+        assert_error_contains(&error, "default_ref");
+        assert_error_contains(&error, "does not match any configured ref");
     }
 
     #[test]
     fn resolves_search_scopes_to_all_source_defaults() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("nix-search.toml");
-
-        fs::write(
-            &path,
+        let config = load_toml(&format!(
             r#"
-             [sources.fixtures]
-             name = "Fixtures"
-             kind = "options"
+            {}
 
-             [[sources.fixtures.refs]]
-             id = "small"
+            [sources.nixpkgs]
+            name = "Nixpkgs"
+            preset = "nixpkgs-packages"
+            ref = "nixos-unstable"
+            "#,
+            fixture_existing_file_source_toml()
+        ));
 
-             [sources.fixtures.refs.producer]
-             type = "existing-file"
-             path = "fixtures/options-small.json"
-             artifact = "options-json"
-
-             [sources.nixpkgs]
-             name = "Nixpkgs"
-             preset = "nixpkgs-packages"
-             ref = "nixos-unstable"
-             "#,
-        )
-        .unwrap();
-
-        let config = AppConfig::load(Some(&path)).unwrap();
         let scopes = config.resolve_search_scopes(None, None).unwrap();
 
         assert_eq!(scopes.len(), 2);
         assert!(
             scopes
                 .iter()
-                .any(|scope| { scope.source == "fixtures" && scope.ref_id == "small" })
+                .any(|scope| scope.source == FIXTURES_SOURCE && scope.ref_id == SMALL_REF)
         );
         assert!(
             scopes
                 .iter()
-                .any(|scope| { scope.source == "nixpkgs" && scope.ref_id == "nixos-unstable" })
+                .any(|scope| scope.source == NIXPKGS_SOURCE && scope.ref_id == NIXOS_UNSTABLE_REF)
         );
     }
 
     #[test]
     fn resolves_search_scope_to_source_default() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("nix-search.toml");
-
-        fs::write(
-            &path,
-            r#"
-             [sources.fixtures]
-             name = "Fixtures"
-             kind = "options"
-
-             [[sources.fixtures.refs]]
-             id = "small"
-
-             [sources.fixtures.refs.producer]
-             type = "existing-file"
-             path = "fixtures/options-small.json"
-             artifact = "options-json"
-             "#,
-        )
-        .unwrap();
-
-        let config = AppConfig::load(Some(&path)).unwrap();
+        let config = load_toml(fixture_existing_file_source_toml());
         let scopes = config
-            .resolve_search_scopes(Some("fixtures"), None)
+            .resolve_search_scopes(Some(FIXTURES_SOURCE), None)
             .unwrap();
 
-        assert_eq!(scopes.len(), 1);
-        assert_eq!(scopes[0].source, "fixtures");
-        assert_eq!(scopes[0].ref_id, "small");
+        assert_single_scope(&scopes, FIXTURES_SOURCE, SMALL_REF);
     }
 
     #[test]
     fn resolves_search_scope_to_explicit_source_ref() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("nix-search.toml");
-
-        fs::write(
-            &path,
-            r#"
-             [sources.fixtures]
-             name = "Fixtures"
-             kind = "options"
-
-             [[sources.fixtures.refs]]
-             id = "small"
-
-             [sources.fixtures.refs.producer]
-             type = "existing-file"
-             path = "fixtures/options-small.json"
-             artifact = "options-json"
-             "#,
-        )
-        .unwrap();
-
-        let config = AppConfig::load(Some(&path)).unwrap();
+        let config = load_toml(fixture_existing_file_source_toml());
         let scopes = config
-            .resolve_search_scopes(Some("fixtures"), Some("small"))
+            .resolve_search_scopes(Some(FIXTURES_SOURCE), Some(SMALL_REF))
             .unwrap();
 
-        assert_eq!(scopes.len(), 1);
-        assert_eq!(scopes[0].source, "fixtures");
-        assert_eq!(scopes[0].ref_id, "small");
+        assert_single_scope(&scopes, FIXTURES_SOURCE, SMALL_REF);
     }
 
     #[test]
@@ -1302,11 +1146,11 @@ mod tests {
         let config = AppConfig::load(None).unwrap();
 
         let error = config
-            .resolve_search_scopes(None, Some("small"))
+            .resolve_search_scopes(None, Some(SMALL_REF))
             .unwrap_err()
             .to_string();
 
-        assert!(error.contains("--ref requires --source"));
+        assert_error_contains(&error, "--ref requires --source");
     }
 
     #[test]
@@ -1318,39 +1162,18 @@ mod tests {
             .unwrap_err()
             .to_string();
 
-        assert!(error.contains("unknown source"));
+        assert_error_contains(&error, "unknown source");
     }
 
     #[test]
     fn resolve_search_scope_rejects_unknown_ref() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("nix-search.toml");
-
-        fs::write(
-            &path,
-            r#"
-             [sources.fixtures]
-             name = "Fixtures"
-             kind = "options"
-
-             [[sources.fixtures.refs]]
-             id = "small"
-
-             [sources.fixtures.refs.producer]
-             type = "existing-file"
-             path = "fixtures/options-small.json"
-             artifact = "options-json"
-             "#,
-        )
-        .unwrap();
-
-        let config = AppConfig::load(Some(&path)).unwrap();
+        let config = load_toml(fixture_existing_file_source_toml());
 
         let error = config
-            .resolve_search_scopes(Some("fixtures"), Some("missing"))
+            .resolve_search_scopes(Some(FIXTURES_SOURCE), Some("missing"))
             .unwrap_err()
             .to_string();
 
-        assert!(error.contains("unknown ref"));
+        assert_error_contains(&error, "unknown ref");
     }
 }

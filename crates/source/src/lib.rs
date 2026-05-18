@@ -654,9 +654,13 @@ async fn fetch_channel_git_revision(channel: &str) -> Result<Option<String>> {
 mod tests {
     use std::fs;
 
+    use tempfile::tempdir;
+
     use nix_search_core::{ArtifactKind, SearchDocument};
     use nix_search_store::ArtifactStore;
-    use tempfile::tempdir;
+    use nix_search_test_support::{
+        OPTION_GIT_ENABLE, OPTION_NGINX_ENABLE, REF_SMALL, SOURCE_FIXTURES,
+    };
 
     use crate::ChannelPackagesJsonProducer;
 
@@ -671,24 +675,19 @@ mod tests {
         let artifact_path = tempdir.path().join("options.json");
         let store_path = tempdir.path().join("store");
 
-        fs::write(
+        tokio::fs::write(
             &artifact_path,
-            r#"
-               {
-                 "programs.git.enable": {
-                   "description": "Whether to enable Git."
-                 }
-               }
-               "#,
+            include_bytes!("../../../fixtures/search-small/options.json"),
         )
+        .await
         .unwrap();
 
         let store = ArtifactStore::local(&store_path).unwrap();
 
         let producer = ExistingFileProducer::new(&artifact_path, ArtifactKind::OptionsJson);
         let request = ProduceRequest {
-            source: "fixtures".into(),
-            ref_id: "small".into(),
+            source: SOURCE_FIXTURES.into(),
+            ref_id: REF_SMALL.into(),
         };
 
         let produced = producer.produce(&store, &request).await.unwrap();
@@ -713,18 +712,7 @@ mod tests {
 
         fs::write(
             &artifact_path,
-            r#"
-               {
-                 "programs.git.enable": {
-                   "description": "Whether to enable Git.",
-                   "loc": ["programs", "git", "enable"]
-                 },
-                 "services.nginx.enable": {
-                   "description": "Whether to enable Nginx.",
-                   "loc": ["services", "nginx", "enable"]
-                 }
-               }
-               "#,
+            include_bytes!("../../../fixtures/search-small/options.json"),
         )
         .unwrap();
 
@@ -732,8 +720,8 @@ mod tests {
 
         let producer = ExistingFileProducer::new(&artifact_path, ArtifactKind::OptionsJson);
         let request = ProduceRequest {
-            source: "fixtures".into(),
-            ref_id: "small".into(),
+            source: SOURCE_FIXTURES.into(),
+            ref_id: REF_SMALL.into(),
         };
 
         let produced = producer.produce(&store, &request).await.unwrap();
@@ -741,9 +729,9 @@ mod tests {
         let consumer = OptionsJsonConsumer;
         let docs = consumer.consume(&store, &produced).await.unwrap();
 
-        assert_eq!(docs.len(), 2);
-        assert_eq!(docs[0].name(), "programs.git.enable");
-        assert_eq!(docs[1].name(), "services.nginx.enable");
+        assert_eq!(docs.len(), 4);
+        assert!(docs.iter().any(|doc| doc.name() == OPTION_GIT_ENABLE));
+        assert!(docs.iter().any(|doc| doc.name() == OPTION_NGINX_ENABLE));
     }
 
     #[tokio::test]

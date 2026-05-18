@@ -1,0 +1,34 @@
+{
+  "boot.loader.systemd-boot.enable": {
+    "description": "Whether to enable the systemd-boot EFI boot manager.",
+    "type": "boolean",
+    "loc": ["boot", "loader", "systemd-boot", "enable"],
+    "declarations": [
+      "nixos/modules/system/boot/loader/systemd-boot/systemd-boot.nix:12"
+    ],
+    "visible": true
+  },
+  "programs.git.enable": {
+    "description": "Whether to enable Git integration.",
+    "type": "boolean",
+    "loc": ["programs", "git", "enable"],
+    "declarations": ["nixos/modules/programs/git.nix:4"],
+    "default": { "_type": "literalExpression", "text": "false" },
+    "example": true,
+    "visible": true
+  },
+  "services.nginx.enable": {
+    "description": "Whether to enable the Nginx web server.",
+    "type": "boolean",
+    "loc": ["services", "nginx", "enable"],
+    "declarations": ["nixos/modules/services/web-servers/nginx/default.nix:3"],
+    "visible": true
+  },
+  "services.tailscale.enable": {
+    "description": "Whether to enable Tailscale networking.",
+    "type": "boolean",
+    "loc": ["services", "tailscale", "enable"],
+    "declarations": ["nixos/modules/services/networking/tailscale.nix:9"],
+    "visible": true
+  }
+}

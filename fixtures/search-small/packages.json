@@ -1,0 +1,42 @@
+{
+  "version": "2",
+  "packages": {
+    "git": {
+      "pname": "git",
+      "version": "2.45.0",
+      "meta": {
+        "description": "Distributed version control system.",
+        "homepage": "https://git-scm.com/",
+        "platforms": ["x86_64-linux", "aarch64-linux"],
+        "mainProgram": "git",
+        "position": "pkgs/applications/version-management/git/default.nix:1",
+        "license": {
+          "shortName": "gpl2Only",
+          "fullName": "GNU General Public License v2.0 only",
+          "spdxId": "GPL-2.0-only"
+        },
+        "maintainers": [{ "name": "Alice", "github": "alice" }]
+      }
+    },
+    "ripgrep": {
+      "pname": "ripgrep",
+      "version": "14.1.0",
+      "meta": {
+        "description": "Line-oriented search tool.",
+        "homepage": "https://github.com/BurntSushi/ripgrep",
+        "platforms": ["x86_64-linux"],
+        "mainProgram": "rg",
+        "position": "pkgs/tools/text/ripgrep/default.nix:1"
+      }
+    },
+    "python3Packages.requests": {
+      "pname": "requests",
+      "version": "2.32.0",
+      "meta": {
+        "description": "Python HTTP library.",
+        "homepage": "https://requests.readthedocs.io/",
+        "platforms": ["x86_64-linux"]
+      }
+    }
+  }
+}

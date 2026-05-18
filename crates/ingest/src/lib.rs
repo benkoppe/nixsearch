@@ -299,62 +299,10 @@ fn string_field(object: &serde_json::Map<String, Value>, key: &str) -> Option<St
 
 #[cfg(test)]
 mod tests {
-    use nix_search_core::{IngestContext, SearchDocument};
-
-    use crate::parse_packages_json;
+    use nix_search_core::SearchDocument;
+    use nix_search_test_support::{OPTION_GIT_ENABLE, OPTION_NGINX_ENABLE, ingest_context};
 
     use super::parse_options_json;
-
-    fn test_context() -> IngestContext {
-        IngestContext {
-            source: "nixos".into(),
-            ref_id: "unstable".into(),
-            revision: None,
-            repo: None,
-        }
-    }
-
-    #[test]
-    fn parses_basic_options_json() {
-        let json = r#"
-           {
-             "programs.git.enable": {
-               "declarations": ["/source/modules/programs/git.nix"],
-               "description": "Whether to enable Git.",
-               "type": "boolean",
-               "default": { "_type": "literalExpression", "text": "false" },
-               "example": true,
-               "loc": ["programs", "git", "enable"],
-               "visible": true
-             }
-           }
-           "#;
-
-        let docs = parse_options_json(json.as_bytes(), &test_context()).unwrap();
-
-        assert_eq!(docs.len(), 1);
-        assert_eq!(docs[0].name(), "programs.git.enable");
-
-        let SearchDocument::Option(option) = &docs[0] else {
-            panic!("expected option document");
-        };
-
-        assert_eq!(option.common.source, "nixos");
-        assert_eq!(option.common.ref_id, "unstable");
-        assert_eq!(option.loc, ["programs", "git", "enable"]);
-        assert_eq!(option.option_set.as_deref(), Some("programs"));
-        assert_eq!(option.option_type.as_deref(), Some("boolean"));
-        assert_eq!(
-            option.description.as_deref(),
-            Some("Whether to enable Git.")
-        );
-        assert_eq!(option.visible, Some(true));
-        assert_eq!(option.declarations.len(), 1);
-        assert_eq!(
-            option.declarations[0].name,
-            "/source/modules/programs/git.nix"
-        );
-    }
 
     #[test]
     fn derives_parents_from_loc() {
@@ -367,7 +315,7 @@ mod tests {
            }
            "#;
 
-        let docs = parse_options_json(json.as_bytes(), &test_context()).unwrap();
+        let docs = parse_options_json(json.as_bytes(), &ingest_context()).unwrap();
 
         let SearchDocument::Option(option) = &docs[0] else {
             panic!("expected option document");
@@ -390,7 +338,7 @@ mod tests {
            }
            "#;
 
-        let docs = parse_options_json(json.as_bytes(), &test_context()).unwrap();
+        let docs = parse_options_json(json.as_bytes(), &ingest_context()).unwrap();
 
         let SearchDocument::Option(option) = &docs[0] else {
             panic!("expected option document");
@@ -417,7 +365,7 @@ mod tests {
            }
            "#;
 
-        let docs = parse_options_json(json.as_bytes(), &test_context()).unwrap();
+        let docs = parse_options_json(json.as_bytes(), &ingest_context()).unwrap();
 
         let SearchDocument::Option(option) = &docs[0] else {
             panic!("expected option document");
@@ -444,62 +392,10 @@ mod tests {
            }
            "#;
 
-        let docs = parse_options_json(json.as_bytes(), &test_context()).unwrap();
+        let docs = parse_options_json(json.as_bytes(), &ingest_context()).unwrap();
 
         assert_eq!(docs.len(), 2);
-        assert_eq!(docs[0].name(), "programs.git.enable");
-        assert_eq!(docs[1].name(), "services.nginx.enable");
-    }
-
-    #[test]
-    fn parses_basic_packages_json() {
-        let json = r#"
-       {
-         "version": "2",
-         "packages": {
-           "git": {
-             "pname": "git",
-             "version": "2.45.0",
-             "meta": {
-               "description": "Distributed version control system",
-               "homepage": "https://git-scm.com/",
-               "license": {
-                 "shortName": "gpl2Only",
-                 "fullName": "GNU General Public License v2.0 only",
-                 "spdxId": "GPL-2.0-only"
-               },
-               "maintainers": [
-                 { "name": "Alice", "github": "alice" }
-               ],
-               "platforms": ["x86_64-linux", "aarch64-linux"],
-               "mainProgram": "git",
-               "position": "pkgs/applications/version-management/git/default.nix:1"
-             }
-           }
-         }
-       }
-       "#;
-
-        let docs = parse_packages_json(json.as_bytes(), &test_context()).unwrap();
-
-        assert_eq!(docs.len(), 1);
-        assert_eq!(docs[0].name(), "git");
-
-        let SearchDocument::Package(package) = &docs[0] else {
-            panic!("expected package document");
-        };
-
-        assert_eq!(package.attribute, "git");
-        assert_eq!(package.pname.as_deref(), Some("git"));
-        assert_eq!(package.version.as_deref(), Some("2.45.0"));
-        assert_eq!(
-            package.description.as_deref(),
-            Some("Distributed version control system")
-        );
-        assert_eq!(package.homepages, ["https://git-scm.com/"]);
-        assert_eq!(package.platforms, ["x86_64-linux", "aarch64-linux"]);
-        assert_eq!(package.main_program.as_deref(), Some("git"));
-        assert_eq!(package.licenses.len(), 1);
-        assert_eq!(package.maintainers.len(), 1);
+        assert_eq!(docs[0].name(), OPTION_GIT_ENABLE);
+        assert_eq!(docs[1].name(), OPTION_NGINX_ENABLE);
     }
 }

@@ -583,202 +583,8 @@ pub struct IndexTargetManifest {
 mod tests {
     use tempfile::tempdir;
 
-    use nix_search_core::{IngestContext, OptionDoc, SearchDocument};
-
-    use super::{SearchIndex, SearchOptions, SearchScope};
-
-    fn test_context() -> IngestContext {
-        IngestContext {
-            source: "nixos".into(),
-            ref_id: "unstable".into(),
-            revision: None,
-            repo: None,
-        }
-    }
-
-    fn option_doc(name: &str, description: &str, loc: &[&str]) -> SearchDocument {
-        let mut doc = OptionDoc::new(&test_context(), name);
-
-        doc.description = Some(description.to_owned());
-        doc.loc = loc.iter().map(|part| (*part).to_owned()).collect();
-        doc.option_set = doc.loc.first().cloned();
-        doc.parents = (1..doc.loc.len())
-            .map(|end| doc.loc[..end].join("."))
-            .collect();
-
-        SearchDocument::Option(doc)
-    }
-
-    #[test]
-    fn indexes_and_searches_options() {
-        let tempdir = tempdir().unwrap();
-
-        let index = SearchIndex::create_or_replace(tempdir.path()).unwrap();
-        let mut writer = index.writer().unwrap();
-
-        writer
-            .add_document(&option_doc(
-                "programs.git.enable",
-                "Whether to enable Git.",
-                &["programs", "git", "enable"],
-            ))
-            .unwrap();
-
-        writer
-            .add_document(&option_doc(
-                "services.nginx.enable",
-                "Whether to enable Nginx.",
-                &["services", "nginx", "enable"],
-            ))
-            .unwrap();
-
-        writer.commit().unwrap();
-
-        let index = SearchIndex::open(tempdir.path()).unwrap();
-
-        let hits = index
-            .search(SearchOptions {
-                query: "git".to_owned(),
-                limit: 10,
-                scopes: Vec::new(),
-            })
-            .unwrap();
-
-        assert!(!hits.is_empty());
-        assert_eq!(hits[0].document.name(), "programs.git.enable");
-    }
-
-    #[test]
-    fn exact_option_name_query_finds_option() {
-        let tempdir = tempdir().unwrap();
-
-        let index = SearchIndex::create_or_replace(tempdir.path()).unwrap();
-        let mut writer = index.writer().unwrap();
-
-        writer
-            .add_document(&option_doc(
-                "programs.git.enable",
-                "Whether to enable Git.",
-                &["programs", "git", "enable"],
-            ))
-            .unwrap();
-
-        writer.commit().unwrap();
-
-        let index = SearchIndex::open(tempdir.path()).unwrap();
-
-        let hits = index
-            .search(SearchOptions {
-                query: "programs.git.enable".to_owned(),
-                limit: 10,
-                scopes: Vec::new(),
-            })
-            .unwrap();
-
-        assert!(!hits.is_empty());
-        assert_eq!(hits[0].document.name(), "programs.git.enable");
-    }
-
-    #[test]
-    fn description_query_finds_matching_option() {
-        let tempdir = tempdir().unwrap();
-
-        let index = SearchIndex::create_or_replace(tempdir.path()).unwrap();
-        let mut writer = index.writer().unwrap();
-
-        writer
-            .add_document(&option_doc(
-                "boot.loader.systemd-boot.enable",
-                "Whether to enable the systemd-boot EFI boot manager.",
-                &["boot", "loader", "systemd-boot", "enable"],
-            ))
-            .unwrap();
-
-        writer.commit().unwrap();
-
-        let index = SearchIndex::open(tempdir.path()).unwrap();
-
-        let hits = index
-            .search(SearchOptions {
-                query: "EFI".to_owned(),
-                limit: 10,
-                scopes: Vec::new(),
-            })
-            .unwrap();
-
-        assert!(!hits.is_empty());
-        assert_eq!(hits[0].document.name(), "boot.loader.systemd-boot.enable");
-    }
-
-    #[test]
-    fn group_query_finds_nested_option() {
-        let tempdir = tempdir().unwrap();
-
-        let index = SearchIndex::create_or_replace(tempdir.path()).unwrap();
-        let mut writer = index.writer().unwrap();
-
-        writer
-            .add_document(&option_doc(
-                "services.tailscale.enable",
-                "Whether to enable Tailscale.",
-                &["services", "tailscale", "enable"],
-            ))
-            .unwrap();
-
-        writer
-            .add_document(&option_doc(
-                "services.nginx.enable",
-                "Whether to enable Nginx.",
-                &["services", "nginx", "enable"],
-            ))
-            .unwrap();
-
-        writer.commit().unwrap();
-
-        let index = SearchIndex::open(tempdir.path()).unwrap();
-
-        let hits = index
-            .search(SearchOptions {
-                query: "services.tailscale".to_owned(),
-                limit: 10,
-                scopes: Vec::new(),
-            })
-            .unwrap();
-
-        assert!(!hits.is_empty());
-        assert_eq!(hits[0].document.name(), "services.tailscale.enable");
-    }
-
-    #[test]
-    fn leaf_query_finds_option() {
-        let tempdir = tempdir().unwrap();
-
-        let index = SearchIndex::create_or_replace(tempdir.path()).unwrap();
-        let mut writer = index.writer().unwrap();
-
-        writer
-            .add_document(&option_doc(
-                "services.tailscale.enable",
-                "Whether to enable Tailscale.",
-                &["services", "tailscale", "enable"],
-            ))
-            .unwrap();
-
-        writer.commit().unwrap();
-
-        let index = SearchIndex::open(tempdir.path()).unwrap();
-
-        let hits = index
-            .search(SearchOptions {
-                query: "enable".to_owned(),
-                limit: 10,
-                scopes: Vec::new(),
-            })
-            .unwrap();
-
-        assert!(!hits.is_empty());
-        assert_eq!(hits[0].document.name(), "services.tailscale.enable");
-    }
+    use nix_search_core::ArtifactKind;
+    use nix_search_test_support::{REF_SMALL, SOURCE_FIXTURES};
 
     #[test]
     fn index_store_publishes_current_generation() {
@@ -805,9 +611,9 @@ mod tests {
         let manifest = super::IndexGenerationManifest::new(
             10,
             vec![super::IndexTargetManifest {
-                source: "fixtures".into(),
-                ref_id: "small".into(),
-                artifact_kind: nix_search_core::ArtifactKind::OptionsJson,
+                source: SOURCE_FIXTURES.to_owned(),
+                ref_id: REF_SMALL.to_owned(),
+                artifact_kind: ArtifactKind::OptionsJson,
                 document_count: 10,
                 artifact_hash: Some("abc123".into()),
                 revision: None,
@@ -821,7 +627,8 @@ mod tests {
 
         assert_eq!(loaded.document_count, 10);
         assert_eq!(loaded.targets.len(), 1);
-        assert_eq!(loaded.targets[0].source, "fixtures");
+        assert_eq!(loaded.targets[0].source, SOURCE_FIXTURES);
+        assert_eq!(loaded.targets[0].ref_id, REF_SMALL);
     }
 
     #[test]
@@ -832,58 +639,5 @@ mod tests {
         let manifest = store.try_current_manifest().unwrap();
 
         assert!(manifest.is_none());
-    }
-
-    #[test]
-    fn search_scopes_filter_by_source_and_ref() {
-        let tempdir = tempdir().unwrap();
-
-        let index = SearchIndex::create_or_replace(tempdir.path()).unwrap();
-        let mut writer = index.writer().unwrap();
-
-        let stable_context = IngestContext {
-            source: "nixos".into(),
-            ref_id: "stable".into(),
-            revision: None,
-            repo: None,
-        };
-
-        let unstable_context = IngestContext {
-            source: "nixos".into(),
-            ref_id: "unstable".into(),
-            revision: None,
-            repo: None,
-        };
-
-        let mut stable = OptionDoc::new(&stable_context, "programs.git.enable");
-        stable.description = Some("Stable Git option.".to_owned());
-
-        let mut unstable = OptionDoc::new(&unstable_context, "programs.git.enable");
-        unstable.description = Some("Unstable Git option.".to_owned());
-
-        writer
-            .add_document(&SearchDocument::Option(stable))
-            .unwrap();
-        writer
-            .add_document(&SearchDocument::Option(unstable))
-            .unwrap();
-
-        writer.commit().unwrap();
-
-        let index = SearchIndex::open(tempdir.path()).unwrap();
-
-        let hits = index
-            .search(SearchOptions {
-                query: "programs.git.enable".to_owned(),
-                limit: 10,
-                scopes: vec![SearchScope {
-                    source: "nixos".to_owned(),
-                    ref_id: "stable".to_owned(),
-                }],
-            })
-            .unwrap();
-
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].document.common().ref_id, "stable");
     }
 }

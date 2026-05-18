@@ -24,7 +24,7 @@ id = "small"
 
 [sources.fixtures.refs.producer]
 type = "existing-file"
-path = "fixtures/options-small.json"
+path = "fixtures/search-small/options.json"
 artifact = "options-json"
 
 [sources.eval-fixture]

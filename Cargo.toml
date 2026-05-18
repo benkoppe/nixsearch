@@ -8,6 +8,7 @@ members = [
   "crates/ingest",
   "crates/source",
   "crates/store",
+  "crates/test-support",
   "crates/web",
 ]
 
@@ -19,6 +20,7 @@ license = "Apache-2.0"
 [workspace.dependencies]
 anyhow = "1"
 async-trait = "0.1"
+assert_cmd = "2"
 axum = "0.8"
 brotli = "8"
 clap = { version = "4", features = ["derive"] }
@@ -26,6 +28,7 @@ datastar = { version = "0.3", features = ["axum"] }
 figment = { version = "0.10", features = ["toml", "env"] }
 futures-util = "0.3"
 object_store = "0.13"
+predicates = "3"
 reqwest = "0.13"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -43,6 +46,7 @@ tokio = { version = "1", features = [
 tracing = "0.1"
 tempfile = "3"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["trace"] }
 html-escape = "0.2"
 bytes = "1"
@@ -56,3 +60,4 @@ nix-search-config = { path = "crates/config" }
 nix-search-store = { path = "crates/store" }
 nix-search-source = { path = "crates/source" }
 nix-search-web = { path = "crates/web" }
+nix-search-test-support = { path = "crates/test-support" }
