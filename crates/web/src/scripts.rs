@@ -36,17 +36,36 @@ pub fn navigation_script() -> &'static str {
           const refSelect = getRefSelect();
           if (!refSelect) return;
 
-          const source = sourceMetadata(sourceId);
-          const refLabel = refSelect.closest("label");
+          if (refSelect.type === "hidden") {
+            const source = sourceMetadata(sourceId);
+            if (!source || source.refs.length === 0) {
+              refSelect.value = "";
+              return;
+            }
 
-          if (!source || source.refs.length === 0) {
-            refSelect.innerHTML = "";
-            if (refLabel) refLabel.hidden = true;
+            const wrapper = refSelect.closest(".header-filters") || refSelect.parentElement;
+            const newSelect = document.createElement("select");
+            newSelect.name = "ref";
+            newSelect.setAttribute("data-nix-search-input", "ref");
+            newSelect.innerHTML = source.refs
+              .map((r) => {
+                const selected = r === source.defaultRef ? " selected" : "";
+                return `<option value="${r}"${selected}>${r}</option>`;
+              })
+              .join("");
+            refSelect.replaceWith(newSelect);
             return;
           }
 
-          if (refLabel) refLabel.hidden = false;
+          const source = sourceMetadata(sourceId);
 
+          if (!source || source.refs.length === 0) {
+            refSelect.innerHTML = "";
+            refSelect.style.display = "none";
+            return;
+          }
+
+          refSelect.style.display = "";
           refSelect.innerHTML = source.refs
             .map((r) => {
               const selected = r === source.defaultRef ? " selected" : "";
@@ -112,7 +131,7 @@ pub fn navigation_script() -> &'static str {
           populateRefSelect(pathSource);
 
           const refSelect = getRefSelect();
-          if (refSelect) {
+          if (refSelect && refSelect.type !== "hidden") {
             const refParam = params.get("ref") || "";
             if (refParam) {
               refSelect.value = refParam;
@@ -136,6 +155,28 @@ pub fn navigation_script() -> &'static str {
           if (el.matches('[data-nix-search-input="ref"]')) {
             navigate(buildSearchUrlFromInputs());
             return;
+          }
+        });
+
+        // Handle clicks on table rows
+        document.addEventListener("click", (evt) => {
+          if (evt.defaultPrevented) return;
+          if (evt.button !== 0) return;
+          if (evt.metaKey || evt.ctrlKey || evt.shiftKey || evt.altKey) return;
+
+          // Check if click is on a table row with data-href
+          const row = evt.target.closest("tr[data-href]");
+          if (row) {
+            const link = evt.target.closest("a[href]");
+            if (!link) {
+              // Click was on the row but not the link itself
+              evt.preventDefault();
+              const url = new URL(row.dataset.href, window.location.href);
+              if (url.origin === window.location.origin) {
+                navigate(url.toString());
+                return;
+              }
+            }
           }
         });
 
@@ -176,7 +217,7 @@ pub fn navigation_script() -> &'static str {
           clearTimeout(debounce);
           debounce = setTimeout(() => {
             navigate(buildSearchUrlFromInputs());
-          }, 300);
+          }, 200);
         });
 
         document.addEventListener("submit", (evt) => {

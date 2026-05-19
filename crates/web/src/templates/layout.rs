@@ -50,7 +50,7 @@ pub fn render_full_page(
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
-                title { "Nix Search" }
+                title { "nix-search" }
                 script type="module"
                     src="https://cdn.jsdelivr.net/gh/starfederation/datastar@main/bundles/datastar.js" {}
                 style { (PreEscaped(CSS)) }
@@ -59,18 +59,19 @@ pub fn render_full_page(
                 }
             }
             body data-on:nix-search-reconcile__window=(reconcile_attr) {
-                main {
-                    h1 { "Nix Search" }
-                    p.subtitle { "Search indexed Nix packages and options." }
-
-                    (search::render_form(&state.config, &source_filter, &form_action, q))
-
+                header.header {
+                    div.header-inner {
+                        a.site-title href="/" { "nix-search" }
+                        (search::render_form(&state.config, &source_filter, &form_action, q))
+                    }
+                }
+                main.main {
                     (results_markup)
                     (modal_markup)
+                }
 
-                    script #source-metadata type="application/json" {
-                        (PreEscaped(&source_metadata))
-                    }
+                script #source-metadata type="application/json" {
+                    (PreEscaped(&source_metadata))
                 }
                 script { (PreEscaped(navigation_script())) }
             }

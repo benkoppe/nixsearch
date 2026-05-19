@@ -67,15 +67,16 @@ fn render_entry(request: &PageRequest, document: &SearchDocument, config: &AppCo
                 article.entry {
                     header {
                         div {
-                            h2 { code { (common.name) } }
+                            h2 { (common.name) }
                             div.meta {
-                                (common.kind.as_str()) " · " (common.source) "/" (common.ref_id)
+                                span.source-tag data-source=(common.source) { (common.source) }
+                                " " (common.kind.as_str()) " · " (common.ref_id)
                                 @if let Some(revision) = &common.revision {
-                                    " · " (revision)
+                                    " · " code { (&revision[..revision.len().min(8)]) }
                                 }
                             }
                         }
-                        a href=(close_href) data-role="entry-close" { "Close" }
+                        a.entry-close href=(close_href) data-role="entry-close" { "✕ Close" }
                     }
                     (detail::render(document, config))
                 }
@@ -92,10 +93,10 @@ fn render_error(request: &PageRequest, message: &str) -> Markup {
             dialog #entry-modal data-close-url=(close_href) {
                 article.entry {
                     header {
-                        h2 { "Entry" }
-                        a href=(close_href) data-role="entry-close" { "Close" }
+                        h2 { "Error" }
+                        a.entry-close href=(close_href) data-role="entry-close" { "✕ Close" }
                     }
-                    div.error { (message) }
+                    div.results-error { (message) }
                 }
             }
         }
@@ -115,9 +116,9 @@ fn render_ambiguous(
                 article.entry {
                     header {
                         h2 { "Multiple entries found" }
-                        a href=(close_href) data-role="entry-close" { "Close" }
+                        a.entry-close href=(close_href) data-role="entry-close" { "✕ Close" }
                     }
-                    p { "Multiple entries have this name. Choose one:" }
+                    p { "This name exists in multiple forms. Choose one:" }
                     ul {
                         @for document in documents {
                             @let common = document.common();

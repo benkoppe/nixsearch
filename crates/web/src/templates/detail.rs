@@ -13,7 +13,7 @@ pub fn render(document: &SearchDocument, config: &AppConfig) -> Markup {
                     (section("Description", html! { p { (description) } }))
                 }
                 @if let Some(option_type) = &option.option_type {
-                    (section("Type", html! { p { (option_type) } }))
+                    (section("Type", html! { p { code { (option_type) } } }))
                 }
                 @if let Some(default) = &option.default {
                     (json_section("Default", default))
@@ -24,18 +24,18 @@ pub fn render(document: &SearchDocument, config: &AppConfig) -> Markup {
                 @if let Some(related_packages) = &option.related_packages {
                     (section("Related packages", html! { p { (related_packages) } }))
                 }
-                @let flags: Vec<String> = [
+                @let flags: Vec<(&str, bool)> = [
                     ("Read only", option.read_only),
                     ("Internal", option.internal),
                     ("Visible", option.visible),
                 ].into_iter()
-                    .filter_map(|(name, value)| value.map(|v| format!("{name}: {v}")))
+                    .filter_map(|(name, value)| value.map(|v| (name, v)))
                     .collect();
                 @if !flags.is_empty() {
                     (section("Flags", html! {
                         ul {
-                            @for flag in &flags {
-                                li { (flag) }
+                            @for (name, value) in &flags {
+                                li { (name) ": " (value) }
                             }
                         }
                     }))
@@ -48,9 +48,9 @@ pub fn render(document: &SearchDocument, config: &AppConfig) -> Markup {
                             @for declaration in &option.declarations {
                                 li {
                                     @if let Some(url) = resolver.as_ref().and_then(|r| r.resolve_declaration(declaration)) {
-                                        a href=(url) rel="noreferrer" { (declaration.name) }
+                                        a href=(url) rel="noreferrer" { code { (declaration.name) } }
                                     } @else {
-                                        (declaration.name)
+                                        code { (declaration.name) }
                                     }
                                 }
                             }
@@ -62,23 +62,27 @@ pub fn render(document: &SearchDocument, config: &AppConfig) -> Markup {
 
         SearchDocument::Package(package) => {
             html! {
-                @let summary: Vec<String> = [
-                    package.pname.as_deref().map(|v| format!("pname: {v}")),
-                    package.version.as_deref().map(|v| format!("version: {v}")),
-                    package.main_program.as_deref().map(|v| format!("main program: {v}")),
-                    package.broken.map(|v| format!("broken: {v}")),
-                ].into_iter().flatten().collect();
+                @if let Some(description) = &package.description {
+                    (section("Description", html! { p { (description) } }))
+                }
+                @let summary: Vec<(&str, &str)> = [
+                    ("pname", package.pname.as_deref()),
+                    ("version", package.version.as_deref()),
+                    ("main program", package.main_program.as_deref()),
+                ].into_iter()
+                    .filter_map(|(k, v)| v.map(|val| (k, val)))
+                    .collect();
                 @if !summary.is_empty() {
-                    (section("Package", html! {
+                    (section("Package info", html! {
                         ul {
-                            @for item in &summary {
-                                li { (item) }
+                            @for (key, value) in &summary {
+                                li { (key) ": " code { (value) } }
+                            }
+                            @if let Some(broken) = package.broken {
+                                li { "broken: " (broken) }
                             }
                         }
                     }))
-                }
-                @if let Some(description) = &package.description {
-                    (section("Description", html! { p { (description) } }))
                 }
                 @if let Some(long_description) = &package.long_description {
                     (section("Long description", html! { p { (long_description) } }))
@@ -120,9 +124,9 @@ pub fn render(document: &SearchDocument, config: &AppConfig) -> Markup {
                     (section("Source", html! {
                         p {
                             @if let Some(href) = url {
-                                a href=(href) rel="noreferrer" { (position) }
+                                a href=(href) rel="noreferrer" { code { (position) } }
                             } @else {
-                                (position)
+                                code { (position) }
                             }
                         }
                     }))

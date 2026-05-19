@@ -1,7 +1,8 @@
 use maud::{Markup, html};
 
 use nix_search_config::AppConfig;
-use nix_search_core::{CommonDoc, SearchDocument, SourceLinkConfig, SourceLinkResolver};
+use nix_search_core::{CommonDoc, SearchDocument, SourceLinkConfig};
+
 use nix_search_index::SearchHit;
 
 use crate::request::{LinkOrigin, PageQuery, PageRequest, normalized_query};
@@ -14,20 +15,32 @@ pub fn render(request: &PageRequest, hits: &[SearchHit], config: &AppConfig) -> 
 
     if hits.is_empty() {
         return html! {
-            div #results.status {
+            div #results.results-status {
                 "No results for " strong { (q) } "."
             }
         };
     }
 
+    let show_source = request.source.is_none();
+
     html! {
-        div #results.results aria-live="polite" {
-            div.status {
+        div #results aria-live="polite" {
+            div.results-status {
                 (hits.len()) " result" @if hits.len() != 1 { "s" }
-                " for " strong { (q) } "."
+                " for " strong { (q) }
             }
-            @for hit in hits {
-                (render_hit(request, hit, config))
+            table.results-table {
+                thead {
+                    tr {
+                        th.col-name { "Name" }
+                        th.col-desc { "Description" }
+                    }
+                }
+                tbody {
+                    @for hit in hits {
+                        (render_hit_row(request, hit, config, show_source))
+                    }
+                }
             }
         }
     }
@@ -35,22 +48,28 @@ pub fn render(request: &PageRequest, hits: &[SearchHit], config: &AppConfig) -> 
 
 pub fn render_empty() -> Markup {
     html! {
-        div #results.status { "Enter a search query." }
+        div #results.results-empty {
+            "Search packages and options across Nix sources."
+        }
     }
 }
 
 pub fn render_error(error: &str) -> Markup {
     html! {
-        div #results.error {
+        div #results.results-error {
             strong { "Search failed:" } " " (error)
         }
     }
 }
 
-fn render_hit(request: &PageRequest, hit: &SearchHit, config: &AppConfig) -> Markup {
+fn render_hit_row(
+    request: &PageRequest,
+    hit: &SearchHit,
+    config: &AppConfig,
+    show_source: bool,
+) -> Markup {
     let common = hit.document.common();
     let summary = summary_for_document(&hit.document);
-    let source_link = first_source_link(&hit.document, config);
 
     let from_scope = if request.source.is_none() {
         Some(LinkOrigin::All)
@@ -70,22 +89,20 @@ fn render_hit(request: &PageRequest, hit: &SearchHit, config: &AppConfig) -> Mar
         },
     );
 
+    let desc = summary.unwrap_or("");
+
     html! {
-        article.result {
-            h2 {
-                a href=(entry_href) {
-                    code { (common.name) }
+        tr data-href=(entry_href) {
+            td.col-name title=(common.name) {
+                a.entry-name href=(entry_href) {
+                    @if show_source {
+                        span.source-tag data-source=(common.source) { (common.source) }
+                    }
+                    (common.name)
                 }
             }
-            div.meta {
-                (common.kind.as_str()) " · " (common.source) "/" (common.ref_id)
-                " · score " (format!("{:.3}", hit.score))
-            }
-            @if let Some(summary) = summary {
-                p.summary { (summary) }
-            }
-            @if let Some(source_link) = source_link {
-                a href=(source_link) rel="noreferrer" { "Source" }
+            td.col-desc title=(desc) {
+                span.entry-desc { (desc) }
             }
         }
     }
@@ -107,23 +124,6 @@ fn first_non_empty_line(value: &str) -> Option<&str> {
     value.lines().map(str::trim).find(|line| !line.is_empty())
 }
 
-fn first_source_link(document: &SearchDocument, config: &AppConfig) -> Option<String> {
-    let common = document.common();
-    let source_links = source_link_config_for_document(config, common)?;
-    let resolver = SourceLinkResolver::new(source_links, common.revision.as_deref());
-
-    match document {
-        SearchDocument::Option(option) => option
-            .declarations
-            .iter()
-            .find_map(|declaration| resolver.resolve_declaration(declaration)),
-        SearchDocument::Package(package) => package
-            .position
-            .as_deref()
-            .and_then(|position| resolver.resolve_package_position(position)),
-    }
-}
-
 pub fn source_link_config_for_document<'a>(
     config: &'a AppConfig,
     common: &CommonDoc,
@@ -136,7 +136,9 @@ pub fn source_link_config_for_document<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nix_search_core::{Declaration, IngestContext, OptionDoc, SearchDocument};
+    use nix_search_core::{
+        Declaration, IngestContext, OptionDoc, SearchDocument, SourceLinkResolver,
+    };
 
     #[test]
     fn resolves_source_link_when_available() {
@@ -158,7 +160,17 @@ mod tests {
         });
 
         let document = SearchDocument::Option(option);
-        let result = first_source_link(&document, &config);
+        let common = document.common();
+        let source_links = source_link_config_for_document(&config, common).unwrap();
+        let resolver = SourceLinkResolver::new(source_links, common.revision.as_deref());
+
+        let result = match &document {
+            SearchDocument::Option(opt) => opt
+                .declarations
+                .iter()
+                .find_map(|d| resolver.resolve_declaration(d)),
+            _ => None,
+        };
 
         assert_eq!(
             result.as_deref(),
