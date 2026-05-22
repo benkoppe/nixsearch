@@ -8,7 +8,7 @@ use crate::AppState;
 use crate::request::{LinkOrigin, PageQuery, PageRequest, parse_document_kind, resolve_entry_ref};
 use crate::urls::{close_url_for, entry_url_for, ref_id_for_link};
 
-use super::detail;
+use super::{detail, source_tag};
 
 pub fn render(state: &AppState, request: &PageRequest) -> Markup {
     let Some(source) = request.source.as_deref() else {
@@ -69,7 +69,7 @@ fn render_entry(request: &PageRequest, document: &SearchDocument, config: &AppCo
                         div {
                             h2 { (common.name) }
                             div.meta {
-                                span.source-tag data-source=(common.source) { (common.source) }
+                                (source_tag::render(config, &common.source))
                                 " " (common.kind.as_str()) " · " (common.ref_id)
                                 @if let Some(revision) = &common.revision {
                                     " · " code { (&revision[..revision.len().min(8)]) }

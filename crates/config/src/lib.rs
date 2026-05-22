@@ -25,6 +25,9 @@ impl From<figment::Error> for ConfigError {
 
 pub type Result<T> = std::result::Result<T, ConfigError>;
 
+const NIXPKGS_COLOR: &str = "#4ade80";
+const NIXOS_COLOR: &str = "#60a5fa";
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
@@ -206,6 +209,7 @@ impl ServerConfig {
 #[serde(default)]
 struct RawSourceConfig {
     name: Option<String>,
+    color: Option<String>,
     kind: Option<SourceKind>,
     default_ref: Option<String>,
     refs: BTreeMap<String, RawRefConfig>,
@@ -258,6 +262,7 @@ impl RawSourceConfig {
 
         Ok(SourceConfig {
             name: self.name,
+            color: self.color,
             kind,
             default_ref,
             refs,
@@ -312,6 +317,7 @@ impl RawSourceConfig {
 
         Ok(SourceConfig {
             name: self.name.or_else(|| Some("Nixpkgs".to_owned())),
+            color: self.color.or_else(|| Some(NIXPKGS_COLOR.to_owned())),
             kind: SourceKind::Packages,
             default_ref,
             refs,
@@ -339,6 +345,7 @@ impl RawSourceConfig {
 
         Ok(SourceConfig {
             name: self.name.or_else(|| Some("NixOS Options".to_owned())),
+            color: self.color.or_else(|| Some(NIXOS_COLOR.to_owned())),
             kind: SourceKind::Options,
             default_ref,
             refs,
@@ -402,6 +409,8 @@ pub struct SourceConfig {
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
     pub kind: SourceKind,
     #[serde(default)]
     pub default_ref: Option<String>,
@@ -412,6 +421,10 @@ pub struct SourceConfig {
 impl SourceConfig {
     fn validate(&self, source_id: &str) -> Result<()> {
         validate_id("source id", source_id)?;
+
+        if let Some(color) = &self.color {
+            validate_hex_color(&format!("sources.{source_id}.color"), color)?;
+        }
 
         for ref_config in &self.refs {
             ref_config.validate(source_id)?;
@@ -629,6 +642,27 @@ fn validate_id(name: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_hex_color(name: &str, value: &str) -> Result<()> {
+    let Some(hex) = value.strip_prefix('#') else {
+        return Err(ConfigError::Validation(format!(
+            "{name} must be a hex color like #abc or #aabbcc"
+        )));
+    };
+
+    if hex.len() != 3 && hex.len() != 6 {
+        return Err(ConfigError::Validation(format!(
+            "{name} must be a hex color like #abc or #aabbcc"
+        )));
+    }
+    if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(ConfigError::Validation(format!(
+            "{name} must be a hex color like #abc or #aabbcc"
+        )));
+    }
+
+    Ok(())
+}
+
 fn validate_producer_non_empty(
     source_id: &str,
     ref_id: &str,
@@ -656,6 +690,8 @@ mod tests {
     use tempfile::{TempDir, tempdir};
 
     use nix_search_core::{ArtifactKind, SourceLinkConfig};
+
+    use crate::{NIXOS_COLOR, NIXPKGS_COLOR};
 
     use super::{AppConfig, ProducerConfig, ProducerKind, SourceKind};
 
@@ -964,6 +1000,7 @@ mod tests {
 
         assert_eq!(source.name.as_deref(), Some("Nixpkgs"));
         assert_eq!(source.kind, SourceKind::Packages);
+        assert_eq!(source.color.as_deref(), Some(NIXPKGS_COLOR));
         assert_eq!(source.refs.len(), 1);
 
         let ref_config = &source.refs[0];
@@ -998,6 +1035,7 @@ mod tests {
 
         assert_eq!(source.name.as_deref(), Some("NixOS Options"));
         assert_eq!(source.kind, SourceKind::Options);
+        assert_eq!(source.color.as_deref(), Some(NIXOS_COLOR));
         assert_eq!(source.refs.len(), 1);
 
         let ref_config = &source.refs[0];
@@ -1006,6 +1044,24 @@ mod tests {
         assert_eq!(
             ref_config.producer.kind(),
             ProducerKind::NixBuildOptionsJson
+        );
+    }
+
+    #[test]
+    fn preset_source_color_can_be_overridden() {
+        let config = load_toml(
+            r##"
+            [sources.nixpkgs]
+            name = "Nixpkgs"
+            color = "#abcdef"
+            preset = "nixpkgs-packages"
+            preset_refs = ["nixos-unstable"]
+            "##,
+        );
+
+        assert_eq!(
+            config.sources[NIXPKGS_SOURCE].color.as_deref(),
+            Some("#abcdef")
         );
     }
 
@@ -1260,5 +1316,65 @@ mod tests {
             .to_string();
 
         assert_error_contains(&error, "unknown ref");
+    }
+
+    #[test]
+    fn loads_source_color() {
+        let config = load_toml(
+            r##"
+            [sources.fixtures]
+            name = "Fixtures"
+            color = "#abc"
+            kind = "options"
+
+            [sources.fixtures.refs.small.producer]
+            type = "existing-file"
+            path = "fixtures/search-small/options.json"
+            artifact = "options-json"
+            "##,
+        );
+
+        assert_eq!(
+            config.sources[FIXTURES_SOURCE].color.as_deref(),
+            Some("#abc")
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_source_color() {
+        let error = load_toml_error(
+            r#"
+            [sources.fixtures]
+            name = "Fixtures"
+            color = "red"
+            kind = "options"
+
+            [sources.fixtures.refs.small.producer]
+            type = "existing-file"
+            path = "fixtures/search-small/options.json"
+            artifact = "options-json"
+            "#,
+        );
+
+        assert_error_contains(&error, "must be a hex color");
+    }
+
+    #[test]
+    fn rejects_unsafe_source_color() {
+        let error = load_toml_error(
+            r##"
+            [sources.fixtures]
+            name = "Fixtures"
+            color = "#fff; color: red"
+            kind = "options"
+
+            [sources.fixtures.refs.small.producer]
+            type = "existing-file"
+            path = "fixtures/search-small/options.json"
+            artifact = "options-json"
+            "##,
+        );
+
+        assert_error_contains(&error, "must be a hex color");
     }
 }

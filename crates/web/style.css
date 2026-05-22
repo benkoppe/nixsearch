@@ -10,11 +10,6 @@
   --accent: #60a5fa;
   --danger: #fca5a5;
 
-  /* source colors */
-  --src-nixos: #60a5fa;
-  --src-nixpkgs: #4ade80;
-  --src-home-manager: #c084fc;
-  --src-darwin: #fb923c;
   --src-default: #94a3b8;
 }
 
@@ -219,34 +214,13 @@ body {
   font-family: inherit;
   font-weight: 600;
   font-size: 0.82rem;
+  color: var(--source-color, var(--src-default));
 }
 
 .source-tag::after {
   content: "/";
   color: var(--text-dim);
   font-weight: 400;
-}
-
-/* Source colors */
-.source-tag[data-source="nixos"] {
-  color: var(--src-nixos);
-}
-.source-tag[data-source="nixpkgs"] {
-  color: var(--src-nixpkgs);
-}
-.source-tag[data-source="home-manager"] {
-  color: var(--src-home-manager);
-}
-.source-tag[data-source="nix-darwin"],
-.source-tag[data-source="darwin"] {
-  color: var(--src-darwin);
-}
-
-/* Fallback for unknown sources */
-.source-tag:not([data-source="nixos"]):not([data-source="nixpkgs"]):not(
-    [data-source="home-manager"]
-  ):not([data-source="nix-darwin"]):not([data-source="darwin"]) {
-  color: var(--src-default);
 }
 
 .entry-desc {

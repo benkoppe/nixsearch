@@ -8,6 +8,8 @@ use nix_search_index::SearchHit;
 use crate::request::{LinkOrigin, PageQuery, PageRequest, normalized_query};
 use crate::urls::{entry_url_for, ref_id_for_link};
 
+use super::source_tag;
+
 pub fn render(
     request: &PageRequest,
     hits: &[SearchHit],
@@ -150,7 +152,7 @@ fn render_hit_row(
             td.col-name title=(common.name) {
                 a.entry-name href=(entry_href) {
                     @if show_source {
-                        span.source-tag data-source=(common.source) { (common.source) }
+                        (source_tag::render(config, &common.source))
                     }
                     (common.name)
                 }

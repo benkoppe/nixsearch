@@ -165,6 +165,7 @@ pub fn app_config(index_dir: impl Into<PathBuf>) -> AppConfig {
             SOURCE_FIXTURES.to_owned(),
             SourceConfig {
                 name: Some("Fixtures".to_owned()),
+                color: None,
                 kind: SourceKind::Options,
                 default_ref: Some(REF_SMALL.to_owned()),
                 refs: vec![RefConfig {
