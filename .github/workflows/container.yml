@@ -92,7 +92,7 @@ jobs:
           - name: container
             image: ghcr.io/${{ github.repository }}
           - name: container-with-nix
-            image: ghcr.io${{ github.repository }}-with-nix
+            image: ghcr.io/${{ github.repository }}-with-nix
 
     steps:
       - uses: docker/login-action@v4
