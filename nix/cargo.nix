@@ -45,23 +45,11 @@
         doCheck = false;
       };
 
-      fileSetForCrate =
-        crate:
-        lib.fileset.toSource {
-          root = ../.;
-          fileset = lib.fileset.unions [
-            ../Cargo.toml
-            ../Cargo.lock
-            (craneLib.fileset.commonCargoSources crate)
-          ];
-        };
-
       cli = craneLib.buildPackage (
         individualCrateArgs
         // rec {
           pname = "nix-search";
           cargoExtraArgs = "-p nix-search";
-          src = fileSetForCrate ../crates/cli;
           meta.mainProgram = pname;
         }
       );
