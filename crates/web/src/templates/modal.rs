@@ -69,6 +69,7 @@ fn render_entry(request: &PageRequest, document: &SearchDocument, config: &AppCo
 
     html! {
         div #entry-modal-container {
+            a.modal-backdrop href=(close_href) aria-label="Close modal" {}
             dialog #entry-modal data-close-url=(close_href) {
                 article.entry {
                     header {
@@ -96,6 +97,7 @@ fn render_error(request: &PageRequest, message: &str) -> Markup {
 
     html! {
         div #entry-modal-container {
+            a.modal-backdrop href=(close_href) aria-label="Close modal" {}
             dialog #entry-modal data-close-url=(close_href) {
                 article.entry {
                     header {
@@ -118,6 +120,7 @@ fn render_ambiguous(
 
     html! {
         div #entry-modal-container {
+            a.modal-backdrop href=(close_href) aria-label="Close modal" {}
             dialog #entry-modal data-close-url=(close_href) {
                 article.entry {
                     header {
@@ -142,6 +145,7 @@ fn render_ambiguous(
                                     ref_id: ref_id_for_link(config, &common.source, &common.ref_id),
                                     kind: None,
                                     source: from_scope,
+                                    page: request.query.page,
                                 },
                             );
                             li {

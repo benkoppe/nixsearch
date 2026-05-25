@@ -21,6 +21,8 @@ pub struct PageQuery {
     pub kind: Option<String>,
 
     pub source: Option<LinkOrigin>,
+
+    pub page: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,6 +137,7 @@ pub fn page_request_from_public_url(raw_url: &str) -> std::result::Result<PageRe
     let mut ref_id = None;
     let mut kind = None;
     let mut source_param = None;
+    let mut page = None;
 
     for (key, value) in url::form_urlencoded::parse(raw_query.as_bytes()) {
         match key.as_ref() {
@@ -142,6 +145,7 @@ pub fn page_request_from_public_url(raw_url: &str) -> std::result::Result<PageRe
             "ref" => ref_id = Some(value.into_owned()),
             "kind" => kind = Some(value.into_owned()),
             "source" => source_param = LinkOrigin::from_query_param(&value),
+            "page" => page = value.parse::<usize>().ok(),
             _ => {}
         }
     }
@@ -154,6 +158,7 @@ pub fn page_request_from_public_url(raw_url: &str) -> std::result::Result<PageRe
             ref_id,
             kind,
             source: source_param,
+            page,
         },
     })
 }

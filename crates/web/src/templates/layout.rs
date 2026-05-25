@@ -55,7 +55,7 @@ pub fn render_full_page(
                     src="https://cdn.jsdelivr.net/gh/starfederation/datastar@main/bundles/datastar.js" {}
                 style { (PreEscaped(CSS)) }
                 noscript {
-                    style { "dialog#entry-modal { display: block; }" }
+                    style { "dialog#entry-modal { display: block; z-index: 201; } .modal-backdrop { display: block; position: fixed; inset: 0; z-index: 200; background: rgb(0 0 0 / 0.6); }" }
                 }
             }
             body data-on:nix-search-reconcile__window=(reconcile_attr) {

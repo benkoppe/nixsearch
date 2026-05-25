@@ -177,7 +177,9 @@ pub async fn more_results(
 }
 
 fn render_full_page_response(state: &AppState, request: PageRequest) -> Html<String> {
-    let search_result = run_search(state, &request, 0);
+    let page = request.query.page.unwrap_or(1).max(1);
+    let offset = (page - 1) * DEFAULT_LIMIT;
+    let search_result = run_search(state, &request, offset);
     let error_message = search_result.as_ref().err().map(|e| format!("{e:#}"));
 
     let view = match (&search_result, &error_message) {

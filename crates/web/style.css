@@ -196,6 +196,7 @@ body {
 }
 
 .results-table td {
+  position: relative;
   padding: 0.45rem 1rem;
   white-space: nowrap;
   overflow: hidden;
@@ -236,6 +237,14 @@ body {
   text-decoration-color: var(--accent);
 }
 
+.entry-name::after,
+a.entry-desc::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  cursor: pointer;
+}
+
 .source-tag {
   font-family: inherit;
   font-weight: 600;
@@ -249,9 +258,15 @@ body {
   font-weight: 400;
 }
 
-.entry-desc {
+a.entry-desc {
   color: var(--text-dim);
   font-size: 0.82rem;
+  text-decoration: none;
+  display: block;
+}
+
+a.entry-desc:hover {
+  text-decoration: none;
 }
 
 /* ─── Infinite scroll sentinel ─── */
@@ -266,7 +281,33 @@ body {
   height: 1px;
 }
 
+.pagination {
+  padding: 1.5rem 1rem;
+  text-align: center;
+  display: flex;
+  justify-content: center;
+  gap: 1.5rem;
+}
+
+.pagination-link {
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 0.85rem;
+  padding: 0.4rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.pagination-link:hover {
+  border-color: var(--accent);
+  text-decoration: none;
+}
+
 /* ─── Entry detail modal ─── */
+
+.modal-backdrop {
+  display: none;
+}
 
 dialog {
   position: fixed;

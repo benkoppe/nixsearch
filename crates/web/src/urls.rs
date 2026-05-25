@@ -8,11 +8,13 @@ pub fn source_path(source: &str) -> String {
 
 pub fn search_url_for(source: Option<&str>, query: &PageQuery) -> String {
     let path = source.map(source_path).unwrap_or_else(|| "/".to_owned());
+    let page_str = query.page.filter(|&p| p > 1).map(|p| p.to_string());
 
     let qs = query_string([
         ("q", query.q.as_deref()),
         ("ref", query.ref_id.as_deref()),
         ("source", query.source.map(|s| s.as_str())),
+        ("page", page_str.as_deref()),
     ]);
 
     if qs.is_empty() {
@@ -22,14 +24,22 @@ pub fn search_url_for(source: Option<&str>, query: &PageQuery) -> String {
     }
 }
 
+pub fn paginated_search_url(source: Option<&str>, query: &PageQuery, page: usize) -> String {
+    let mut paged_query = query.clone();
+    paged_query.page = if page > 1 { Some(page) } else { None };
+    search_url_for(source, &paged_query)
+}
+
 pub fn entry_url_for(source: &str, entry: &str, kind: Option<&str>, query: &PageQuery) -> String {
     let path = format!("{}/{}", source_path(source), encode_path(entry));
+    let page_str = query.page.filter(|&p| p > 1).map(|p| p.to_string());
 
     let qs = query_string([
         ("q", query.q.as_deref()),
         ("ref", query.ref_id.as_deref()),
         ("kind", kind.or(query.kind.as_deref())),
         ("source", query.source.map(|s| s.as_str())),
+        ("page", page_str.as_deref()),
     ]);
 
     if qs.is_empty() {
@@ -45,6 +55,7 @@ pub fn close_url_for(request: &PageRequest) -> String {
             None,
             &PageQuery {
                 q: request.query.q.clone(),
+                page: request.query.page,
                 ..PageQuery::default()
             },
         );
@@ -55,6 +66,7 @@ pub fn close_url_for(request: &PageRequest) -> String {
         &PageQuery {
             q: request.query.q.clone(),
             ref_id: request.query.ref_id.clone(),
+            page: request.query.page,
             ..PageQuery::default()
         },
     )
@@ -150,6 +162,7 @@ mod tests {
                 ref_id: Some("small".to_owned()),
                 kind: Some("option".to_owned()),
                 source: None,
+                ..PageQuery::default()
             },
         };
         assert_eq!(close_url_for(&request), "/fixtures?q=git&ref=small");
@@ -178,6 +191,7 @@ mod tests {
                 ref_id: None,
                 kind: None,
                 source: Some(LinkOrigin::All),
+                ..PageQuery::default()
             },
         };
         assert_eq!(close_url_for(&request), "/?q=git");

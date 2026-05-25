@@ -5,8 +5,9 @@ use nix_search_core::{CommonDoc, SearchDocument, SourceLinkConfig};
 
 use nix_search_index::SearchHit;
 
+use crate::DEFAULT_LIMIT;
 use crate::request::{LinkOrigin, PageQuery, PageRequest, normalized_query};
-use crate::urls::{entry_url_for, ref_id_for_link};
+use crate::urls::{entry_url_for, paginated_search_url, ref_id_for_link};
 
 use super::source_tag;
 
@@ -29,6 +30,8 @@ pub fn render(
     }
 
     let show_source = request.source.is_none() || request.query.source == Some(LinkOrigin::All);
+    let page = request.query.page.unwrap_or(1).max(1);
+    let offset = (page - 1) * DEFAULT_LIMIT;
 
     html! {
         div #results aria-live="polite" {
@@ -50,8 +53,28 @@ pub fn render(
                     }
                 }
             }
-            @if hits.len() < total {
-                (render_load_more_sentinel(hits.len()))
+            @if offset + hits.len() < total {
+                (render_load_more_sentinel(offset + hits.len()))
+            }
+            @if page > 1 || offset + hits.len() < total {
+                noscript {
+                    nav.pagination {
+                        @if page > 1 {
+                            a.pagination-link href=(paginated_search_url(
+                                request.source.as_deref(),
+                                &request.query,
+                                page - 1,
+                            )) { "← Previous" }
+                        }
+                        @if offset + hits.len() < total {
+                            a.pagination-link href=(paginated_search_url(
+                                request.source.as_deref(),
+                                &request.query,
+                                page + 1,
+                            )) { "Next →" }
+                        }
+                    }
+                }
             }
         }
     }
@@ -142,6 +165,7 @@ fn render_hit_row(
             ref_id: ref_id_for_link(config, &common.source, &common.ref_id),
             kind: None,
             source: from_scope,
+            page: request.query.page,
         },
     );
 
@@ -158,7 +182,7 @@ fn render_hit_row(
                 }
             }
             td.col-desc title=(desc) {
-                span.entry-desc { (desc) }
+                a.entry-desc href=(entry_href) tabindex="-1" { (desc) }
             }
         }
     }
