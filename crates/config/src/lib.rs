@@ -513,7 +513,7 @@ impl RawSourceConfig {
         let default_ref = effective_default_ref(source_id, self.default_ref, &refs)?;
 
         Ok(SourceConfig {
-            name: self.name.or_else(|| Some("nix-darwin".to_owned())),
+            name: self.name.or_else(|| Some("Darwin".to_owned())),
             color: self.color.or_else(|| Some(NIX_DARWIN_COLOR.to_owned())),
             kind: SourceKind::Options,
             default_ref,

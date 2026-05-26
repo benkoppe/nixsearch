@@ -11,37 +11,31 @@ enabled = false
 interval = "24h"
 
 [sources.nixpkgs]
-name = "Nixpkgs"
 preset = "nixpkgs-packages"
 default_ref = "nixos-unstable"
 preset_refs = ["nixos-unstable", "nixos-25.11"]
 
 [sources.nixos]
-name = "NixOS"
 preset = "nixos-options"
 default_ref = "nixos-unstable"
 preset_refs = ["nixos-unstable", "nixos-25.11"]
 
 [sources.home-manager]
-name = "Home Manager"
 preset = "home-manager-options"
 default_ref = "master"
 preset_refs = ["master", "release-25.11"]
 
 [sources.darwin]
-name = "nix-darwin"
 preset = "nix-darwin-options"
 default_ref = "master"
 preset_refs = ["master", "nix-darwin-25.11"]
 
 [sources.hjem]
-name = "Hjem"
 preset = "hjem-options"
 default_ref = "main"
 preset_refs = ["main"]
 
 [sources.hjem-rum]
-name = "Hjem Rum"
 preset = "hjem-rum-options"
 default_ref = "main"
 preset_refs = ["main"]
