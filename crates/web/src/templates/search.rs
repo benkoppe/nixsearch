@@ -6,7 +6,7 @@ use crate::request::SourceFilter;
 
 use super::source_tag::color_for_source;
 
-const ALL_TAB_COLOR: &str = "#71717a";
+const ALL_TAB_COLOR: &str = "#d4d4d8";
 
 pub fn render_form(
     config: &AppConfig,
