@@ -127,8 +127,16 @@ body {
   white-space: nowrap;
 }
 
-.ref-radio-label:hover {
-  color: var(--text);
+.ref-radio-label:not(:has(input:checked)):hover {
+  color: color-mix(in srgb, var(--source-color, var(--text)) 40%, transparent);
+}
+
+.ref-radio-label:not(:has(input:checked)):hover input[type="radio"] {
+  border-color: color-mix(
+    in srgb,
+    var(--source-color, var(--text)) 40%,
+    transparent
+  );
 }
 
 .ref-radio-label input[type="radio"] {
@@ -146,7 +154,7 @@ body {
 }
 
 .ref-radio-label input[type="radio"]:checked {
-  border-color: var(--accent);
+  border-color: var(--source-color, var(--accent));
 }
 
 .ref-radio-label input[type="radio"]:checked::after {
@@ -154,11 +162,11 @@ body {
   position: absolute;
   inset: 2px;
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--source-color, var(--accent));
 }
 
 .ref-radio-label:has(input:checked) {
-  color: var(--text-bright);
+  color: var(--source-color, var(--text-bright));
 }
 
 /* ─── Source tabs ─── */

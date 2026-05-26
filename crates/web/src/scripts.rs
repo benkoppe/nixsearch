@@ -84,6 +84,12 @@ pub fn navigation_script() -> String {
 
           const source = sourceMetadata(sourceId);
 
+          if (source) {
+            container.style.setProperty("--source-color", source.color);
+          } else {
+            container.style.removeProperty("--source-color");
+          }
+
           if (!source || source.refs.length === 0) {
             container.innerHTML = "";
             return;

@@ -15,6 +15,10 @@ pub fn render_form(
     q: &str,
 ) -> Markup {
     let has_multiple_sources = config.sources.len() > 1;
+    let source_color = match source_filter {
+        SourceFilter::Named(source_id) => Some(color_for_source(config, source_id)),
+        SourceFilter::All => None,
+    };
 
     html! {
         form.search-form action=(form_action) method="get" {
@@ -28,7 +32,9 @@ pub fn render_form(
                     autocomplete="off" autofocus
                     data-nixsearch-input="q";
 
-                div.ref-radios data-nixsearch-ref-container="" {
+                div.ref-radios
+                    data-nixsearch-ref-container=""
+                    style=[source_color.as_ref().map(|color| format!("--source-color: {color};"))] {
                     (render_ref_radios(config, source_filter, ""))
                 }
             }
