@@ -66,9 +66,6 @@ fn render_source_tabs(config: &AppConfig, selected: &SourceFilter) -> Markup {
                     }
                 }
             }
-            select.source-tabs-overflow-select
-                hidden
-                data-nixsearch-overflow-select="" {}
         }
     }
 }

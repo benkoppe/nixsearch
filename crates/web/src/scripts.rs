@@ -53,14 +53,6 @@ pub fn navigation_script() -> String {
               tab.removeAttribute("data-active");
             }
           });
-          // Also update overflow dropdown items
-          document.querySelectorAll('.source-tabs-dropdown button').forEach((btn) => {
-            if (btn.dataset.nixsearchSource === sourceId) {
-              btn.setAttribute("data-active", "");
-            } else {
-              btn.removeAttribute("data-active");
-            }
-          });
         }
 
         // ─── Ref radios ───
@@ -275,94 +267,6 @@ pub fn navigation_script() -> String {
 
         window.nixsearchNavigate = navigate;
 
-        // ─── Source tabs overflow detection ───
-
-        function computeTabOverflow() {
-          const tabsNav = document.querySelector('.source-tabs');
-          const overflowSelect = document.querySelector('[data-nixsearch-overflow-select]');
-          if (!tabsNav || !overflowSelect) return;
-
-          const tabs = Array.from(tabsNav.querySelectorAll('.source-tab'));
-          if (tabs.length === 0) return;
-
-          // Reset: show all tabs, hide overflow select
-          tabs.forEach((tab) => { tab.style.display = ""; });
-          overflowSelect.hidden = true;
-          overflowSelect.innerHTML = "";
-
-          // Check if tabs actually overflow the container
-          if (tabsNav.scrollWidth <= tabsNav.clientWidth) return;
-
-          // Tabs overflow — figure out which ones fit.
-          // Show the select first so we can account for its width.
-          overflowSelect.hidden = false;
-          const selectWidth = overflowSelect.offsetWidth + 8; // 8px breathing room
-          const availableWidth = tabsNav.clientWidth - selectWidth;
-
-          let totalWidth = 0;
-          let overflowIndex = -1;
-
-          for (let i = 0; i < tabs.length; i++) {
-            totalWidth += tabs[i].offsetWidth + 2; // 2px gap
-            if (totalWidth > availableWidth && i > 0) {
-              overflowIndex = i;
-              break;
-            }
-          }
-
-          if (overflowIndex === -1) {
-            // Everything fits after all (edge case)
-            overflowSelect.hidden = true;
-            return;
-          }
-
-          // Hide overflowing tabs and populate native select
-          const overflowTabs = tabs.slice(overflowIndex);
-          overflowTabs.forEach((tab) => { tab.style.display = "none"; });
-
-          const activeSource = currentSourceFromTabs();
-          let hasActiveInOverflow = false;
-
-          overflowSelect.innerHTML = '<option value="" disabled selected>More…</option>' +
-            overflowTabs
-              .map((tab) => {
-                const sourceId = tab.dataset.nixsearchSource || "";
-                const label = tab.textContent.trim();
-                const isActive = tab.hasAttribute("data-active");
-                if (isActive) hasActiveInOverflow = true;
-                return `<option value="${sourceId}"${isActive ? " selected" : ""}>${label}</option>`;
-              })
-              .join("");
-
-          // If active source is in overflow, select it
-          if (hasActiveInOverflow) {
-            overflowSelect.value = activeSource;
-          }
-        }
-
-        // ─── Overflow select change handler ───
-
-        document.addEventListener("change", (evt) => {
-          const el = evt.target;
-          if (!el.matches || !el.matches('[data-nixsearch-overflow-select]')) return;
-
-          const sourceId = el.value;
-          setActiveSourceTab(sourceId);
-          populateRefRadios(sourceId);
-          navigate(buildSearchUrlFromInputs());
-
-          // Reset the select label after navigation
-          setTimeout(computeTabOverflow, 60);
-        });
-
-        // Run overflow detection on load and resize
-        computeTabOverflow();
-        let resizeRaf;
-        window.addEventListener("resize", () => {
-          cancelAnimationFrame(resizeRaf);
-          resizeRaf = requestAnimationFrame(computeTabOverflow);
-        });
-
         // ─── Infinite scroll ───
         const MORE_URL = "__MORE_RESULTS_URL__";
         let loadingMore = false;
@@ -438,7 +342,6 @@ pub fn navigation_script() -> String {
         window.addEventListener(RECONCILE_EVENT, () => {
           setTimeout(() => {
             observeSentinel();
-            computeTabOverflow();
           }, 50);
         });
 

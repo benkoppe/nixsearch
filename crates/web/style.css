@@ -182,7 +182,10 @@ body {
   display: flex;
   align-items: center;
   gap: 0;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
 }
 
 .source-tab {
@@ -577,11 +580,6 @@ a:hover {
 
   .search-bar-row input[type="search"] {
     width: 100%;
-  }
-
-  .source-tabs {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
   }
 
   .col-desc {
