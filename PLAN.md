@@ -230,11 +230,19 @@ kind = "options"
 [[sources.hjem.refs]]
 id = "main"
 
+[sources.hjem.refs.source_links]
+type = "github"
+owner = "feel-co"
+repo = "hjem"
+revision = "main"
+
 [sources.hjem.refs.producer]
 type = "eval-modules"
 ref = "github:feel-co/hjem"
-modules_attr = "nixosModules.default"
-url_prefix = "https://github.com/feel-co/hjem/blob/main/"
+
+[[sources.hjem.refs.producer.modules]]
+type = "flake-attr"
+attr = "nixosModules.default"
 ```
 
 Prefer built-in presets for common cases, but ensure all presets expand to regular config:
@@ -378,10 +386,9 @@ Inspired by NuschtOS. Evaluates arbitrary modules via `lib.evalModules` and `nix
 Should support:
 
 - `modules`
-- `modules_attr`
+- explicit `inputs`
 - `specialArgs`
 - `overrideEvalModulesArgs`
-- `urlPrefix`
 
 ### `custom-command`
 
@@ -584,6 +591,7 @@ Support filters/facets:
 - kind
 
 Search should use default refs by default. If no source/ref filter is provided, search all sources at their default refs. If a source is selected but no ref is selected, search that source's default ref. Searching all refs should be an explicit advanced/debug option because refs such as stable and unstable usually contain heavily overlapping documents.
+
 - option set
 - option parent
 - package set

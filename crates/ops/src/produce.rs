@@ -3,13 +3,15 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 
 use nix_search_config::{
-    AppConfig, DownloadCompression as ConfigDownloadCompression, ProducerConfig,
+    AppConfig, DownloadCompression as ConfigDownloadCompression, EvalModuleConfig,
+    EvalModuleRefConfig, ProducerConfig,
 };
 use nix_search_core::ArtifactKind;
 use nix_search_source::{
     ChannelOptionsJsonProducer, ChannelPackagesJsonProducer,
-    DownloadCompression as SourceDownloadCompression, DownloadProducer, EvalModulesProducer,
-    ExistingFileProducer, NixBuildOptionsJsonProducer, ProduceRequest, ProducedArtifact, Producer,
+    DownloadCompression as SourceDownloadCompression, DownloadProducer, EvalModule, EvalModuleRef,
+    EvalModulesProducer, ExistingFileProducer, NixBuildOptionsJsonProducer, ProduceRequest,
+    ProducedArtifact, Producer,
 };
 use nix_search_store::{ArtifactRef, ArtifactStore};
 
@@ -74,10 +76,11 @@ pub async fn produce_target(store: &ArtifactStore, target: &TargetRef) -> Result
 
         ProducerConfig::EvalModules {
             source_ref,
-            modules_attr,
-            url_prefix,
+            inputs,
+            modules,
         } => {
-            let producer = EvalModulesProducer::new(source_ref, modules_attr, url_prefix.clone());
+            let producer =
+                EvalModulesProducer::new(source_ref, inputs.clone(), source_eval_modules(modules));
 
             producer.produce(store, &request).await.with_context(|| {
                 format!(
@@ -160,6 +163,31 @@ fn source_download_compression(
     match compression {
         ConfigDownloadCompression::None => SourceDownloadCompression::None,
         ConfigDownloadCompression::Brotli => SourceDownloadCompression::Brotli,
+    }
+}
+
+fn source_eval_modules(modules: &[EvalModuleConfig]) -> Vec<EvalModule> {
+    modules
+        .iter()
+        .map(|module| match module {
+            EvalModuleConfig::FlakeAttr { flake, attr } => EvalModule::FlakeAttr(EvalModuleRef {
+                flake: flake.clone(),
+                attr: attr.clone(),
+            }),
+            EvalModuleConfig::ModuleListOption { option, modules } => {
+                EvalModule::ModuleListOption {
+                    option: option.clone(),
+                    modules: modules.iter().map(source_eval_module_ref).collect(),
+                }
+            }
+        })
+        .collect()
+}
+
+fn source_eval_module_ref(module: &EvalModuleRefConfig) -> EvalModuleRef {
+    EvalModuleRef {
+        flake: module.flake.clone(),
+        attr: module.attr.clone(),
     }
 }
 

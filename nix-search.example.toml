@@ -42,4 +42,7 @@ url_prefix = "https://example.com/blob/main/"
 [sources.eval-fixture.refs.local.producer]
 type = "eval-modules"
 ref = "path:./fixtures/eval-modules-flake"
-modules_attr = "nixosModules.default"
+
+[[sources.eval-fixture.refs.local.producer.modules]]
+type = "flake-attr"
+attr = "nixosModules.default"

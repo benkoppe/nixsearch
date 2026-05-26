@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -316,21 +317,36 @@ fn normalize_nix_path_source(source_ref: &str) -> String {
 #[derive(Debug, Clone)]
 pub struct EvalModulesProducer {
     source_ref: String,
-    modules_attr: String,
-    url_prefix: Option<String>,
+    inputs: BTreeMap<String, String>,
+    modules: Vec<EvalModule>,
     producer_name: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum EvalModule {
+    FlakeAttr(EvalModuleRef),
+    ModuleListOption {
+        option: String,
+        modules: Vec<EvalModuleRef>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct EvalModuleRef {
+    pub flake: String,
+    pub attr: String,
 }
 
 impl EvalModulesProducer {
     pub fn new(
         source_ref: impl Into<String>,
-        modules_attr: impl Into<String>,
-        url_prefix: Option<String>,
+        inputs: BTreeMap<String, String>,
+        modules: Vec<EvalModule>,
     ) -> Self {
         Self {
             source_ref: source_ref.into(),
-            modules_attr: modules_attr.into(),
-            url_prefix,
+            inputs,
+            modules,
             producer_name: "eval-modules".to_owned(),
         }
     }
@@ -347,7 +363,12 @@ impl Producer for EvalModulesProducer {
         let expression_path = tempdir.path().join("eval-modules-options.nix");
 
         let source_ref = normalize_flake_ref(&self.source_ref)?;
-        let expression = eval_modules_expression(&source_ref, &self.modules_attr);
+        let inputs = normalize_eval_module_inputs(&self.inputs)?;
+        let expression = eval_modules_expression(EvalModulesExpression {
+            source_ref: &source_ref,
+            inputs: &inputs,
+            modules: &self.modules,
+        });
         tokio::fs::write(&expression_path, expression)
             .await
             .with_context(|| {
@@ -361,8 +382,8 @@ impl Producer for EvalModulesProducer {
             .await
             .with_context(|| {
                 format!(
-                    "failed to build options JSON for flake {:?}, module attr {:?}",
-                    self.source_ref, self.modules_attr
+                    "failed to build options JSON for flake {:?}",
+                    self.source_ref
                 )
             })?;
 
@@ -386,12 +407,6 @@ impl Producer for EvalModulesProducer {
             Err(error) => metadata_input.warnings.push(format!(
                 "failed to resolve flake revision for source ref {source_ref:?}: {error:#}"
             )),
-        }
-
-        if let Some(url_prefix) = &self.url_prefix {
-            metadata_input.warnings.push(format!(
-                "url_prefix is configured but source-link enrichment is not implemented yet: {url_prefix}"
-            ));
         }
 
         let metadata = store
@@ -445,13 +460,26 @@ async fn run_nix_build_expression(expression_path: &Path) -> Result<PathBuf> {
     Ok(PathBuf::from(output_path))
 }
 
-fn eval_modules_expression(source_ref: &str, modules_attr: &str) -> String {
+struct EvalModulesExpression<'a> {
+    source_ref: &'a str,
+    inputs: &'a BTreeMap<String, String>,
+    modules: &'a [EvalModule],
+}
+
+fn eval_modules_expression(input: EvalModulesExpression<'_>) -> String {
+    let explicit_inputs = eval_module_input_bindings(input.inputs);
+    let modules = eval_module_list(input.modules);
+
     format!(
         r#"
 let
-  flake = builtins.getFlake {source_ref};
+  self = builtins.getFlake {source_ref};
   pkgs = import <nixpkgs> {{ }};
   lib = pkgs.lib;
+
+  explicitInputs = {{
+{explicit_inputs}
+  }};
 
   getAttrPath = path: value:
     builtins.foldl'
@@ -459,22 +487,31 @@ let
       value
       path;
 
-  module = getAttrPath (lib.splitString "." {modules_attr}) flake;
+  resolveFlake = name:
+    if name == "self" then self
+    else if builtins.hasAttr name explicitInputs then builtins.getAttr name explicitInputs
+    else getAttrPath (lib.splitString "." name) self;
+
+  moduleAttr = flake: attr:
+    getAttrPath (lib.splitString "." attr) (resolveFlake flake);
+
+  moduleListOption = option: modules:
+    {{ lib, ... }}:
+    lib.setAttrByPath (lib.splitString "." option) modules;
 
   eval = lib.evalModules {{
     specialArgs = {{
       inherit pkgs lib;
-      inputs = flake.inputs or {{}};
-      self = flake;
+      inputs = self.inputs or {{}} // explicitInputs;
+      self = self;
     }};
 
     modules = [
-      module
+{modules}
       ({{ lib, ... }}: {{
         options._module.args = lib.mkOption {{
           internal = true;
         }};
-
         config._module.check = false;
       }})
     ];
@@ -485,9 +522,75 @@ in
     warningsAreErrors = false;
   }}).optionsJSON
 "#,
-        source_ref = nix_string(source_ref),
-        modules_attr = nix_string(modules_attr),
+        source_ref = nix_string(input.source_ref),
+        explicit_inputs = explicit_inputs,
+        modules = modules,
     )
+}
+
+fn eval_module_input_bindings(inputs: &BTreeMap<String, String>) -> String {
+    inputs
+        .iter()
+        .map(|(name, source_ref)| {
+            format!(
+                "    {} = builtins.getFlake {};",
+                nix_attr_name(name),
+                nix_string(source_ref)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn eval_module_list(modules: &[EvalModule]) -> String {
+    modules
+        .iter()
+        .map(eval_module_expression)
+        .map(|module| indent_lines(&module, 6))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn eval_module_expression(module: &EvalModule) -> String {
+    match module {
+        EvalModule::FlakeAttr(module_ref) => eval_module_ref_expression(module_ref),
+        EvalModule::ModuleListOption { option, modules } => {
+            let modules = modules
+                .iter()
+                .map(eval_module_ref_expression)
+                .map(|module| indent_lines(&module, 8))
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            format!(
+                "(moduleListOption {} [\n{}\n])",
+                nix_string(option),
+                modules
+            )
+        }
+    }
+}
+
+fn eval_module_ref_expression(module_ref: &EvalModuleRef) -> String {
+    format!(
+        "(moduleAttr {} {})",
+        nix_string(&module_ref.flake),
+        nix_string(&module_ref.attr)
+    )
+}
+
+fn nix_attr_name(value: &str) -> String {
+    serde_json::to_string(value).expect("serializing a string cannot fail")
+}
+
+fn indent_lines(value: &str, spaces: usize) -> String {
+    let indent = " ".repeat(spaces);
+
+    value
+        .lines()
+        .map(|line| format!("{indent}{line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn nix_string(value: &str) -> String {
@@ -512,6 +615,15 @@ fn normalize_flake_ref(source_ref: &str) -> Result<String> {
         .with_context(|| format!("failed to canonicalize relative flake ref {source_ref:?}"))?;
 
     Ok(format!("path:{}", absolute.display()))
+}
+
+fn normalize_eval_module_inputs(
+    inputs: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>> {
+    inputs
+        .iter()
+        .map(|(name, source_ref)| Ok((name.clone(), normalize_flake_ref(source_ref)?)))
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -812,8 +924,8 @@ async fn fetch_channel_git_revision(channel: &str) -> Result<Option<String>> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
     use std::io::Write;
+    use std::{collections::BTreeMap, fs};
 
     use httpmock::prelude::*;
     use tempfile::tempdir;
@@ -824,7 +936,10 @@ mod tests {
         OPTION_GIT_ENABLE, OPTION_NGINX_ENABLE, REF_SMALL, SOURCE_FIXTURES,
     };
 
-    use crate::{ChannelOptionsJsonProducer, ChannelPackagesJsonProducer};
+    use crate::{
+        ChannelOptionsJsonProducer, ChannelPackagesJsonProducer, EvalModule, EvalModuleRef,
+        EvalModulesExpression,
+    };
 
     use super::{
         Consumer, DownloadCompression, DownloadProducer, EvalModulesProducer, ExistingFileProducer,
@@ -1115,9 +1230,12 @@ mod tests {
         let store = ArtifactStore::local(tempdir.path()).unwrap();
 
         let producer = EvalModulesProducer::new(
-            source_ref,
-            "nixosModules.default",
-            Some("https://example.com/blob/main/".to_owned()),
+            source_ref.clone(),
+            BTreeMap::new(),
+            vec![EvalModule::FlakeAttr(EvalModuleRef {
+                flake: "self".to_owned(),
+                attr: "nixosModules.default".to_owned(),
+            })],
         );
 
         let request = ProduceRequest {
@@ -1129,12 +1247,9 @@ mod tests {
 
         assert_eq!(produced.artifact_ref.kind, ArtifactKind::OptionsJson);
         assert_eq!(produced.metadata.producer, "eval-modules");
-        assert!(
-            produced
-                .metadata
-                .warnings
-                .iter()
-                .any(|warning| warning.contains("source-link enrichment is not implemented yet"))
+        assert_eq!(
+            produced.metadata.source_url.as_deref(),
+            Some(source_ref.as_str())
         );
 
         let consumer = OptionsJsonConsumer;
@@ -1194,18 +1309,72 @@ mod tests {
 
     #[test]
     fn eval_modules_expression_contains_flake_ref_module_attr_and_default_eval_args() {
-        let expression = eval_modules_expression("github:example/project", "nixosModules.default");
+        let expression = eval_modules_expression(EvalModulesExpression {
+            source_ref: "github:example/project",
+            inputs: &BTreeMap::new(),
+            modules: &[EvalModule::FlakeAttr(EvalModuleRef {
+                flake: "self".to_owned(),
+                attr: "nixosModules.default".to_owned(),
+            })],
+        });
 
         assert!(expression.contains("\"github:example/project\""));
-        assert!(expression.contains("\"nixosModules.default\""));
+        assert!(expression.contains("(moduleAttr \"self\" \"nixosModules.default\")"));
         assert!(expression.contains("builtins.getFlake"));
         assert!(expression.contains("lib.evalModules"));
         assert!(expression.contains("specialArgs"));
         assert!(expression.contains("inherit pkgs lib;"));
-        assert!(expression.contains("inputs = flake.inputs or {};"));
-        assert!(expression.contains("self = flake;"));
+        assert!(expression.contains("inputs = (self.inputs or {}) // explicitInputs;"));
         assert!(expression.contains("config._module.check = false;"));
         assert!(expression.contains("pkgs.nixosOptionsDoc"));
+    }
+
+    #[test]
+    fn eval_modules_expression_supports_explicit_inputs_and_module_list_options() {
+        let inputs = BTreeMap::from([(
+            "dependency".to_owned(),
+            "github:example/dependency".to_owned(),
+        )]);
+
+        let expression = eval_modules_expression(EvalModulesExpression {
+            source_ref: "github:example/project",
+            inputs: &inputs,
+            modules: &[
+                EvalModule::FlakeAttr(EvalModuleRef {
+                    flake: "dependency".to_owned(),
+                    attr: "nixosModules.default".to_owned(),
+                }),
+                EvalModule::ModuleListOption {
+                    option: "example.extraModules".to_owned(),
+                    modules: vec![EvalModuleRef {
+                        flake: "self".to_owned(),
+                        attr: "modules.extra".to_owned(),
+                    }],
+                },
+            ],
+        });
+
+        assert!(
+            expression
+                .contains("\"dependency\" = builtins.getFlake \"github:example/dependency\";")
+        );
+        assert!(expression.contains("(moduleAttr \"dependency\" \"nixosModules.default\")"));
+        assert!(expression.contains("(moduleListOption \"example.extraModules\" ["));
+        assert!(expression.contains("(moduleAttr \"self\" \"modules.extra\")"));
+    }
+
+    #[test]
+    fn eval_modules_expression_resolves_primary_flake_inputs() {
+        let expression = eval_modules_expression(EvalModulesExpression {
+            source_ref: "github:example/project",
+            inputs: &BTreeMap::new(),
+            modules: &[EvalModule::FlakeAttr(EvalModuleRef {
+                flake: "self.inputs.hjem".to_owned(),
+                attr: "nixosModules.default".to_owned(),
+            })],
+        });
+
+        assert!(expression.contains("(moduleAttr \"self.inputs.hjem\" \"nixosModules.default\")"));
     }
 
     #[test]

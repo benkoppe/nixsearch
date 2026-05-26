@@ -697,9 +697,9 @@ pub enum ProducerConfig {
     EvalModules {
         #[serde(rename = "ref")]
         source_ref: String,
-        modules_attr: String,
         #[serde(default)]
-        url_prefix: Option<String>,
+        inputs: BTreeMap<String, String>,
+        modules: Vec<EvalModuleConfig>,
     },
 
     Download {
@@ -728,6 +728,32 @@ pub enum DownloadCompression {
     #[default]
     None,
     Brotli,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum EvalModuleConfig {
+    FlakeAttr {
+        #[serde(default = "default_eval_module_flake")]
+        flake: String,
+        attr: String,
+    },
+    ModuleListOption {
+        option: String,
+        modules: Vec<EvalModuleRefConfig>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvalModuleRefConfig {
+    #[serde(default = "default_eval_module_flake")]
+    pub flake: String,
+    pub attr: String,
+}
+
+fn default_eval_module_flake() -> String {
+    "self".to_owned()
 }
 
 impl ProducerConfig {
@@ -769,14 +795,22 @@ impl ProducerConfig {
 
             Self::EvalModules {
                 source_ref,
-                modules_attr,
-                url_prefix,
+                inputs,
+                modules,
             } => {
                 validate_producer_non_empty(source_id, ref_id, "ref", source_ref)?;
-                validate_producer_non_empty(source_id, ref_id, "modules_attr", modules_attr)?;
 
-                if let Some(url_prefix) = url_prefix {
-                    validate_producer_non_empty(source_id, ref_id, "url_prefix", url_prefix)?;
+                if modules.is_empty() {
+                    return producer_error(source_id, ref_id, "modules must not be empty");
+                }
+
+                for (name, source_ref) in inputs {
+                    validate_producer_non_empty(source_id, ref_id, "input name", name)?;
+                    validate_producer_non_empty(source_id, ref_id, "input ref", source_ref)?;
+                }
+
+                for module in modules {
+                    validate_eval_module_config(source_id, ref_id, module)?;
                 }
             }
 
@@ -833,6 +867,41 @@ pub enum ProducerKind {
     Download,
     CustomCommand,
     FlakeOutput,
+}
+
+fn validate_eval_module_config(
+    source_id: &str,
+    ref_id: &str,
+    module: &EvalModuleConfig,
+) -> Result<()> {
+    match module {
+        EvalModuleConfig::FlakeAttr { flake, attr } => {
+            validate_producer_non_empty(source_id, ref_id, "module flake", flake)?;
+            validate_producer_non_empty(source_id, ref_id, "module attr", attr)?;
+        }
+        EvalModuleConfig::ModuleListOption { option, modules } => {
+            validate_producer_non_empty(source_id, ref_id, "module list option", option)?;
+
+            if modules.is_empty() {
+                return producer_error(source_id, ref_id, "module list modules must not be empty");
+            }
+
+            for module in modules {
+                validate_eval_module_ref_config(source_id, ref_id, module)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_eval_module_ref_config(
+    source_id: &str,
+    ref_id: &str,
+    module: &EvalModuleRefConfig,
+) -> Result<()> {
+    validate_producer_non_empty(source_id, ref_id, "module flake", &module.flake)?;
+    validate_producer_non_empty(source_id, ref_id, "module attr", &module.attr)
 }
 
 fn validate_non_empty(name: &str, value: &str) -> Result<()> {
@@ -906,7 +975,8 @@ mod tests {
     use nix_search_core::{ArtifactKind, SourceLinkConfig};
 
     use crate::{
-        DownloadCompression, HOME_MANAGER_COLOR, NIX_DARWIN_COLOR, NIXOS_COLOR, NIXPKGS_COLOR,
+        DownloadCompression, EvalModuleConfig, HOME_MANAGER_COLOR, NIX_DARWIN_COLOR, NIXOS_COLOR,
+        NIXPKGS_COLOR,
     };
 
     use super::{AppConfig, ProducerConfig, ProducerKind, SourceKind};
@@ -1061,6 +1131,20 @@ mod tests {
     }
 
     #[test]
+    fn loads_example_config_file() {
+        let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let repo_root = crate_dir
+            .parent()
+            .and_then(|path| path.parent())
+            .expect("config crate should live under crates/config");
+        let path = repo_root.join("nix-search.example.toml");
+
+        let config = AppConfig::load(Some(&path)).unwrap();
+
+        assert!(config.sources.contains_key("eval-fixture"));
+    }
+
+    #[test]
     fn loads_existing_file_producer() {
         let config = load_toml(fixture_existing_file_source_toml());
         let producer = &config.sources[FIXTURES_SOURCE].refs[0].producer;
@@ -1087,8 +1171,10 @@ mod tests {
             [sources.fixtures.refs.eval.producer]
             type = "eval-modules"
             ref = "path:/some/flake"
-            modules_attr = "nixosModules.default"
-            url_prefix = "https://example.com/blob/main/"
+
+            [[sources.fixtures.refs.eval.producer.modules]]
+            type = "flake-attr"
+            attr = "nixosModules.default"
             "#,
         );
 
@@ -1099,18 +1185,98 @@ mod tests {
         match producer {
             ProducerConfig::EvalModules {
                 source_ref,
-                modules_attr,
-                url_prefix,
+                inputs,
+                modules,
             } => {
                 assert_eq!(source_ref, "path:/some/flake");
-                assert_eq!(modules_attr, "nixosModules.default");
-                assert_eq!(
-                    url_prefix.as_deref(),
-                    Some("https://example.com/blob/main/")
-                );
+                assert!(inputs.is_empty());
+                assert_eq!(modules.len(), 1);
+
+                match &modules[0] {
+                    EvalModuleConfig::FlakeAttr { flake, attr } => {
+                        assert_eq!(flake, "self");
+                        assert_eq!(attr, "nixosModules.default");
+                    }
+                    other => panic!("unexpected module: {other:?}"),
+                }
             }
             other => panic!("unexpected producer: {other:?}"),
         }
+    }
+
+    #[test]
+    fn loads_eval_modules_producer_with_inputs_and_module_list_option() {
+        let config = load_toml(
+            r#"
+            [sources.fixtures]
+            name = "Fixtures"
+            kind = "options"
+
+            [sources.fixtures.refs.eval.producer]
+            type = "eval-modules"
+            ref = "github:example/root"
+
+            [sources.fixtures.refs.eval.producer.inputs]
+            dependency = "github:example/dependency"
+
+            [[sources.fixtures.refs.eval.producer.modules]]
+            type = "flake-attr"
+            flake = "dependency"
+            attr = "nixosModules.default"
+
+            [[sources.fixtures.refs.eval.producer.modules]]
+            type = "module-list-option"
+            option = "example.extraModules"
+            modules = [
+              { flake = "self", attr = "modules.extra" },
+            ]
+            "#,
+        );
+
+        let producer = &config.sources[FIXTURES_SOURCE].refs[0].producer;
+
+        match producer {
+            ProducerConfig::EvalModules {
+                source_ref,
+                inputs,
+                modules,
+            } => {
+                assert_eq!(source_ref, "github:example/root");
+                assert_eq!(
+                    inputs.get("dependency").map(String::as_str),
+                    Some("github:example/dependency")
+                );
+                assert_eq!(modules.len(), 2);
+
+                match &modules[1] {
+                    EvalModuleConfig::ModuleListOption { option, modules } => {
+                        assert_eq!(option, "example.extraModules");
+                        assert_eq!(modules.len(), 1);
+                        assert_eq!(modules[0].flake, "self");
+                        assert_eq!(modules[0].attr, "modules.extra");
+                    }
+                    other => panic!("unexpected module: {other:?}"),
+                }
+            }
+            other => panic!("unexpected producer: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_eval_modules_without_modules() {
+        let error = load_toml_error(
+            r#"
+            [sources.fixtures]
+            name = "Fixtures"
+            kind = "options"
+
+            [sources.fixtures.refs.eval.producer]
+            type = "eval-modules"
+            ref = "github:example/root"
+            "#,
+        );
+
+        assert_error_contains(&error, "modules");
     }
 
     #[test]
