@@ -551,6 +551,10 @@ a:hover {
 /* ─── Responsive ─── */
 
 @media (max-width: 700px) {
+  :root {
+    --header-height: 148px;
+  }
+
   .header {
     height: auto;
     min-height: var(--header-height);
@@ -576,6 +580,10 @@ a:hover {
     flex-direction: column;
     align-items: stretch;
     gap: 0.4rem;
+  }
+
+  .search-bar-row .ref-radios {
+    order: -1;
   }
 
   .search-bar-row input[type="search"] {
