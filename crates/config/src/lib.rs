@@ -33,6 +33,8 @@ const NIXPKGS_COLOR: &str = "#4ade80";
 const NIXOS_COLOR: &str = "#60a5fa";
 const HOME_MANAGER_COLOR: &str = "#f59e0b";
 const NIX_DARWIN_COLOR: &str = "#a78bfa";
+const HJEM_COLOR: &str = "#14b8a6";
+const HJEM_RUM_COLOR: &str = "#ec4899";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -382,6 +384,8 @@ impl RawSourceConfig {
                 self.expand_home_manager_options(source_id, ref_ids)
             }
             SourcePreset::NixDarwinOptions => self.expand_nix_darwin_options(source_id, ref_ids),
+            SourcePreset::HjemOptions => self.expand_hjem_options(source_id, ref_ids),
+            SourcePreset::HjemRumOptions => self.expand_hjem_rum_options(source_id, ref_ids),
         }
     }
 
@@ -516,6 +520,79 @@ impl RawSourceConfig {
             refs,
         })
     }
+
+    fn expand_hjem_options(self, source_id: &str, ref_ids: Vec<String>) -> Result<SourceConfig> {
+        reject_conflicting_kind(self.kind, SourceKind::Options, SourcePreset::HjemOptions)?;
+
+        let refs = ref_ids
+            .into_iter()
+            .map(|ref_id| RefConfig {
+                id: ref_id.clone(),
+                source_links: Some(hjem_source_links(&ref_id)),
+                producer: ProducerConfig::EvalModules {
+                    source_ref: format!("github:feel-co/hjem/{ref_id}"),
+                    inputs: BTreeMap::new(),
+                    modules: vec![EvalModuleConfig::FlakeAttr {
+                        flake: "self".to_owned(),
+                        attr: "nixosModules.default".to_owned(),
+                    }],
+                },
+            })
+            .collect::<Vec<_>>();
+
+        let default_ref = effective_default_ref(source_id, self.default_ref, &refs)?;
+
+        Ok(SourceConfig {
+            name: self.name.or_else(|| Some("Hjem".to_owned())),
+            color: self.color.or_else(|| Some(HJEM_COLOR.to_owned())),
+            kind: SourceKind::Options,
+            default_ref,
+            refs,
+        })
+    }
+
+    fn expand_hjem_rum_options(
+        self,
+        source_id: &str,
+        ref_ids: Vec<String>,
+    ) -> Result<SourceConfig> {
+        reject_conflicting_kind(self.kind, SourceKind::Options, SourcePreset::HjemRumOptions)?;
+
+        let refs = ref_ids
+            .into_iter()
+            .map(|ref_id| RefConfig {
+                id: ref_id.clone(),
+                source_links: Some(hjem_rum_source_links(&ref_id)),
+                producer: ProducerConfig::EvalModules {
+                    source_ref: format!("github:snugnug/hjem-rum/{ref_id}"),
+                    inputs: BTreeMap::new(),
+                    modules: vec![
+                        EvalModuleConfig::FlakeAttr {
+                            flake: "self.inputs.hjem".to_owned(),
+                            attr: "nixosModules.default".to_owned(),
+                        },
+                        EvalModuleConfig::ModuleListOption {
+                            option: "hjem.extraModules".to_owned(),
+                            modules: vec![EvalModuleRefConfig {
+                                flake: "self".to_owned(),
+                                attr: "hjemModules.default".to_owned(),
+                            }],
+                        },
+                    ],
+                },
+            })
+            .collect::<Vec<_>>();
+
+        let default_ref = effective_default_ref(source_id, self.default_ref, &refs)?;
+
+        Ok(SourceConfig {
+            name: self.name.or_else(|| Some("Hjem Rum".to_owned())),
+            color: self.color.or_else(|| Some(HJEM_RUM_COLOR.to_owned())),
+            kind: SourceKind::Options,
+            default_ref,
+            refs,
+        })
+    }
 }
 
 fn nixpkgs_source_links(revision: &str) -> SourceLinkConfig {
@@ -530,15 +607,31 @@ fn nix_darwin_source_links(revision: &str) -> SourceLinkConfig {
     github_source_links("nix-darwin", "nix-darwin", revision)
 }
 
+fn hjem_source_links(revision: &str) -> SourceLinkConfig {
+    github_source_links_with_strip_prefixes("feel-co", "hjem", revision, vec!["hjem"])
+}
+
+fn hjem_rum_source_links(revision: &str) -> SourceLinkConfig {
+    github_source_links_with_strip_prefixes("snugnug", "hjem-rum", revision, vec!["hjem-rum"])
+}
+
 fn github_source_links(owner: &str, repo: &str, revision: &str) -> SourceLinkConfig {
+    github_source_links_with_strip_prefixes(owner, repo, revision, Vec::new())
+}
+
+fn github_source_links_with_strip_prefixes(
+    owner: &str,
+    repo: &str,
+    revision: &str,
+    strip_prefixes: Vec<&str>,
+) -> SourceLinkConfig {
     SourceLinkConfig::Github {
         owner: owner.to_owned(),
         repo: repo.to_owned(),
         revision: Some(revision.to_owned()),
-        strip_prefixes: Vec::new(),
+        strip_prefixes: strip_prefixes.into_iter().map(ToOwned::to_owned).collect(),
     }
 }
-
 fn reject_conflicting_kind(
     configured: Option<SourceKind>,
     expected: SourceKind,
@@ -649,6 +742,8 @@ pub enum SourcePreset {
     NixosOptions,
     HomeManagerOptions,
     NixDarwinOptions,
+    HjemOptions,
+    HjemRumOptions,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -975,8 +1070,8 @@ mod tests {
     use nix_search_core::{ArtifactKind, SourceLinkConfig};
 
     use crate::{
-        DownloadCompression, EvalModuleConfig, HOME_MANAGER_COLOR, NIX_DARWIN_COLOR, NIXOS_COLOR,
-        NIXPKGS_COLOR,
+        DownloadCompression, EvalModuleConfig, HJEM_COLOR, HJEM_RUM_COLOR, HOME_MANAGER_COLOR,
+        NIX_DARWIN_COLOR, NIXOS_COLOR, NIXPKGS_COLOR,
     };
 
     use super::{AppConfig, ProducerConfig, ProducerKind, SourceKind};
@@ -1713,6 +1808,98 @@ mod tests {
         match &source.refs[1].producer {
             ProducerConfig::NixBuildOptionsJson { source_ref, .. } => {
                 assert_eq!(source_ref, "github:nix-darwin/nix-darwin/nix-darwin-25.11");
+            }
+            other => panic!("unexpected producer: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn loads_hjem_options_preset() {
+        let config = load_toml(
+            r#"
+            [sources.hjem]
+            name = "Hjem"
+            preset = "hjem-options"
+            preset_refs = ["main"]
+            "#,
+        );
+
+        let source = &config.sources["hjem"];
+        assert_eq!(source.name.as_deref(), Some("Hjem"));
+        assert_eq!(source.kind, SourceKind::Options);
+        assert_eq!(source.color.as_deref(), Some(HJEM_COLOR));
+
+        let ref_config = &source.refs[0];
+        assert_eq!(ref_config.id, "main");
+
+        match &ref_config.producer {
+            ProducerConfig::EvalModules {
+                source_ref,
+                inputs,
+                modules,
+            } => {
+                assert_eq!(source_ref, "github:feel-co/hjem/main");
+                assert!(inputs.is_empty());
+                assert_eq!(modules.len(), 1);
+
+                match &modules[0] {
+                    EvalModuleConfig::FlakeAttr { flake, attr } => {
+                        assert_eq!(flake, "self");
+                        assert_eq!(attr, "nixosModules.default");
+                    }
+                    other => panic!("unexpected module: {other:?}"),
+                }
+            }
+            other => panic!("unexpected producer: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn loads_hjem_rum_options_preset() {
+        let config = load_toml(
+            r#"
+            [sources.hjem-rum]
+            name = "Hjem Rum"
+            preset = "hjem-rum-options"
+            preset_refs = ["main"]
+            "#,
+        );
+
+        let source = &config.sources["hjem-rum"];
+        assert_eq!(source.name.as_deref(), Some("Hjem Rum"));
+        assert_eq!(source.kind, SourceKind::Options);
+        assert_eq!(source.color.as_deref(), Some(HJEM_RUM_COLOR));
+
+        let ref_config = &source.refs[0];
+        assert_eq!(ref_config.id, "main");
+
+        match &ref_config.producer {
+            ProducerConfig::EvalModules {
+                source_ref,
+                inputs,
+                modules,
+            } => {
+                assert_eq!(source_ref, "github:snugnug/hjem-rum/main");
+                assert!(inputs.is_empty());
+                assert_eq!(modules.len(), 2);
+
+                match &modules[0] {
+                    EvalModuleConfig::FlakeAttr { flake, attr } => {
+                        assert_eq!(flake, "self.inputs.hjem");
+                        assert_eq!(attr, "nixosModules.default");
+                    }
+                    other => panic!("unexpected module: {other:?}"),
+                }
+
+                match &modules[1] {
+                    EvalModuleConfig::ModuleListOption { option, modules } => {
+                        assert_eq!(option, "hjem.extraModules");
+                        assert_eq!(modules.len(), 1);
+                        assert_eq!(modules[0].flake, "self");
+                        assert_eq!(modules[0].attr, "hjemModules.default");
+                    }
+                    other => panic!("unexpected module: {other:?}"),
+                }
             }
             other => panic!("unexpected producer: {other:?}"),
         }
