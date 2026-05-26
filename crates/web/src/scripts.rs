@@ -18,7 +18,7 @@ pub fn dialog_reconcile_script() -> &'static str {
 pub fn navigation_script() -> String {
     r##"
       (() => {
-        const RECONCILE_EVENT = "nix-search-reconcile";
+        const RECONCILE_EVENT = "nixsearch-reconcile";
         const metadata = JSON.parse(
           document.getElementById("source-metadata").textContent
         );
@@ -29,17 +29,17 @@ pub fn navigation_script() -> String {
         }
 
         function reconcile(previousUrl) {
-          window.nixSearchPreviousUrl = previousUrl || "";
+          window.nixsearchPreviousUrl = previousUrl || "";
           window.dispatchEvent(new CustomEvent(RECONCILE_EVENT));
           currentUrl = currentPublicUrl();
         }
 
         function getSourceSelect() {
-          return document.querySelector('[data-nix-search-input="source-path"]');
+          return document.querySelector('[data-nixsearch-input="source-path"]');
         }
 
         function getRefSelect() {
-          return document.querySelector('[data-nix-search-input="ref"]');
+          return document.querySelector('[data-nixsearch-input="ref"]');
         }
 
         function sourceMetadata(sourceId) {
@@ -60,7 +60,7 @@ pub fn navigation_script() -> String {
             const wrapper = refSelect.closest(".header-filters") || refSelect.parentElement;
             const newSelect = document.createElement("select");
             newSelect.name = "ref";
-            newSelect.setAttribute("data-nix-search-input", "ref");
+            newSelect.setAttribute("data-nixsearch-input", "ref");
             newSelect.innerHTML = source.refs
               .map((r) => {
                 const selected = r === source.defaultRef ? " selected" : "";
@@ -107,7 +107,7 @@ pub fn navigation_script() -> String {
           const path = sourcePath(sourceId);
           const params = new URLSearchParams();
 
-          const q = document.querySelector('[data-nix-search-input="q"]');
+          const q = document.querySelector('[data-nixsearch-input="q"]');
           if (q && q.value.trim()) params.set("q", q.value.trim());
 
           if (sourceId) {
@@ -153,7 +153,7 @@ pub fn navigation_script() -> String {
             }
           }
 
-          const q = document.querySelector('[data-nix-search-input="q"]');
+          const q = document.querySelector('[data-nixsearch-input="q"]');
           if (q) q.value = params.get("q") || "";
         }
 
@@ -161,13 +161,13 @@ pub fn navigation_script() -> String {
           const el = evt.target;
           if (!el.matches) return;
 
-          if (el.matches('[data-nix-search-input="source-path"]')) {
+          if (el.matches('[data-nixsearch-input="source-path"]')) {
             populateRefSelect(el.value);
             navigate(buildSearchUrlFromInputs());
             return;
           }
 
-          if (el.matches('[data-nix-search-input="ref"]')) {
+          if (el.matches('[data-nixsearch-input="ref"]')) {
             navigate(buildSearchUrlFromInputs());
             return;
           }
@@ -228,7 +228,7 @@ pub fn navigation_script() -> String {
         let debounce;
         document.addEventListener("input", (evt) => {
           const el = evt.target;
-          if (!el.matches || !el.matches('[data-nix-search-input="q"]')) return;
+          if (!el.matches || !el.matches('[data-nixsearch-input="q"]')) return;
           clearTimeout(debounce);
           debounce = setTimeout(() => {
             navigate(buildSearchUrlFromInputs());
@@ -250,7 +250,7 @@ pub fn navigation_script() -> String {
           reconcile(previous);
         });
 
-        window.nixSearchNavigate = navigate;
+        window.nixsearchNavigate = navigate;
 
         // ─── Infinite scroll ───
         const MORE_URL = "__MORE_RESULTS_URL__";

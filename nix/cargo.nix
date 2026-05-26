@@ -48,8 +48,8 @@
       cli = craneLib.buildPackage (
         individualCrateArgs
         // rec {
-          pname = "nix-search";
-          cargoExtraArgs = "-p nix-search";
+          pname = "nixsearch";
+          cargoExtraArgs = "-p nixsearch";
           meta.mainProgram = pname;
         }
       );

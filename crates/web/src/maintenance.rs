@@ -5,11 +5,11 @@ use anyhow::{Result, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use time::OffsetDateTime;
 
-use nix_search_config::AppConfig;
-use nix_search_index::{IndexGenerationManifest, IndexStore};
-use nix_search_ops::generate;
-use nix_search_ops::lock;
-use nix_search_ops::targets::all_targets;
+use nixsearch_config::AppConfig;
+use nixsearch_index::{IndexGenerationManifest, IndexStore};
+use nixsearch_ops::generate;
+use nixsearch_ops::lock;
+use nixsearch_ops::targets::all_targets;
 
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const MANIFEST_ERROR_RETRY: Duration = Duration::from_secs(60);
@@ -273,12 +273,12 @@ mod tests {
     use std::time::Duration;
 
     use camino::Utf8PathBuf;
-    use nix_search_index::IndexStore;
-    use nix_search_index_test_support::{
+    use nixsearch_index::IndexStore;
+    use nixsearch_index_test_support::{
         assert_canonical_manifest_targets, publish_canonical_index,
         publish_canonical_index_with_generated_at,
     };
-    use nix_search_test_support::utf8_path_buf;
+    use nixsearch_test_support::utf8_path_buf;
     use tempfile::tempdir;
     use time::Duration as TimeDuration;
 

@@ -1,5 +1,5 @@
 {
-  description = "nix-search eval-modules fixture";
+  description = "nixsearch eval-modules fixture";
 
   outputs =
     { self }:

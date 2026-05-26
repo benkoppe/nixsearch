@@ -1,5 +1,5 @@
 [package]
-name = "nix-search-config"
+name = "nixsearch-config"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,7 +10,7 @@ figment.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 
-nix-search-core.workspace = true
+nixsearch-core.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
-metadata.crane.name = "nix-search"
+metadata.crane.name = "nixsearch"
 
 [workspace.package]
 version = "0.1.0"
@@ -51,13 +51,13 @@ camino = { version = "1", features = ["serde1"] }
 hex = "0.4"
 sha2 = "0.11"
 
-nix-search-core = { path = "crates/core" }
-nix-search-ingest = { path = "crates/ingest" }
-nix-search-index = { path = "crates/index" }
-nix-search-index-test-support = { path = "crates/index-test-support" }
-nix-search-config = { path = "crates/config" }
-nix-search-store = { path = "crates/store" }
-nix-search-source = { path = "crates/source" }
-nix-search-web = { path = "crates/web" }
-nix-search-ops = { path = "crates/ops" }
-nix-search-test-support = { path = "crates/test-support" }
+nixsearch-core = { path = "crates/core" }
+nixsearch-ingest = { path = "crates/ingest" }
+nixsearch-index = { path = "crates/index" }
+nixsearch-index-test-support = { path = "crates/index-test-support" }
+nixsearch-config = { path = "crates/config" }
+nixsearch-store = { path = "crates/store" }
+nixsearch-source = { path = "crates/source" }
+nixsearch-web = { path = "crates/web" }
+nixsearch-ops = { path = "crates/ops" }
+nixsearch-test-support = { path = "crates/test-support" }

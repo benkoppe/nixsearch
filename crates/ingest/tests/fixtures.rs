@@ -1,6 +1,6 @@
-use nix_search_core::SearchDocument;
-use nix_search_ingest::{parse_options_json, parse_packages_json};
-use nix_search_test_support::{
+use nixsearch_core::SearchDocument;
+use nixsearch_ingest::{parse_options_json, parse_packages_json};
+use nixsearch_test_support::{
     OPTION_GIT_ENABLE, OPTION_NGINX_ENABLE, OPTION_SYSTEMD_BOOT_ENABLE, OPTION_TAILSCALE_ENABLE,
     PACKAGE_GIT, PACKAGE_PYTHON_REQUESTS, PACKAGE_RIPGREP, assert_doc_names_eq, ingest_context,
 };

@@ -1,5 +1,5 @@
 [package]
-name = "nix-search-web"
+name = "nixsearch-web"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -20,12 +20,12 @@ tracing.workspace = true
 url.workspace = true
 urlencoding.workspace = true
 
-nix-search-config.workspace = true
-nix-search-core.workspace = true
-nix-search-index.workspace = true
-nix-search-ops.workspace = true
+nixsearch-config.workspace = true
+nixsearch-core.workspace = true
+nixsearch-index.workspace = true
+nixsearch-ops.workspace = true
 
 [dev-dependencies]
-nix-search-index-test-support.workspace = true
-nix-search-test-support.workspace = true
+nixsearch-index-test-support.workspace = true
+nixsearch-test-support.workspace = true
 tempfile.workspace = true

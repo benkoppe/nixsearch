@@ -2,18 +2,18 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 
-use nix_search_config::{
+use nixsearch_config::{
     AppConfig, DownloadCompression as ConfigDownloadCompression, EvalModuleConfig,
     EvalModuleRefConfig, ProducerConfig,
 };
-use nix_search_core::ArtifactKind;
-use nix_search_source::{
+use nixsearch_core::ArtifactKind;
+use nixsearch_source::{
     ChannelOptionsJsonProducer, ChannelPackagesJsonProducer,
     DownloadCompression as SourceDownloadCompression, DownloadProducer, EvalModule, EvalModuleRef,
     EvalModulesProducer, ExistingFileProducer, FlakeFileProducer, NixBuildOptionsJsonProducer,
     ProduceRequest, ProducedArtifact, Producer,
 };
-use nix_search_store::{ArtifactRef, ArtifactStore};
+use nixsearch_store::{ArtifactRef, ArtifactStore};
 
 use crate::targets::TargetRef;
 

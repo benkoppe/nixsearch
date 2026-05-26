@@ -1,5 +1,5 @@
 [package]
-name = "nix-search"
+name = "nixsearch"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,18 +11,18 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
-nix-search-config.workspace = true
-nix-search-core.workspace = true
-nix-search-index.workspace = true
-nix-search-ingest.workspace = true
-nix-search-source.workspace = true
-nix-search-store.workspace = true
-nix-search-web.workspace = true
-nix-search-ops.workspace = true
+nixsearch-config.workspace = true
+nixsearch-core.workspace = true
+nixsearch-index.workspace = true
+nixsearch-ingest.workspace = true
+nixsearch-source.workspace = true
+nixsearch-store.workspace = true
+nixsearch-web.workspace = true
+nixsearch-ops.workspace = true
 
 [dev-dependencies]
-nix-search-index-test-support.workspace = true
-nix-search-test-support.workspace = true
+nixsearch-index-test-support.workspace = true
+nixsearch-test-support.workspace = true
 
 assert_cmd.workspace = true
 predicates.workspace = true

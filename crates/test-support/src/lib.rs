@@ -3,10 +3,10 @@ use std::path::PathBuf;
 use camino::{Utf8Path, Utf8PathBuf};
 use tempfile::TempDir;
 
-use nix_search_config::{
+use nixsearch_config::{
     AppConfig, DataConfig, ProducerConfig, RefConfig, ServerConfig, SourceConfig, SourceKind,
 };
-use nix_search_core::{
+use nixsearch_core::{
     ArtifactKind, Declaration, IngestContext, OptionDoc, PackageDoc, SearchDocument,
     SourceLinkConfig,
 };
@@ -237,7 +237,7 @@ pub fn config_toml(index_dir: &Utf8Path) -> String {
 }
 
 pub fn write_config(dir: &TempDir, index_dir: &Utf8Path) -> PathBuf {
-    let path = dir.path().join("nix-search.toml");
+    let path = dir.path().join("nixsearch.toml");
     std::fs::write(&path, config_toml(index_dir)).unwrap();
     path
 }
@@ -271,12 +271,12 @@ mod tests {
     #[test]
     fn config_toml_escapes_index_dir_path() {
         let tempdir = tempfile::tempdir().unwrap();
-        let config_path = tempdir.path().join("nix-search.toml");
+        let config_path = tempdir.path().join("nixsearch.toml");
         let index_dir = utf8_path_buf(tempdir.path().join("index\"dir"));
 
         std::fs::write(&config_path, config_toml(&index_dir)).unwrap();
 
-        let config = nix_search_config::AppConfig::load(Some(&config_path)).unwrap();
+        let config = nixsearch_config::AppConfig::load(Some(&config_path)).unwrap();
 
         assert_eq!(config.data.index_dir, index_dir);
     }

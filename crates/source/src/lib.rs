@@ -8,9 +8,9 @@ use bytes::Bytes;
 use tempfile::tempdir;
 use tokio::process::Command;
 
-use nix_search_core::{ArtifactKind, IngestContext, SearchDocument};
-use nix_search_ingest::{parse_options_json, parse_packages_json};
-use nix_search_store::{ArtifactMetadata, ArtifactMetadataInput, ArtifactRef, ArtifactStore};
+use nixsearch_core::{ArtifactKind, IngestContext, SearchDocument};
+use nixsearch_ingest::{parse_options_json, parse_packages_json};
+use nixsearch_store::{ArtifactMetadata, ArtifactMetadataInput, ArtifactRef, ArtifactStore};
 
 const CHANNELS_BASE_URL: &str = "https://channels.nixos.org";
 const CHANNEL_PACKAGES_FILE: &str = "packages.json.br";
@@ -1077,9 +1077,9 @@ mod tests {
     use httpmock::prelude::*;
     use tempfile::tempdir;
 
-    use nix_search_core::{ArtifactKind, SearchDocument};
-    use nix_search_store::ArtifactStore;
-    use nix_search_test_support::{
+    use nixsearch_core::{ArtifactKind, SearchDocument};
+    use nixsearch_store::ArtifactStore;
+    use nixsearch_test_support::{
         OPTION_GIT_ENABLE, OPTION_NGINX_ENABLE, REF_SMALL, SOURCE_FIXTURES,
     };
 

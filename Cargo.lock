@@ -1663,22 +1663,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2195bf6aa996a481483b29d62a7663eed3fe39600c460e323f8ff41e90bdd89b"
 
 [[package]]
-name = "nix-search"
+name = "nixsearch"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
  "clap",
- "nix-search-config",
- "nix-search-core",
- "nix-search-index",
- "nix-search-index-test-support",
- "nix-search-ingest",
- "nix-search-ops",
- "nix-search-source",
- "nix-search-store",
- "nix-search-test-support",
- "nix-search-web",
+ "nixsearch-config",
+ "nixsearch-core",
+ "nixsearch-index",
+ "nixsearch-index-test-support",
+ "nixsearch-ingest",
+ "nixsearch-ops",
+ "nixsearch-source",
+ "nixsearch-store",
+ "nixsearch-test-support",
+ "nixsearch-web",
  "predicates",
  "tempfile",
  "tokio",
@@ -1687,19 +1687,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "nix-search-config"
+name = "nixsearch-config"
 version = "0.1.0"
 dependencies = [
  "camino",
  "figment",
- "nix-search-core",
+ "nixsearch-core",
  "serde",
  "tempfile",
  "thiserror",
 ]
 
 [[package]]
-name = "nix-search-core"
+name = "nixsearch-core"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -1709,13 +1709,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "nix-search-index"
+name = "nixsearch-index"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "camino",
- "nix-search-core",
- "nix-search-test-support",
+ "nixsearch-core",
+ "nixsearch-test-support",
  "serde",
  "serde_json",
  "tantivy",
@@ -1724,45 +1724,45 @@ dependencies = [
 ]
 
 [[package]]
-name = "nix-search-index-test-support"
+name = "nixsearch-index-test-support"
 version = "0.1.0"
 dependencies = [
  "camino",
- "nix-search-core",
- "nix-search-index",
- "nix-search-test-support",
+ "nixsearch-core",
+ "nixsearch-index",
+ "nixsearch-test-support",
  "time",
 ]
 
 [[package]]
-name = "nix-search-ingest"
+name = "nixsearch-ingest"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "nix-search-core",
- "nix-search-test-support",
+ "nixsearch-core",
+ "nixsearch-test-support",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "nix-search-ops"
+name = "nixsearch-ops"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "camino",
- "nix-search-config",
- "nix-search-core",
- "nix-search-index",
- "nix-search-ingest",
- "nix-search-source",
- "nix-search-store",
+ "nixsearch-config",
+ "nixsearch-core",
+ "nixsearch-index",
+ "nixsearch-ingest",
+ "nixsearch-source",
+ "nixsearch-store",
  "tempfile",
  "tracing",
 ]
 
 [[package]]
-name = "nix-search-source"
+name = "nixsearch-source"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1770,10 +1770,10 @@ dependencies = [
  "brotli",
  "bytes",
  "httpmock",
- "nix-search-core",
- "nix-search-ingest",
- "nix-search-store",
- "nix-search-test-support",
+ "nixsearch-core",
+ "nixsearch-ingest",
+ "nixsearch-store",
+ "nixsearch-test-support",
  "reqwest",
  "serde_json",
  "tempfile",
@@ -1781,12 +1781,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "nix-search-store"
+name = "nixsearch-store"
 version = "0.1.0"
 dependencies = [
  "bytes",
  "hex",
- "nix-search-core",
+ "nixsearch-core",
  "object_store",
  "serde",
  "serde_json",
@@ -1798,18 +1798,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "nix-search-test-support"
+name = "nixsearch-test-support"
 version = "0.1.0"
 dependencies = [
  "camino",
- "nix-search-config",
- "nix-search-core",
+ "nixsearch-config",
+ "nixsearch-core",
  "tempfile",
  "toml 1.1.2+spec-1.1.0",
 ]
 
 [[package]]
-name = "nix-search-web"
+name = "nixsearch-web"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1818,12 +1818,12 @@ dependencies = [
  "datastar",
  "futures-util",
  "maud",
- "nix-search-config",
- "nix-search-core",
- "nix-search-index",
- "nix-search-index-test-support",
- "nix-search-ops",
- "nix-search-test-support",
+ "nixsearch-config",
+ "nixsearch-core",
+ "nixsearch-index",
+ "nixsearch-index-test-support",
+ "nixsearch-ops",
+ "nixsearch-test-support",
  "serde",
  "serde_json",
  "tempfile",

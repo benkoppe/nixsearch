@@ -4,19 +4,19 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 
-use nix_search_config::{AppConfig, SourceConfig};
-use nix_search_core::{CommonDoc, SearchDocument, SourceLinkConfig, SourceLinkResolver};
-use nix_search_index::{IndexStore, SearchHit, SearchIndex, SearchOptions, SearchScope};
-use nix_search_ops::generate::build_and_publish_generation;
-use nix_search_ops::lock::acquire_update_lock;
-use nix_search_ops::produce::{
+use nixsearch_config::{AppConfig, SourceConfig};
+use nixsearch_core::{CommonDoc, SearchDocument, SourceLinkConfig, SourceLinkResolver};
+use nixsearch_index::{IndexStore, SearchHit, SearchIndex, SearchOptions, SearchScope};
+use nixsearch_ops::generate::build_and_publish_generation;
+use nixsearch_ops::lock::acquire_update_lock;
+use nixsearch_ops::produce::{
     artifact_store_from_config, latest_artifact_ref_for_target, produce_target,
 };
-use nix_search_ops::targets::{TargetKey, current_manifest_targets, select_targets};
-use nix_search_source::ProducedArtifact;
+use nixsearch_ops::targets::{TargetKey, current_manifest_targets, select_targets};
+use nixsearch_source::ProducedArtifact;
 
 #[derive(Debug, Parser)]
-#[command(name = "nix-search")]
+#[command(name = "nixsearch")]
 #[command(about = "Search Nix packages and options")]
 struct Cli {
     #[command(subcommand)]
@@ -340,7 +340,7 @@ fn search(args: SearchArgs) -> Result<()> {
 async fn serve(args: ConfigArgs) -> Result<()> {
     let config = AppConfig::load(args.config.as_deref()).context("failed to load config")?;
 
-    nix_search_web::serve(config).await
+    nixsearch_web::serve(config).await
 }
 
 fn load_required_config(path: &Path) -> Result<AppConfig> {

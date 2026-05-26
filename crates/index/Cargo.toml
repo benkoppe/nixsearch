@@ -1,11 +1,11 @@
 [package]
-name = "nix-search-index"
+name = "nixsearch-index"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-nix-search-core.workspace = true
+nixsearch-core.workspace = true
 
 anyhow.workspace = true
 camino.workspace = true
@@ -15,5 +15,5 @@ tantivy.workspace = true
 time.workspace = true
 
 [dev-dependencies]
-nix-search-test-support.workspace = true
+nixsearch-test-support.workspace = true
 tempfile.workspace = true

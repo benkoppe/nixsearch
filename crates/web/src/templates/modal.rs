@@ -1,8 +1,8 @@
 use maud::{Markup, html};
 
-use nix_search_config::AppConfig;
-use nix_search_core::SearchDocument;
-use nix_search_index::{EntryLookup, EntryLookupResult, SearchIndex};
+use nixsearch_config::AppConfig;
+use nixsearch_core::SearchDocument;
+use nixsearch_index::{EntryLookup, EntryLookupResult, SearchIndex};
 
 use crate::AppState;
 use crate::request::{LinkOrigin, PageQuery, PageRequest, parse_document_kind, resolve_entry_ref};

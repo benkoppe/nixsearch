@@ -8,9 +8,9 @@
     }:
     let
       baseEnv = [
-        "NIX_SEARCH_SERVER__LISTEN=0.0.0.0:3000"
-        "NIX_SEARCH_DATA__ARTIFACT_URL=file:///data/artifacts"
-        "NIX_SEARCH_DATA__INDEX_DIR=/data/indexes"
+        "NIXSEARCH_SERVER__LISTEN=0.0.0.0:3000"
+        "NIXSEARCH_DATA__ARTIFACT_URL=file:///data/artifacts"
+        "NIXSEARCH_DATA__INDEX_DIR=/data/indexes"
       ];
 
       imageConfig = extraEnv: {
@@ -45,7 +45,7 @@
     {
       packages = lib.optionalAttrs pkgs.stdenv.isLinux {
         container = mkContainer {
-          name = "nix-search";
+          name = "nixsearch";
           contents = [
             self'.packages.cli
             pkgs.cacert
@@ -56,7 +56,7 @@
         };
 
         containerWithNix = mkContainer {
-          name = "nix-search-with-nix";
+          name = "nixsearch-with-nix";
           contents = [
             self'.packages.cli
             pkgs.cacert

@@ -1,5 +1,5 @@
 [package]
-name = "nix-search-ops"
+name = "nixsearch-ops"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,12 +9,12 @@ anyhow.workspace = true
 camino.workspace = true
 tracing.workspace = true
 
-nix-search-config.workspace = true
-nix-search-core.workspace = true
-nix-search-index.workspace = true
-nix-search-ingest.workspace = true
-nix-search-source.workspace = true
-nix-search-store.workspace = true
+nixsearch-config.workspace = true
+nixsearch-core.workspace = true
+nixsearch-index.workspace = true
+nixsearch-ingest.workspace = true
+nixsearch-source.workspace = true
+nixsearch-store.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

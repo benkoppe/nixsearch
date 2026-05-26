@@ -1,6 +1,6 @@
 use maud::{Markup, html};
 
-use nix_search_config::AppConfig;
+use nixsearch_config::AppConfig;
 
 use crate::request::SourceFilter;
 
@@ -18,7 +18,7 @@ pub fn render_form(
                 input type="search" name="q" value=(q)
                     placeholder="Search packages and options…"
                     autocomplete="off" autofocus
-                    data-nix-search-input="q";
+                    data-nixsearch-input="q";
             }
 
             @if has_multiple_sources {
@@ -37,7 +37,7 @@ pub fn render_form(
 
 fn render_source_select(config: &AppConfig, selected: &SourceFilter) -> Markup {
     html! {
-        select data-nix-search-input="source-path" {
+        select data-nixsearch-input="source-path" {
             option value="" selected[*selected == SourceFilter::All] { "All sources" }
             @for (id, source) in &config.sources {
                 @let name = source.name.as_deref().unwrap_or(id);
@@ -68,7 +68,7 @@ fn render_ref_select(
 
     html! {
         @if !hidden {
-            select name="ref" data-nix-search-input="ref" {
+            select name="ref" data-nixsearch-input="ref" {
                 @for ref_id in &refs {
                     @let is_selected = if current_ref.is_empty() {
                         default_ref == Some(*ref_id)
@@ -79,7 +79,7 @@ fn render_ref_select(
                 }
             }
         } @else {
-            input type="hidden" name="ref" value="" data-nix-search-input="ref";
+            input type="hidden" name="ref" value="" data-nixsearch-input="ref";
         }
     }
 }

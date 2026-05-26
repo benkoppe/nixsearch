@@ -3,9 +3,9 @@ use std::collections::BTreeSet;
 use anyhow::Result;
 use camino::Utf8PathBuf;
 
-use nix_search_config::AppConfig;
-use nix_search_index::{IndexGenerationManifest, IndexStore, IndexTargetManifest, SearchIndex};
-use nix_search_store::ArtifactStore;
+use nixsearch_config::AppConfig;
+use nixsearch_index::{IndexGenerationManifest, IndexStore, IndexTargetManifest, SearchIndex};
+use nixsearch_store::ArtifactStore;
 
 use crate::consume::consume_target;
 use crate::produce::{artifact_store_from_config, produce_target, produced_from_existing_artifact};

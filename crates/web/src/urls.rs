@@ -1,4 +1,4 @@
-use nix_search_config::AppConfig;
+use nixsearch_config::AppConfig;
 
 use crate::request::{LinkOrigin, PageQuery, PageRequest, non_empty};
 

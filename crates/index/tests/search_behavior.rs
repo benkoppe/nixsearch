@@ -1,12 +1,12 @@
 use camino::Utf8PathBuf;
 use tempfile::tempdir;
 
-use nix_search_core::{DocumentKind, SearchDocument};
-use nix_search_index::{
+use nixsearch_core::{DocumentKind, SearchDocument};
+use nixsearch_index::{
     EntryLookup, EntryLookupResult, SearchHit, SearchIndex, SearchOptions, SearchScope,
 };
 
-use nix_search_test_support::{
+use nixsearch_test_support::{
     OPTION_GIT_ENABLE, OPTION_SYSTEMD_BOOT_ENABLE, OPTION_TAILSCALE_ENABLE, PACKAGE_GIT,
     PACKAGE_RIPGREP, REF_SMALL, SOURCE_FIXTURES, canonical_documents, ingest_context_for,
     option_doc_for, package_doc_for, package_doc_with_main_program,

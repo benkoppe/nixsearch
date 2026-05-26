@@ -8,7 +8,7 @@ use datastar::prelude::{ExecuteScript, PatchElements};
 use futures_util::stream;
 use serde::Deserialize;
 
-use nix_search_index::{SearchIndex, SearchOptions, SearchResult, SearchScope};
+use nixsearch_index::{SearchIndex, SearchOptions, SearchResult, SearchScope};
 
 use crate::AppState;
 use crate::DEFAULT_LIMIT;

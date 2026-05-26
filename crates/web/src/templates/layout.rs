@@ -1,7 +1,7 @@
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 
-use nix_search_config::AppConfig;
-use nix_search_index::SearchResult;
+use nixsearch_config::AppConfig;
+use nixsearch_index::SearchResult;
 
 use crate::AppState;
 use crate::RECONCILE_EVENTS_URL;
@@ -41,7 +41,7 @@ pub fn render_full_page(
     };
 
     let reconcile_attr = format!(
-        "@get('{RECONCILE_EVENTS_URL}?url=' + encodeURIComponent(location.pathname + location.search) + '&previous_url=' + encodeURIComponent(window.nixSearchPreviousUrl || ''))"
+        "@get('{RECONCILE_EVENTS_URL}?url=' + encodeURIComponent(location.pathname + location.search) + '&previous_url=' + encodeURIComponent(window.nixsearchPreviousUrl || ''))"
     );
 
     html! {
@@ -50,7 +50,7 @@ pub fn render_full_page(
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
-                title { "nix-search" }
+                title { "nixsearch" }
                 script type="module"
                     src="https://cdn.jsdelivr.net/gh/starfederation/datastar@main/bundles/datastar.js" {}
                 style { (PreEscaped(CSS)) }
@@ -58,10 +58,10 @@ pub fn render_full_page(
                     style { "dialog#entry-modal { display: block; z-index: 201; } .modal-backdrop { display: block; position: fixed; inset: 0; z-index: 200; background: rgb(0 0 0 / 0.6); }" }
                 }
             }
-            body data-on:nix-search-reconcile__window=(reconcile_attr) {
+            body data-on:nixsearch-reconcile__window=(reconcile_attr) {
                 header.header {
                     div.header-inner {
-                        a.site-title href="/" { "nix-search" }
+                        a.site-title href="/" { "nixsearch" }
                         (search::render_form(&state.config, &source_filter, &form_action, q))
                     }
                 }

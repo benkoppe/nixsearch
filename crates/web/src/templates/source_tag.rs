@@ -1,6 +1,6 @@
 use maud::{Markup, html};
 
-use nix_search_config::AppConfig;
+use nixsearch_config::AppConfig;
 
 const DEFAULT_SOURCE_COLOR: &str = "#94a3b8";
 
@@ -60,7 +60,7 @@ mod tests {
 
     #[test]
     fn uses_configured_source_color() {
-        let mut config = nix_search_test_support::app_config("./data/indexes");
+        let mut config = nixsearch_test_support::app_config("./data/indexes");
 
         config.sources.get_mut("fixtures").unwrap().color = Some("#abcdef".to_owned());
 

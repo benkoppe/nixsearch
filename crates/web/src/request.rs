@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use nix_search_config::AppConfig;
-use nix_search_core::DocumentKind;
+use nixsearch_config::AppConfig;
+use nixsearch_core::DocumentKind;
 
 #[derive(Debug, Clone, Default)]
 pub struct PageRequest {

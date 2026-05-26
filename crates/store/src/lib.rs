@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use nix_search_core::ArtifactKind;
+use nixsearch_core::ArtifactKind;
 use object_store::local::LocalFileSystem;
 use object_store::path::Path as ObjectPath;
 use object_store::{ObjectStore, ObjectStoreExt};
@@ -246,7 +246,7 @@ mod tests {
     use bytes::Bytes;
     use tempfile::tempdir;
 
-    use nix_search_core::ArtifactKind;
+    use nixsearch_core::ArtifactKind;
 
     use super::{ArtifactMetadataInput, ArtifactRef, ArtifactStore};
 

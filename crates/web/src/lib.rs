@@ -8,10 +8,10 @@ use camino::Utf8PathBuf;
 use time::OffsetDateTime;
 use tower_http::trace::TraceLayer;
 
-use nix_search_config::AppConfig;
-use nix_search_index::IndexStore;
-use nix_search_ops::generate;
-use nix_search_ops::lock;
+use nixsearch_config::AppConfig;
+use nixsearch_index::IndexStore;
+use nixsearch_ops::generate;
+use nixsearch_ops::lock;
 
 mod handlers;
 mod maintenance;
@@ -71,7 +71,7 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         .await
         .with_context(|| format!("failed to bind {addr}"))?;
 
-    tracing::info!("serving nix-search web UI at http://{addr}");
+    tracing::info!("serving nixsearch web UI at http://{addr}");
 
     axum::serve(listener, app)
         .await
@@ -89,7 +89,7 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<maintenance::Pu
         Err(error) => {
             if !config.server.bootstrap {
                 return Err(error).context(
-                    "failed to read current index generation; run `nix-search update` first",
+                    "failed to read current index generation; run `nixsearch update` first",
                 );
             }
 
@@ -101,7 +101,7 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<maintenance::Pu
 
     if !config.server.bootstrap {
         bail!(
-            "failed to locate current index in {}; run `nix-search update` first",
+            "failed to locate current index in {}; run `nixsearch update` first",
             config.data.index_dir
         );
     }
@@ -193,11 +193,11 @@ fn log_startup_maintenance_state(
 mod tests {
     use std::fs;
 
-    use nix_search_index::IndexStore;
-    use nix_search_index_test_support::{
+    use nixsearch_index::IndexStore;
+    use nixsearch_index_test_support::{
         assert_canonical_options_manifest_targets, publish_canonical_options_index,
     };
-    use nix_search_test_support::{REF_SMALL, SOURCE_FIXTURES, app_config, utf8_path_buf};
+    use nixsearch_test_support::{REF_SMALL, SOURCE_FIXTURES, app_config, utf8_path_buf};
     use tempfile::tempdir;
 
     use super::ensure_current_generation;
@@ -224,7 +224,7 @@ mod tests {
 
         let error = ensure_current_generation(&config).await.unwrap_err();
 
-        assert!(format!("{error:#}").contains("run `nix-search update` first"));
+        assert!(format!("{error:#}").contains("run `nixsearch update` first"));
     }
 
     #[tokio::test]
@@ -308,6 +308,6 @@ mod tests {
 
         let error = ensure_current_generation(&config).await.unwrap_err();
 
-        assert!(format!("{error:#}").contains("run `nix-search update` first"));
+        assert!(format!("{error:#}").contains("run `nixsearch update` first"));
     }
 }

@@ -1,9 +1,9 @@
 use maud::{Markup, html};
 
-use nix_search_config::AppConfig;
-use nix_search_core::{CommonDoc, SearchDocument, SourceLinkConfig};
+use nixsearch_config::AppConfig;
+use nixsearch_core::{CommonDoc, SearchDocument, SourceLinkConfig};
 
-use nix_search_index::SearchHit;
+use nixsearch_index::SearchHit;
 
 use crate::DEFAULT_LIMIT;
 use crate::request::{LinkOrigin, PageQuery, PageRequest, normalized_query};
@@ -216,13 +216,13 @@ pub fn source_link_config_for_document<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nix_search_core::{
+    use nixsearch_core::{
         Declaration, IngestContext, OptionDoc, SearchDocument, SourceLinkResolver,
     };
 
     #[test]
     fn resolves_source_link_when_available() {
-        let config = nix_search_test_support::app_config("./data/indexes");
+        let config = nixsearch_test_support::app_config("./data/indexes");
 
         let mut option = OptionDoc::new(
             &IngestContext {

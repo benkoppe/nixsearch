@@ -1,4 +1,4 @@
-# Nix Search Rust Project Plan
+# nixsearch Rust Project Plan
 
 This is a rough architectural plan for a future Rust project inspired by `nixos-search`, `searchix`, and `NuschtOS-search`. It is intentionally not a strict specification. Future agents should treat it as guidance, revise it when better decisions appear, and preserve the main design goals: flexibility, local indexing, clear separation between backend/search/frontend, and broad support for Nix ecosystem data.
 
@@ -184,8 +184,8 @@ Recommended config source order:
 
 ```text
 built-in defaults
-  -> nix-search.toml
-  -> NIX_SEARCH_* environment variables
+  -> nixsearch.toml
+  -> NIXSEARCH_* environment variables
   -> CLI overrides
 ```
 
@@ -287,7 +287,7 @@ Remote artifact storage should be possible later:
 
 ```toml
 [data]
-artifact_url = "s3://my-bucket/nix-search/artifacts"
+artifact_url = "s3://my-bucket/nixsearch/artifacts"
 ```
 
 Artifacts are the boundary between production and ingestion. They allow caching, debugging, reindexing without rerunning Nix, CI-produced artifacts, and clear separation between producer failures and parser/indexer failures.
@@ -636,15 +636,15 @@ Provide a CLI that can run without the web server.
 Potential commands:
 
 ```text
-nix-search produce
-nix-search consume
-nix-search index
-nix-search update
-nix-search serve
-nix-search search "programs.git.enable"
-nix-search inspect-source nixos unstable
-nix-search list-sources
-nix-search list-refs
+nixsearch produce
+nixsearch consume
+nixsearch index
+nixsearch update
+nixsearch serve
+nixsearch search "programs.git.enable"
+nixsearch inspect-source nixos unstable
+nixsearch list-sources
+nixsearch list-refs
 ```
 
 Low-level file commands such as `index-options --options-json ./options.json` should remain available for tests/debugging, but internally they should eventually go through an `ExistingFileProducer` and the normal artifact consumer path.

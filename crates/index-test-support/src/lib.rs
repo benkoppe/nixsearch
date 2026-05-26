@@ -1,12 +1,12 @@
-//! Test helpers that require `nix-search-index`.
+//! Test helpers that require `nixsearch-index`.
 //!
-//! Kept separate from `nix-search-test-support` so `nix-search-index` can use
+//! Kept separate from `nixsearch-test-support` so `nixsearch-index` can use
 //! the base test fixtures in its own tests without creating a dependency cycle.
 
 use camino::{Utf8Path, Utf8PathBuf};
-use nix_search_core::{ArtifactKind, SearchDocument};
-use nix_search_index::{IndexGenerationManifest, IndexStore, IndexTargetManifest, SearchIndex};
-use nix_search_test_support::{REF_SMALL, SOURCE_FIXTURES, canonical_documents};
+use nixsearch_core::{ArtifactKind, SearchDocument};
+use nixsearch_index::{IndexGenerationManifest, IndexStore, IndexTargetManifest, SearchIndex};
+use nixsearch_test_support::{REF_SMALL, SOURCE_FIXTURES, canonical_documents};
 
 pub fn publish_canonical_index(index_root: &Utf8Path) -> Utf8PathBuf {
     publish_canonical_mixed_index(index_root)

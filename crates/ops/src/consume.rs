@@ -1,9 +1,9 @@
 use anyhow::{Context, Result, bail};
 
-use nix_search_config::SourceKind;
-use nix_search_core::{ArtifactKind, SearchDocument};
-use nix_search_source::{Consumer, OptionsJsonConsumer, PackagesJsonConsumer, ProducedArtifact};
-use nix_search_store::ArtifactStore;
+use nixsearch_config::SourceKind;
+use nixsearch_core::{ArtifactKind, SearchDocument};
+use nixsearch_source::{Consumer, OptionsJsonConsumer, PackagesJsonConsumer, ProducedArtifact};
+use nixsearch_store::ArtifactStore;
 
 use crate::targets::TargetRef;
 

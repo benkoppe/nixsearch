@@ -1,5 +1,5 @@
 [package]
-name = "nix-search-index-test-support"
+name = "nixsearch-index-test-support"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,7 +7,7 @@ publish = false
 
 [dependencies]
 camino.workspace = true
-nix-search-core.workspace = true
-nix-search-index.workspace = true
-nix-search-test-support.workspace = true
+nixsearch-core.workspace = true
+nixsearch-index.workspace = true
+nixsearch-test-support.workspace = true
 time.workspace = true

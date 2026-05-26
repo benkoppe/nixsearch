@@ -8,7 +8,7 @@ use figment::providers::{Env, Format, Serialized, Toml};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use nix_search_core::{ArtifactKind, SourceLinkConfig};
+use nixsearch_core::{ArtifactKind, SourceLinkConfig};
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -59,7 +59,7 @@ impl AppConfig {
             figment = figment.merge(Toml::file(path));
         }
 
-        figment = figment.merge(Env::prefixed("NIX_SEARCH_").split("__"));
+        figment = figment.merge(Env::prefixed("NIXSEARCH_").split("__"));
 
         let raw: RawAppConfig = figment.extract()?;
         let config = raw.into_app_config()?;
@@ -1130,7 +1130,7 @@ mod tests {
     use camino::Utf8PathBuf;
     use tempfile::{TempDir, tempdir};
 
-    use nix_search_core::{ArtifactKind, SourceLinkConfig};
+    use nixsearch_core::{ArtifactKind, SourceLinkConfig};
 
     use crate::{
         DownloadCompression, EvalModuleConfig, HJEM_COLOR, HJEM_RUM_COLOR, HOME_MANAGER_COLOR,
@@ -1163,7 +1163,7 @@ mod tests {
     }
 
     fn write_toml(dir: &TempDir, toml: &str) -> PathBuf {
-        let path = dir.path().join("nix-search.toml");
+        let path = dir.path().join("nixsearch.toml");
         fs::write(&path, toml).unwrap();
         path
     }
@@ -1302,7 +1302,7 @@ mod tests {
             .parent()
             .and_then(|path| path.parent())
             .expect("config crate should live under crates/config");
-        let path = repo_root.join("nix-search.example.toml");
+        let path = repo_root.join("nixsearch.example.toml");
 
         let config = AppConfig::load(Some(&path)).unwrap();
 

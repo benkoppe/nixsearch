@@ -9,7 +9,7 @@ use tantivy::schema::{Field, STORED, STRING, Schema, TEXT, TantivyDocument, Valu
 use tantivy::{Index, IndexReader, IndexWriter, doc};
 use time::OffsetDateTime;
 
-use nix_search_core::{ArtifactKind, DocumentKind, OptionDoc, PackageDoc, SearchDocument};
+use nixsearch_core::{ArtifactKind, DocumentKind, OptionDoc, PackageDoc, SearchDocument};
 
 const WRITER_MEMORY_BYTES: usize = 50_000_000;
 
@@ -501,7 +501,7 @@ impl SearchIndexWriter {
 fn add_name_parts(
     document: &mut TantivyDocument,
     fields: &IndexFields,
-    common: &nix_search_core::CommonDoc,
+    common: &nixsearch_core::CommonDoc,
 ) {
     if let Some(root) = &common.name_parts.root {
         document.add_text(fields.name_root, root);
@@ -726,7 +726,7 @@ impl IndexStore {
     pub fn current_path(&self) -> Result<Utf8PathBuf> {
         self.try_current_path()?.with_context(|| {
             format!(
-                "failed to read current index file {}; run `nix-search update` first",
+                "failed to read current index file {}; run `nixsearch update` first",
                 self.current_file().as_str()
             )
         })
@@ -854,7 +854,7 @@ mod tests {
     use camino::Utf8PathBuf;
     use tempfile::{TempDir, tempdir};
 
-    use nix_search_core::ArtifactKind;
+    use nixsearch_core::ArtifactKind;
 
     const SOURCE_FIXTURES: &str = "fixtures";
     const REF_SMALL: &str = "small";
@@ -1088,7 +1088,7 @@ mod tests {
 
         let error = store.current_path().unwrap_err();
 
-        assert!(format!("{error:#}").contains("run `nix-search update` first"));
+        assert!(format!("{error:#}").contains("run `nixsearch update` first"));
     }
 
     #[test]

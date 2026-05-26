@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, bail};
 
-use nix_search_config::{AppConfig, RefConfig, SourceConfig, SourceKind};
-use nix_search_index::{IndexStore, IndexTargetManifest};
+use nixsearch_config::{AppConfig, RefConfig, SourceConfig, SourceKind};
+use nixsearch_index::{IndexStore, IndexTargetManifest};
 
 #[derive(Debug, Clone)]
 pub struct TargetRef {
