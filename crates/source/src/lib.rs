@@ -301,6 +301,121 @@ impl Producer for NixBuildOptionsJsonProducer {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct FlakeFileProducer {
+    source_ref: String,
+    attribute: String,
+    output_path: PathBuf,
+    artifact: ArtifactKind,
+    producer_name: String,
+}
+
+impl FlakeFileProducer {
+    pub fn new(
+        source_ref: impl Into<String>,
+        attribute: impl Into<String>,
+        output_path: impl Into<PathBuf>,
+        artifact: ArtifactKind,
+    ) -> Self {
+        Self {
+            source_ref: source_ref.into(),
+            attribute: attribute.into(),
+            output_path: output_path.into(),
+            artifact,
+            producer_name: "flake-file".to_owned(),
+        }
+    }
+}
+
+#[async_trait]
+impl Producer for FlakeFileProducer {
+    async fn produce(
+        &self,
+        store: &ArtifactStore,
+        request: &ProduceRequest,
+    ) -> Result<ProducedArtifact> {
+        let source_ref = normalize_flake_ref(&self.source_ref)?;
+        let installable = flake_installable(&source_ref, &self.attribute);
+
+        let output_path = run_nix_build_installable(&installable)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to build flake installable {:?} for source ref {:?}",
+                    installable, self.source_ref
+                )
+            })?;
+
+        let artifact_path = output_path.join(&self.output_path);
+
+        let bytes = tokio::fs::read(&artifact_path).await.with_context(|| {
+            format!(
+                "failed to read flake output artifact {}",
+                artifact_path.display()
+            )
+        })?;
+
+        let artifact_ref = request.artifact_ref(self.artifact);
+
+        let mut metadata_input = ArtifactMetadataInput::new(self.producer_name.clone());
+        metadata_input.source_url = Some(source_ref.clone());
+
+        match resolve_flake_revision(&source_ref).await {
+            Ok(Some(revision)) => metadata_input.revision = Some(revision),
+            Ok(None) => {}
+            Err(error) => metadata_input.warnings.push(format!(
+                "failed to resolve flake revision for source ref {source_ref:?}: {error:#}"
+            )),
+        }
+
+        let metadata = store
+            .put_artifact(&artifact_ref, Bytes::from(bytes), metadata_input)
+            .await
+            .context("failed to write flake output artifact to store")?;
+
+        Ok(ProducedArtifact {
+            artifact_ref,
+            metadata,
+        })
+    }
+}
+
+fn flake_installable(source_ref: &str, attribute: &str) -> String {
+    format!("{source_ref}#{attribute}")
+}
+
+async fn run_nix_build_installable(installable: &str) -> Result<PathBuf> {
+    let output = Command::new("nix")
+        .arg("build")
+        .arg("--extra-experimental-features")
+        .arg("nix-command flakes")
+        .arg("--no-link")
+        .arg("--print-out-paths")
+        .arg(installable)
+        .output()
+        .await
+        .with_context(|| format!("failed to run nix build for installable {installable:?}"))?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "nix build failed with status {}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    let stdout = String::from_utf8(output.stdout).context("nix stdout was not valid UTF-8")?;
+
+    let output_path = stdout
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .context("nix build succeeded but did not print an output path")?;
+
+    Ok(PathBuf::from(output_path))
+}
+
 fn normalize_nix_path_source(source_ref: &str) -> String {
     if let Some(rest) = source_ref.strip_prefix("github:") {
         let mut parts = rest.splitn(3, '/');
@@ -1489,5 +1604,13 @@ mod tests {
         let revision = revision.expect("expected github flake to resolve to a revision");
 
         assert!(!revision.is_empty());
+    }
+
+    #[test]
+    fn flake_installable_joins_ref_and_attribute() {
+        assert_eq!(
+            super::flake_installable("github:example/project/main", "docs-json"),
+            "github:example/project/main#docs-json"
+        );
     }
 }

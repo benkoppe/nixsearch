@@ -10,8 +10,8 @@ use nix_search_core::ArtifactKind;
 use nix_search_source::{
     ChannelOptionsJsonProducer, ChannelPackagesJsonProducer,
     DownloadCompression as SourceDownloadCompression, DownloadProducer, EvalModule, EvalModuleRef,
-    EvalModulesProducer, ExistingFileProducer, NixBuildOptionsJsonProducer, ProduceRequest,
-    ProducedArtifact, Producer,
+    EvalModulesProducer, ExistingFileProducer, FlakeFileProducer, NixBuildOptionsJsonProducer,
+    ProduceRequest, ProducedArtifact, Producer,
 };
 use nix_search_store::{ArtifactRef, ArtifactStore};
 
@@ -96,6 +96,22 @@ pub async fn produce_target(store: &ArtifactStore, target: &TargetRef) -> Result
             })
         }
 
+        ProducerConfig::FlakeFile {
+            source_ref,
+            attribute,
+            output_path,
+            artifact,
+        } => {
+            let producer = FlakeFileProducer::new(source_ref, attribute, output_path, *artifact);
+
+            producer.produce(store, &request).await.with_context(|| {
+                format!(
+                    "failed to produce flake file artifact for {}/{}",
+                    target.source_id, target.ref_config.id
+                )
+            })
+        }
+
         ProducerConfig::Download {
             url,
             artifact,
@@ -159,7 +175,8 @@ pub fn artifact_kind_for_producer(producer: &ProducerConfig) -> ArtifactKind {
         ProducerConfig::EvalModules { .. } => ArtifactKind::OptionsJson,
         ProducerConfig::Download { artifact, .. } => *artifact,
         ProducerConfig::CustomCommand { artifact, .. } => *artifact,
-        ProducerConfig::FlakeOutput { .. } => ArtifactKind::FlakeInfoJson,
+        ProducerConfig::FlakeFile { artifact, .. } => *artifact,
+        ProducerConfig::FlakeInfo { .. } => ArtifactKind::FlakeInfoJson,
     }
 }
 

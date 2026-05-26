@@ -465,12 +465,11 @@ impl RawSourceConfig {
             .map(|ref_id| RefConfig {
                 id: ref_id.clone(),
                 source_links: Some(home_manager_source_links(&ref_id)),
-                producer: ProducerConfig::NixBuildOptionsJson {
+                producer: ProducerConfig::FlakeFile {
                     source_ref: format!("github:nix-community/home-manager/{ref_id}"),
-                    nix_path_name: "home-manager".to_owned(),
-                    attribute: "docs.json".to_owned(),
-                    import_path: "default.nix".to_owned(),
-                    output_path: "share/doc/home-manager/options.json".to_owned(),
+                    attribute: "docs-json".to_owned(),
+                    output_path: PathBuf::from("share/doc/home-manager/options.json"),
+                    artifact: ArtifactKind::OptionsJson,
                 },
             })
             .collect::<Vec<_>>();
@@ -502,12 +501,11 @@ impl RawSourceConfig {
             .map(|ref_id| RefConfig {
                 id: ref_id.clone(),
                 source_links: Some(nix_darwin_source_links(&ref_id)),
-                producer: ProducerConfig::NixBuildOptionsJson {
+                producer: ProducerConfig::FlakeFile {
                     source_ref: format!("github:nix-darwin/nix-darwin/{ref_id}"),
-                    nix_path_name: "darwin".to_owned(),
-                    attribute: "docs.optionsJSON".to_owned(),
-                    import_path: "release.nix".to_owned(),
-                    output_path: "share/doc/darwin/options.json".to_owned(),
+                    attribute: "optionsJSON".to_owned(),
+                    output_path: PathBuf::from("share/doc/darwin/options.json"),
+                    artifact: ArtifactKind::OptionsJson,
                 },
             })
             .collect::<Vec<_>>();
@@ -531,13 +529,11 @@ impl RawSourceConfig {
             .map(|ref_id| RefConfig {
                 id: ref_id.clone(),
                 source_links: Some(hjem_source_links(&ref_id)),
-                producer: ProducerConfig::EvalModules {
+                producer: ProducerConfig::FlakeFile {
                     source_ref: format!("github:feel-co/hjem/{ref_id}"),
-                    inputs: BTreeMap::new(),
-                    modules: vec![EvalModuleConfig::FlakeAttr {
-                        flake: "self".to_owned(),
-                        attr: "nixosModules.default".to_owned(),
-                    }],
+                    attribute: "docs-json".to_owned(),
+                    output_path: PathBuf::from("share/doc/hjem/options.json"),
+                    artifact: ArtifactKind::OptionsJson,
                 },
             })
             .collect::<Vec<_>>();
@@ -815,7 +811,15 @@ pub enum ProducerConfig {
         artifact: ArtifactKind,
     },
 
-    FlakeOutput {
+    FlakeFile {
+        #[serde(rename = "ref")]
+        source_ref: String,
+        attribute: String,
+        output_path: PathBuf,
+        artifact: ArtifactKind,
+    },
+
+    FlakeInfo {
         #[serde(rename = "ref")]
         source_ref: String,
     },
@@ -939,7 +943,18 @@ impl ProducerConfig {
                 }
             }
 
-            Self::FlakeOutput { source_ref } => {
+            Self::FlakeFile {
+                source_ref,
+                attribute,
+                output_path,
+                ..
+            } => {
+                validate_producer_non_empty(source_id, ref_id, "ref", source_ref)?;
+                validate_producer_non_empty(source_id, ref_id, "attribute", attribute)?;
+                validate_relative_output_path(source_id, ref_id, "output_path", output_path)?;
+            }
+
+            Self::FlakeInfo { source_ref } => {
                 validate_producer_non_empty(source_id, ref_id, "ref", source_ref)?;
             }
         }
@@ -956,7 +971,8 @@ impl ProducerConfig {
             Self::EvalModules { .. } => ProducerKind::EvalModules,
             Self::Download { .. } => ProducerKind::Download,
             Self::CustomCommand { .. } => ProducerKind::CustomCommand,
-            Self::FlakeOutput { .. } => ProducerKind::FlakeOutput,
+            Self::FlakeFile { .. } => ProducerKind::FlakeFile,
+            Self::FlakeInfo { .. } => ProducerKind::FlakeInfo,
         }
     }
 }
@@ -971,7 +987,8 @@ pub enum ProducerKind {
     EvalModules,
     Download,
     CustomCommand,
-    FlakeOutput,
+    FlakeFile,
+    FlakeInfo,
 }
 
 fn validate_eval_module_config(
@@ -1077,6 +1094,23 @@ fn validate_nix_path_name(source_id: &str, ref_id: &str, value: &str) -> Result<
             ref_id,
             "nix_path_name must not contain '/', '=', '<', '>', or whitespace",
         );
+    }
+
+    Ok(())
+}
+
+fn validate_relative_output_path(
+    source_id: &str,
+    ref_id: &str,
+    field: &str,
+    path: &Path,
+) -> Result<()> {
+    if path.as_os_str().is_empty() {
+        return producer_error(source_id, ref_id, &format!("{field} must not be empty"));
+    }
+
+    if path.is_absolute() {
+        return producer_error(source_id, ref_id, &format!("{field} must be relative"));
     }
 
     Ok(())
@@ -1521,6 +1555,72 @@ mod tests {
     }
 
     #[test]
+    fn loads_flake_file_producer() {
+        let config = load_toml(
+            r#"
+            [sources.fixtures]
+            name = "Fixtures"
+            kind = "options"
+
+            [sources.fixtures.refs.main.producer]
+            type = "flake-file"
+            ref = "github:example/project/main"
+            attribute = "docs-json"
+            output_path = "share/doc/example/options.json"
+            artifact = "options-json"
+            "#,
+        );
+
+        let producer = &config.sources[FIXTURES_SOURCE].refs[0].producer;
+
+        assert_eq!(producer.kind(), ProducerKind::FlakeFile);
+
+        match producer {
+            ProducerConfig::FlakeFile {
+                source_ref,
+                attribute,
+                output_path,
+                artifact,
+            } => {
+                assert_eq!(source_ref, "github:example/project/main");
+                assert_eq!(attribute, "docs-json");
+                assert_eq!(
+                    output_path,
+                    &PathBuf::from("share/doc/example/options.json")
+                );
+                assert_eq!(*artifact, ArtifactKind::OptionsJson);
+            }
+            other => panic!("unexpected producer: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn loads_flake_info_producer() {
+        let config = load_toml(
+            r#"
+            [sources.fixtures]
+            name = "Fixtures"
+            kind = "mixed"
+
+            [sources.fixtures.refs.main.producer]
+            type = "flake-info"
+            ref = "github:example/project/main"
+            "#,
+        );
+
+        let producer = &config.sources[FIXTURES_SOURCE].refs[0].producer;
+
+        assert_eq!(producer.kind(), ProducerKind::FlakeInfo);
+
+        match producer {
+            ProducerConfig::FlakeInfo { source_ref } => {
+                assert_eq!(source_ref, "github:example/project/main");
+            }
+            other => panic!("unexpected producer: {other:?}"),
+        }
+    }
+
+    #[test]
     fn rejects_invalid_source_ids() {
         let error = load_toml_error(
             r#"
@@ -1699,24 +1799,22 @@ mod tests {
         let ref_config = &source.refs[0];
 
         assert_eq!(ref_config.id, "master");
-        assert_eq!(
-            ref_config.producer.kind(),
-            ProducerKind::NixBuildOptionsJson
-        );
+        assert_eq!(ref_config.producer.kind(), ProducerKind::FlakeFile);
 
         match &ref_config.producer {
-            ProducerConfig::NixBuildOptionsJson {
+            ProducerConfig::FlakeFile {
                 source_ref,
-                nix_path_name,
                 attribute,
-                import_path,
                 output_path,
+                artifact,
             } => {
                 assert_eq!(source_ref, "github:nix-community/home-manager/master");
-                assert_eq!(nix_path_name, "home-manager");
-                assert_eq!(attribute, "docs.json");
-                assert_eq!(import_path, "default.nix");
-                assert_eq!(output_path, "share/doc/home-manager/options.json");
+                assert_eq!(attribute, "docs-json");
+                assert_eq!(
+                    output_path,
+                    &PathBuf::from("share/doc/home-manager/options.json")
+                );
+                assert_eq!(*artifact, ArtifactKind::OptionsJson);
             }
             other => panic!("unexpected producer: {other:?}"),
         }
@@ -1757,7 +1855,7 @@ mod tests {
         assert_eq!(source.refs[1].id, "release-26.05");
 
         match &source.refs[1].producer {
-            ProducerConfig::NixBuildOptionsJson { source_ref, .. } => {
+            ProducerConfig::FlakeFile { source_ref, .. } => {
                 assert_eq!(
                     source_ref,
                     "github:nix-community/home-manager/release-26.05"
@@ -1788,24 +1886,19 @@ mod tests {
         let ref_config = &source.refs[0];
 
         assert_eq!(ref_config.id, "master");
-        assert_eq!(
-            ref_config.producer.kind(),
-            ProducerKind::NixBuildOptionsJson
-        );
+        assert_eq!(ref_config.producer.kind(), ProducerKind::FlakeFile);
 
         match &ref_config.producer {
-            ProducerConfig::NixBuildOptionsJson {
+            ProducerConfig::FlakeFile {
                 source_ref,
-                nix_path_name,
                 attribute,
-                import_path,
                 output_path,
+                artifact,
             } => {
                 assert_eq!(source_ref, "github:nix-darwin/nix-darwin/master");
-                assert_eq!(nix_path_name, "darwin");
-                assert_eq!(attribute, "docs.optionsJSON");
-                assert_eq!(import_path, "release.nix");
-                assert_eq!(output_path, "share/doc/darwin/options.json");
+                assert_eq!(attribute, "optionsJSON");
+                assert_eq!(output_path, &PathBuf::from("share/doc/darwin/options.json"));
+                assert_eq!(*artifact, ArtifactKind::OptionsJson);
             }
             other => panic!("unexpected producer: {other:?}"),
         }
@@ -1846,7 +1939,7 @@ mod tests {
         assert_eq!(source.refs[1].id, "nix-darwin-25.11");
 
         match &source.refs[1].producer {
-            ProducerConfig::NixBuildOptionsJson { source_ref, .. } => {
+            ProducerConfig::FlakeFile { source_ref, .. } => {
                 assert_eq!(source_ref, "github:nix-darwin/nix-darwin/nix-darwin-25.11");
             }
             other => panic!("unexpected producer: {other:?}"),
@@ -1873,22 +1966,16 @@ mod tests {
         assert_eq!(ref_config.id, "main");
 
         match &ref_config.producer {
-            ProducerConfig::EvalModules {
+            ProducerConfig::FlakeFile {
                 source_ref,
-                inputs,
-                modules,
+                attribute,
+                output_path,
+                artifact,
             } => {
                 assert_eq!(source_ref, "github:feel-co/hjem/main");
-                assert!(inputs.is_empty());
-                assert_eq!(modules.len(), 1);
-
-                match &modules[0] {
-                    EvalModuleConfig::FlakeAttr { flake, attr } => {
-                        assert_eq!(flake, "self");
-                        assert_eq!(attr, "nixosModules.default");
-                    }
-                    other => panic!("unexpected module: {other:?}"),
-                }
+                assert_eq!(attribute, "docs-json");
+                assert_eq!(output_path, &PathBuf::from("share/doc/hjem/options.json"));
+                assert_eq!(*artifact, ArtifactKind::OptionsJson);
             }
             other => panic!("unexpected producer: {other:?}"),
         }
