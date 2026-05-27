@@ -430,7 +430,7 @@ body {
   font-size: 0.82rem;
 }
 
-.entry-name:hover {
+.results-table tr:hover .entry-name {
   text-decoration: underline;
   text-decoration-color: var(--source-color, var(--accent));
 }
