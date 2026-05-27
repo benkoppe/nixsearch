@@ -104,7 +104,7 @@ pub fn render(document: &SearchDocument, config: &AppConfig) -> Markup {
                 }
                 @if !package.platforms.is_empty() {
                     (section("Platforms", html! {
-                        ul {
+                        ul.tag-list {
                             @for platform in &package.platforms {
                                 li { (platform) }
                             }
@@ -183,7 +183,7 @@ fn maintainers_section(maintainers: &[Maintainer]) -> Markup {
     section(
         "Maintainers",
         html! {
-            ul {
+            ul.tag-list {
                 @for maintainer in maintainers {
                     @let label = maintainer.name.as_deref()
                         .or(maintainer.github.as_deref())

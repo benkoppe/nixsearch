@@ -613,6 +613,23 @@ dialog::backdrop {
   margin-bottom: 0.2rem;
 }
 
+.entry-section .tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  list-style: none;
+  padding-left: 0;
+}
+
+.entry-section .tag-list li {
+  margin-bottom: 0;
+  padding: 0.15rem 0.5rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 0.8rem;
+}
+
 pre {
   overflow-x: auto;
   background: var(--bg);
