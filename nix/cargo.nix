@@ -14,6 +14,13 @@
         ../crates/web/style.css
       ];
 
+      cargoDepsSourceFiles = craneLib.fileset.cargoTomlAndLock ../.;
+
+      depsSrc = lib.fileset.toSource {
+        root = ../.;
+        fileset = cargoDepsSourceFiles;
+      };
+
       src = lib.fileset.toSource {
         root = ../.;
         fileset = cargoSourceFiles;
@@ -36,7 +43,13 @@
         ];
       };
 
-      cargoArtifacts = craneLib.buildDepsOnly commonBuildArgs;
+      cargoArtifacts = craneLib.buildDepsOnly (
+        commonBuildArgs
+        // {
+          src = depsSrc;
+          cargoExtraArgs = "--locked -p nixsearch";
+        }
+      );
 
       individualCrateArgs = commonBuildArgs // {
         inherit cargoArtifacts;
@@ -49,7 +62,7 @@
         individualCrateArgs
         // rec {
           pname = "nixsearch";
-          cargoExtraArgs = "-p nixsearch";
+          cargoExtraArgs = "--locked -p nixsearch";
           meta.mainProgram = pname;
         }
       );
