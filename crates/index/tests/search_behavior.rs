@@ -276,6 +276,35 @@ fn natural_language_query_uses_text_relevance_without_path_penalty() {
 }
 
 #[test]
+fn mixed_path_and_text_query_keeps_path_terms_structured() {
+    let context = ingest_context_for(SOURCE_FIXTURES, REF_SMALL);
+    let docs = vec![
+        option_doc_for(
+            &context,
+            "services.nginx.enable",
+            "Nginx provides a fast web server.",
+        ),
+        option_doc_for(
+            &context,
+            "programs.nginx.enable",
+            "Nginx provides a fast web server.",
+        ),
+        option_doc_for(
+            &context,
+            "services.httpd.enable",
+            "This configures a generic web server.",
+        ),
+    ];
+
+    let (_tempdir, index) = build_index(docs);
+
+    let hits = search(&index, "services.nginx web server");
+
+    assert_ranks_before(&hits, "services.nginx.enable", "programs.nginx.enable");
+    assert_ranks_before(&hits, "services.nginx.enable", "services.httpd.enable");
+}
+
+#[test]
 fn all_scope_search_surfaces_relevant_options_among_package_results() {
     const SOURCE_HOME_MANAGER: &str = "home-manager";
 
@@ -518,7 +547,7 @@ fn search_limit_is_respected() {
 }
 
 #[test]
-fn search_total_is_capped_to_rerank_window() {
+fn search_total_and_hits_continue_beyond_rerank_window() {
     let context = ingest_context_for(SOURCE_FIXTURES, REF_SMALL);
     let docs = (0..1_010)
         .map(|index| {
@@ -529,7 +558,19 @@ fn search_total_is_capped_to_rerank_window() {
 
     let (_tempdir, index) = build_index(docs);
 
-    let result = index
+    let crossing_result = index
+        .search(SearchOptions {
+            query: "paginationwindowtoken".to_owned(),
+            limit: 20,
+            offset: 990,
+            ..Default::default()
+        })
+        .unwrap();
+
+    assert_eq!(crossing_result.total, 1_010);
+    assert_eq!(crossing_result.hits.len(), 20);
+
+    let beyond_result = index
         .search(SearchOptions {
             query: "paginationwindowtoken".to_owned(),
             limit: 20,
@@ -538,8 +579,8 @@ fn search_total_is_capped_to_rerank_window() {
         })
         .unwrap();
 
-    assert_eq!(result.total, 1_000);
-    assert!(result.hits.is_empty());
+    assert_eq!(beyond_result.total, 1_010);
+    assert_eq!(beyond_result.hits.len(), 10);
 }
 
 #[test]

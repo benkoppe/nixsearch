@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write as _;
 
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
-use tantivy::collector::TopDocs;
+use tantivy::collector::{Count, TopDocs};
 use tantivy::query::{BooleanQuery, BoostQuery, FuzzyTermQuery, Occur, Query};
 use tantivy::schema::{
     Field, IndexRecordOption, STORED, STRING, Schema, TEXT, TantivyDocument, Value as _,
@@ -16,7 +16,7 @@ use time::OffsetDateTime;
 use nixsearch_core::{ArtifactKind, DocumentKind, OptionDoc, PackageDoc, SearchDocument};
 
 const WRITER_MEMORY_BYTES: usize = 50_000_000;
-const RERANK_CANDIDATE_LIMIT: usize = 1_000;
+const MAX_RERANK_CANDIDATES: usize = 1_000;
 
 pub const INDEX_SCHEMA_VERSION: u32 = 1;
 
@@ -200,40 +200,67 @@ impl SearchIndex {
 
     pub fn search(&self, options: SearchOptions) -> Result<SearchResult> {
         let searcher = self.reader.searcher();
+        let candidate_limit = rerank_candidate_limit(options.limit, options.offset);
         let diversify_sources = options.scopes.len() > 1;
         let analysis = QueryAnalysis::new(&self.index, self.fields.name_text, &options.query)?;
 
-        let candidates = if diversify_sources {
+        let (candidates, total) = if diversify_sources {
             let mut candidates = Vec::new();
+            let mut total = 0;
 
             for scope in &options.scopes {
-                let mut scope_candidates = self.search_candidates(
+                let (mut scope_candidates, scope_total) = self.search_candidates(
                     &searcher,
                     &options.query,
                     std::slice::from_ref(scope),
-                    RERANK_CANDIDATE_LIMIT,
+                    candidate_limit,
                 )?;
+                total += scope_total;
                 candidates.append(&mut scope_candidates);
             }
 
-            candidates
+            (candidates, total)
         } else {
-            self.search_candidates(
-                &searcher,
-                &options.query,
-                &options.scopes,
-                RERANK_CANDIDATE_LIMIT,
-            )?
+            self.search_candidates(&searcher, &options.query, &options.scopes, candidate_limit)?
         };
-        let total = candidates.len();
+        let candidate_window_len = candidates.len();
+        let candidate_ids = candidates
+            .iter()
+            .map(|candidate| candidate.document.id().to_owned())
+            .collect::<HashSet<_>>();
 
-        let hits = rerank_candidates(
+        let mut hits = rerank_candidates(
             candidates,
             &analysis,
             diversify_sources,
             options.offset,
             options.limit,
         );
+
+        if hits.len() < options.limit && total > options.offset.saturating_add(hits.len()) {
+            let remaining = options.limit - hits.len();
+            let mut fallback_hits = if diversify_sources {
+                self.search_native_filtered_hits(
+                    &searcher,
+                    &options.query,
+                    &options.scopes,
+                    &candidate_ids,
+                    options.offset.saturating_sub(candidate_window_len),
+                    remaining,
+                    total,
+                )?
+            } else {
+                self.search_native_hits(
+                    &searcher,
+                    &options.query,
+                    &options.scopes,
+                    options.offset.max(candidate_window_len),
+                    remaining,
+                )?
+            };
+
+            hits.append(&mut fallback_hits);
+        }
 
         Ok(SearchResult { hits, total })
     }
@@ -244,11 +271,14 @@ impl SearchIndex {
         query_text: &str,
         scopes: &[SearchScope],
         limit: usize,
-    ) -> Result<Vec<SearchCandidate>> {
+    ) -> Result<(Vec<SearchCandidate>, usize)> {
         let query = self.build_query(query_text, scopes)?;
 
-        let top_docs = searcher
-            .search(&*query, &TopDocs::with_limit(limit).order_by_score())
+        let (total, top_docs) = searcher
+            .search(
+                &*query,
+                &(Count, TopDocs::with_limit(limit).order_by_score()),
+            )
             .context("search failed")?;
 
         let mut candidates = Vec::with_capacity(top_docs.len());
@@ -260,7 +290,110 @@ impl SearchIndex {
             });
         }
 
-        Ok(candidates)
+        Ok((candidates, total))
+    }
+
+    fn search_native_hits(
+        &self,
+        searcher: &Searcher,
+        query_text: &str,
+        scopes: &[SearchScope],
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<SearchHit>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let query = self.build_query(query_text, scopes)?;
+        let top_docs = searcher
+            .search(
+                &*query,
+                &TopDocs::with_limit(limit)
+                    .and_offset(offset)
+                    .order_by_score(),
+            )
+            .context("native fallback search failed")?;
+
+        let mut hits = Vec::with_capacity(top_docs.len());
+
+        for (score, address) in top_docs {
+            hits.push(SearchHit {
+                score,
+                document: self.document_at_with_searcher(searcher, address)?,
+            });
+        }
+
+        Ok(hits)
+    }
+
+    fn search_native_filtered_hits(
+        &self,
+        searcher: &Searcher,
+        query_text: &str,
+        scopes: &[SearchScope],
+        excluded_ids: &HashSet<String>,
+        skip: usize,
+        limit: usize,
+        total: usize,
+    ) -> Result<Vec<SearchHit>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let query = self.build_query(query_text, scopes)?;
+        let mut hits = Vec::with_capacity(limit);
+        let mut skipped = 0;
+        let mut native_offset = 0;
+
+        while hits.len() < limit && native_offset < total {
+            let batch_limit = skip
+                .saturating_sub(skipped)
+                .saturating_add(limit - hits.len())
+                .saturating_add(excluded_ids.len())
+                .clamp(200, 5_000)
+                .min(total - native_offset);
+
+            if batch_limit == 0 {
+                break;
+            }
+
+            let top_docs = searcher
+                .search(
+                    &*query,
+                    &TopDocs::with_limit(batch_limit)
+                        .and_offset(native_offset)
+                        .order_by_score(),
+                )
+                .context("filtered native fallback search failed")?;
+
+            if top_docs.is_empty() {
+                break;
+            }
+
+            native_offset += top_docs.len();
+
+            for (score, address) in top_docs {
+                let document = self.document_at_with_searcher(searcher, address)?;
+
+                if excluded_ids.contains(document.id()) {
+                    continue;
+                }
+
+                if skipped < skip {
+                    skipped += 1;
+                    continue;
+                }
+
+                hits.push(SearchHit { score, document });
+
+                if hits.len() == limit {
+                    break;
+                }
+            }
+        }
+
+        Ok(hits)
     }
 
     fn build_query(&self, query_text: &str, scopes: &[SearchScope]) -> Result<Box<dyn Query>> {
@@ -736,11 +869,7 @@ impl QueryAnalysis {
         let normalized = query.trim().to_lowercase();
         let compact = compact_identifier(query);
         let identifier_terms = identifier_terms(query);
-        let structured_terms = if is_path_like_query(query) && identifier_terms.len() >= 2 {
-            identifier_terms.clone()
-        } else {
-            Vec::new()
-        };
+        let structured_terms = structured_query_terms(query);
 
         let mut terms = tokenized_query_terms(index, field, query)?;
         terms.extend(identifier_terms);
@@ -764,6 +893,11 @@ impl QueryAnalysis {
     fn is_structured(&self) -> bool {
         !self.structured_terms.is_empty()
     }
+}
+
+fn rerank_candidate_limit(limit: usize, offset: usize) -> usize {
+    let target = offset.saturating_add(limit).max(1);
+    target.saturating_mul(4).max(200).min(MAX_RERANK_CANDIDATES)
 }
 
 fn rerank_candidates(
@@ -1221,18 +1355,27 @@ fn tokenized_query_terms(index: &Index, field: Field, query: &str) -> Result<Vec
     Ok(terms)
 }
 
-fn is_path_like_query(query: &str) -> bool {
-    query.split_whitespace().any(|part| {
-        let segments = part
-            .split('.')
-            .filter(|segment| !segment.is_empty())
-            .collect::<Vec<_>>();
+fn structured_query_terms(query: &str) -> Vec<String> {
+    query
+        .split_whitespace()
+        .filter_map(|part| {
+            let segments = part
+                .split('.')
+                .filter(|segment| !segment.is_empty())
+                .collect::<Vec<_>>();
 
-        segments.len() >= 2
-            && segments
-                .iter()
-                .any(|segment| segment.chars().any(|ch| ch.is_alphabetic()))
-    })
+            if segments.len() >= 2
+                && segments
+                    .iter()
+                    .any(|segment| segment.chars().any(|ch| ch.is_alphabetic()))
+            {
+                Some(identifier_terms(part))
+            } else {
+                None
+            }
+        })
+        .max_by_key(Vec::len)
+        .unwrap_or_default()
 }
 
 fn identifier_terms(value: &str) -> Vec<String> {
@@ -1724,6 +1867,14 @@ mod tests {
 
     fn store_for(tempdir: &TempDir) -> super::IndexStore {
         super::IndexStore::new(utf8_path(tempdir.path().to_path_buf()))
+    }
+
+    #[test]
+    fn structured_query_terms_uses_only_path_like_token() {
+        assert_eq!(
+            super::structured_query_terms("services.nginx web server"),
+            vec!["services", "nginx"]
+        );
     }
 
     #[test]

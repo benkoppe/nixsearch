@@ -21,10 +21,18 @@ pub fn render(
         return render_empty();
     };
 
-    if hits.is_empty() {
+    if hits.is_empty() && total == 0 {
         return html! {
             div #results.results-status {
                 "No results for " strong { (q) } "."
+            }
+        };
+    }
+
+    if hits.is_empty() {
+        return html! {
+            div #results.results-status {
+                "No results on this page for " strong { (q) } "."
             }
         };
     }
@@ -266,5 +274,22 @@ mod tests {
 
         assert!(html.contains("load-more-sentinel"));
         assert!(!html.contains("load-more-trigger"));
+    }
+
+    #[test]
+    fn render_empty_page_distinguishes_out_of_range_page() {
+        let config = nixsearch_test_support::app_config("./data/indexes");
+        let request = PageRequest {
+            query: PageQuery {
+                q: Some("git".to_owned()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let html = render(&request, &[], 1_010, &config).into_string();
+
+        assert!(html.contains("No results on this page"));
+        assert!(!html.contains("No results for"));
     }
 }
