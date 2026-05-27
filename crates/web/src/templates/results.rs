@@ -97,7 +97,7 @@ pub fn render_rows_only(request: &PageRequest, hits: &[SearchHit], config: &AppC
 pub fn render_sentinel_update(hits: &[SearchHit], offset: usize, total: usize) -> String {
     let next_offset = offset + hits.len();
 
-    let markup = if next_offset < total {
+    let markup = if !hits.is_empty() && next_offset < total {
         render_load_more_sentinel(next_offset)
     } else {
         // Empty sentinel — no more results to load
@@ -258,5 +258,13 @@ mod tests {
             result.as_deref(),
             Some("https://github.com/example/repo/blob/abc123/module.nix#L4")
         );
+    }
+
+    #[test]
+    fn sentinel_update_stops_after_empty_page() {
+        let html = render_sentinel_update(&[], 1_000, 1_010);
+
+        assert!(html.contains("load-more-sentinel"));
+        assert!(!html.contains("load-more-trigger"));
     }
 }

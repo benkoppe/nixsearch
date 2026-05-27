@@ -253,6 +253,29 @@ fn package_main_program_query_finds_package() {
 }
 
 #[test]
+fn natural_language_query_uses_text_relevance_without_path_penalty() {
+    let context = ingest_context_for(SOURCE_FIXTURES, REF_SMALL);
+    let docs = vec![
+        option_doc_for(
+            &context,
+            "zzz.nginx.enable",
+            "Nginx provides a fast web server.",
+        ),
+        option_doc_for(
+            &context,
+            "aaa.unrelated.enable",
+            "This configures a generic server process.",
+        ),
+    ];
+
+    let (_tempdir, index) = build_index(docs);
+
+    let hits = search(&index, "web server");
+
+    assert_ranks_before(&hits, "zzz.nginx.enable", "aaa.unrelated.enable");
+}
+
+#[test]
 fn all_scope_search_surfaces_relevant_options_among_package_results() {
     const SOURCE_HOME_MANAGER: &str = "home-manager";
 
@@ -492,6 +515,31 @@ fn search_limit_is_respected() {
         .unwrap();
 
     assert_eq!(result.hits.len(), 2);
+}
+
+#[test]
+fn search_total_is_capped_to_rerank_window() {
+    let context = ingest_context_for(SOURCE_FIXTURES, REF_SMALL);
+    let docs = (0..1_010)
+        .map(|index| {
+            let name = format!("generated.option.{index:04}");
+            option_doc_for(&context, &name, "Contains paginationwindowtoken.")
+        })
+        .collect();
+
+    let (_tempdir, index) = build_index(docs);
+
+    let result = index
+        .search(SearchOptions {
+            query: "paginationwindowtoken".to_owned(),
+            limit: 20,
+            offset: 1_000,
+            ..Default::default()
+        })
+        .unwrap();
+
+    assert_eq!(result.total, 1_000);
+    assert!(result.hits.is_empty());
 }
 
 #[test]
