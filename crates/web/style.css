@@ -467,6 +467,24 @@ a.entry-desc:hover {
   text-decoration: none;
 }
 
+/* ─── Loading state ─── */
+
+.results-loading {
+  opacity: 0.4;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+input[type="search"].is-loading {
+  border-color: var(--accent);
+  animation: search-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes search-pulse {
+  0%, 100% { border-color: var(--accent); }
+  50% { border-color: var(--text-dim); }
+}
+
 /* ─── Infinite scroll sentinel ─── */
 
 #load-more-sentinel {

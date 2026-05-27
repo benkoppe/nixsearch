@@ -34,6 +34,56 @@ pub fn navigation_script() -> String {
           currentUrl = currentPublicUrl();
         }
 
+        // ─── Loading indicator ───
+
+        function setLoading(active) {
+          const results = document.getElementById("results");
+          const input = document.querySelector('[data-nixsearch-input="q"]');
+          if (results) {
+            if (active) {
+              results.classList.add("results-loading");
+            } else {
+              results.classList.remove("results-loading");
+            }
+          }
+          if (input) {
+            if (active) {
+              input.classList.add("is-loading");
+            } else {
+              input.classList.remove("is-loading");
+            }
+          }
+        }
+
+        // Clear loading state when results are patched by Datastar
+        (() => {
+          const main = document.querySelector("main.main");
+          if (!main) return;
+          const observer = new MutationObserver(() => {
+            const results = document.getElementById("results");
+            if (results && !results.classList.contains("results-loading")) {
+              setLoading(false);
+            }
+          });
+          observer.observe(main, { childList: true, subtree: true });
+        })();
+
+        function resultsContextForUrl(url) {
+          const parsed = new URL(url, window.location.href);
+          const params = new URLSearchParams(parsed.search);
+          const parts = parsed.pathname.split("/").filter(Boolean);
+          const sourceAll = params.get("source") === "__SOURCE_ALL_VALUE__";
+          const q = (params.get("q") || "").trim();
+          const source = sourceAll ? "" : (parts[0] ? decodeURIComponent(parts[0]) : "");
+          const ref = sourceAll ? "" : (params.get("ref") || "").trim();
+
+          return JSON.stringify({ q, source, ref });
+        }
+
+        function shouldLoadResults(previousUrl, nextUrl) {
+          return resultsContextForUrl(previousUrl) !== resultsContextForUrl(nextUrl);
+        }
+
         // ─── Source tabs ───
 
         function getActiveSourceTab() {
@@ -137,6 +187,7 @@ pub fn navigation_script() -> String {
           const next = new URL(url, window.location.href);
           const target = next.pathname + next.search;
           const current = currentPublicUrl();
+          const loadsResults = shouldLoadResults(current, target);
 
           if (push && current !== target) {
             history.pushState(null, "", target);
@@ -146,6 +197,7 @@ pub fn navigation_script() -> String {
             syncInputsFromUrl();
           }
 
+          setLoading(loadsResults);
           reconcile(current);
         }
 
@@ -278,6 +330,7 @@ pub fn navigation_script() -> String {
         window.addEventListener("popstate", () => {
           const previous = currentUrl;
           syncInputsFromUrl();
+          setLoading(shouldLoadResults(previous, currentPublicUrl()));
           reconcile(previous);
         });
 
