@@ -56,14 +56,20 @@ pub fn render_full_page(
                     src="https://cdn.jsdelivr.net/gh/starfederation/datastar@main/bundles/datastar.js" {}
                 style { (PreEscaped(CSS)) }
                 noscript {
-                    style { "dialog#entry-modal { display: block; z-index: 201; } .modal-backdrop { display: block; position: fixed; inset: 0; z-index: 200; background: rgb(0 0 0 / 0.6); }" }
+                    style { ".js-ref-radios { display: none; } dialog#entry-modal { display: block; z-index: 201; } .modal-backdrop { display: block; position: fixed; inset: 0; z-index: 200; background: rgb(0 0 0 / 0.6); }" }
                 }
             }
             body data-on:nixsearch-reconcile__window=(reconcile_attr) {
                 header.header {
                     div.header-inner {
                         a.site-title href="/" { "nixsearch" }
-                        (search::render_form(&state.config, &source_filter, &form_action, q))
+                        (search::render_form(
+                            &state.config,
+                            &source_filter,
+                            &form_action,
+                            q,
+                            request.query.ref_id.as_deref().unwrap_or(""),
+                        ))
                     }
                 }
                 main.main {
