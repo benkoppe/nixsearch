@@ -623,9 +623,16 @@ a:hover {
     --header-height: 148px;
   }
 
+  :root:has(.js-ref-radios:empty) {
+    --header-height: calc(148px - 1.4rem - 0.4rem);
+  }
+
+  .ref-radios:empty {
+    display: none;
+  }
+
   .header {
     height: auto;
-    min-height: var(--header-height);
     padding: 0.5rem 0.75rem;
   }
 
@@ -651,6 +658,10 @@ a:hover {
   }
 
   .search-bar-row .ref-radios {
+    order: -1;
+  }
+
+  .search-bar-row > noscript {
     order: -1;
   }
 

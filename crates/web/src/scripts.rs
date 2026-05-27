@@ -84,6 +84,7 @@ pub fn navigation_script() -> String {
 
           if (!source || source.refs.length === 0) {
             container.innerHTML = "";
+            syncHeaderHeight();
             return;
           }
 
@@ -93,6 +94,17 @@ pub fn navigation_script() -> String {
               return `<label class="ref-radio-label"><input type="radio" name="ref" value="${r}"${checked} data-nixsearch-input="ref"><span>${r}</span></label>`;
             })
             .join("");
+          syncHeaderHeight();
+        }
+
+        function syncHeaderHeight() {
+          const header = document.querySelector('.header');
+          if (header) {
+            document.documentElement.style.setProperty(
+              "--header-height",
+              header.offsetHeight + "px"
+            );
+          }
         }
 
         // ─── URL building ───
@@ -353,6 +365,8 @@ pub fn navigation_script() -> String {
           const dialog = document.getElementById("entry-modal");
           if (dialog && !dialog.open) dialog.showModal();
         })();
+
+        syncHeaderHeight();
       })();
       "##
     .replace("__MORE_RESULTS_URL__", MORE_RESULTS_URL)
