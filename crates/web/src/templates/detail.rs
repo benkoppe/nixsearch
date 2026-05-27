@@ -24,6 +24,23 @@ pub fn render(document: &SearchDocument, config: &AppConfig) -> Markup {
                 @if let Some(related_packages) = &option.related_packages {
                     (section("Related packages", html! { p { (related_packages) } }))
                 }
+                @if !option.declarations.is_empty() {
+                    @let resolver = source_link_config_for_document(config, &option.common)
+                        .map(|cfg| SourceLinkResolver::new(cfg, option.common.revision.as_deref()));
+                    (section("Declared", html! {
+                        ul {
+                            @for declaration in &option.declarations {
+                                li {
+                                    @if let Some(url) = resolver.as_ref().and_then(|r| r.resolve_declaration(declaration)) {
+                                        a href=(url) rel="noreferrer" { code { (declaration.name) } }
+                                    } @else {
+                                        code { (declaration.name) }
+                                    }
+                                }
+                            }
+                        }
+                    }))
+                }
                 @let flags: Vec<(&str, bool)> = [
                     ("Read only", option.read_only),
                     ("Internal", option.internal),
@@ -36,23 +53,6 @@ pub fn render(document: &SearchDocument, config: &AppConfig) -> Markup {
                         ul {
                             @for (name, value) in &flags {
                                 li { (name) ": " (value) }
-                            }
-                        }
-                    }))
-                }
-                @if !option.declarations.is_empty() {
-                    @let resolver = source_link_config_for_document(config, &option.common)
-                        .map(|cfg| SourceLinkResolver::new(cfg, option.common.revision.as_deref()));
-                    (section("Declarations", html! {
-                        ul {
-                            @for declaration in &option.declarations {
-                                li {
-                                    @if let Some(url) = resolver.as_ref().and_then(|r| r.resolve_declaration(declaration)) {
-                                        a href=(url) rel="noreferrer" { code { (declaration.name) } }
-                                    } @else {
-                                        code { (declaration.name) }
-                                    }
-                                }
                             }
                         }
                     }))
@@ -107,6 +107,20 @@ pub fn render(document: &SearchDocument, config: &AppConfig) -> Markup {
                         }
                     }))
                 }
+                @if let Some(position) = &package.position {
+                    @let resolver = source_link_config_for_document(config, &package.common)
+                        .map(|cfg| SourceLinkResolver::new(cfg, package.common.revision.as_deref()));
+                    @let url = resolver.as_ref().and_then(|r| r.resolve_package_position(position));
+                    (section("Source", html! {
+                        p {
+                            @if let Some(href) = url {
+                                a href=(href) rel="noreferrer" { code { (position) } }
+                            } @else {
+                                code { (position) }
+                            }
+                        }
+                    }))
+                }
                 @if !package.platforms.is_empty() {
                     (section("Platforms", html! {
                         ul.tag-list {
@@ -121,20 +135,6 @@ pub fn render(document: &SearchDocument, config: &AppConfig) -> Markup {
                 }
                 @if !package.maintainers.is_empty() {
                     (maintainers_section(&package.maintainers))
-                }
-                @if let Some(position) = &package.position {
-                    @let resolver = source_link_config_for_document(config, &package.common)
-                        .map(|cfg| SourceLinkResolver::new(cfg, package.common.revision.as_deref()));
-                    @let url = resolver.as_ref().and_then(|r| r.resolve_package_position(position));
-                    (section("Source", html! {
-                        p {
-                            @if let Some(href) = url {
-                                a href=(href) rel="noreferrer" { code { (position) } }
-                            } @else {
-                                code { (position) }
-                            }
-                        }
-                    }))
                 }
             }
         }
