@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
@@ -9,7 +10,7 @@ use nixsearch_config::AppConfig;
 use nixsearch_index::{IndexGenerationManifest, IndexStore};
 use nixsearch_ops::generate;
 use nixsearch_ops::lock;
-use nixsearch_ops::targets::all_targets;
+use nixsearch_ops::targets::{TargetKey, all_targets};
 
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const MANIFEST_ERROR_RETRY: Duration = Duration::from_secs(60);
@@ -100,6 +101,12 @@ async fn run_loop(
             continue;
         }
 
+        if current_generation_missing_configured_targets(&config, &generation) {
+            let outcome = run_scheduled_regeneration(&config, interval).await;
+            sleep_after_regeneration_outcome(outcome, interval).await;
+            continue;
+        }
+
         let Some(next_due) = next_due(generation.manifest.generated_at, interval) else {
             tracing::error!("failed to compute next scheduled regeneration time");
             tokio::time::sleep(MANIFEST_ERROR_RETRY.min(RECONCILE_INTERVAL)).await;
@@ -148,7 +155,7 @@ async fn run_scheduled_regeneration(config: &AppConfig, interval: Duration) -> M
     };
 
     let index_store = IndexStore::new(&config.data.index_dir);
-    match current_generation_is_due(&index_store, interval, OffsetDateTime::now_utc()) {
+    match current_generation_is_due(config, &index_store, interval, OffsetDateTime::now_utc()) {
         Ok(true) => {}
         Ok(false) => {
             tracing::info!(
@@ -184,12 +191,17 @@ async fn run_scheduled_regeneration(config: &AppConfig, interval: Duration) -> M
 }
 
 pub(crate) fn current_generation_is_due(
+    config: &AppConfig,
     index_store: &IndexStore,
     interval: Duration,
     now: OffsetDateTime,
 ) -> Result<bool> {
     match read_current_generation(index_store) {
         Ok(CurrentGeneration::Found(generation)) => {
+            if current_generation_missing_configured_targets(config, &generation) {
+                return Ok(true);
+            }
+
             let Some(next_due) = next_due(generation.manifest.generated_at, interval) else {
                 bail!("failed to compute next scheduled regeneration time")
             };
@@ -202,6 +214,30 @@ pub(crate) fn current_generation_is_due(
             Ok(true)
         }
     }
+}
+
+pub(crate) fn current_generation_missing_configured_targets(
+    config: &AppConfig,
+    generation: &PublishedGeneration,
+) -> bool {
+    !missing_configured_targets(config, &generation.manifest).is_empty()
+}
+
+pub(crate) fn missing_configured_targets(
+    config: &AppConfig,
+    manifest: &IndexGenerationManifest,
+) -> BTreeSet<TargetKey> {
+    let indexed_targets = manifest
+        .targets
+        .iter()
+        .map(TargetKey::from)
+        .collect::<BTreeSet<_>>();
+
+    all_targets(config)
+        .iter()
+        .map(TargetKey::from)
+        .filter(|target| !indexed_targets.contains(target))
+        .collect()
 }
 
 pub(crate) fn read_current_generation(index_store: &IndexStore) -> Result<CurrentGeneration> {
@@ -278,7 +314,7 @@ mod tests {
         assert_canonical_manifest_targets, publish_canonical_index,
         publish_canonical_index_with_generated_at,
     };
-    use nixsearch_test_support::utf8_path_buf;
+    use nixsearch_test_support::{app_config, utf8_path_buf};
     use tempfile::tempdir;
     use time::Duration as TimeDuration;
 
@@ -390,7 +426,10 @@ mod tests {
         publish_canonical_index_with_generated_at(&index_dir, now - TimeDuration::hours(2));
         let store = IndexStore::new(&index_dir);
 
-        let due = current_generation_is_due(&store, Duration::from_secs(60 * 60), now).unwrap();
+        let config = app_config(&index_dir);
+
+        let due =
+            current_generation_is_due(&config, &store, Duration::from_secs(60 * 60), now).unwrap();
 
         assert!(due);
     }
@@ -403,7 +442,10 @@ mod tests {
         publish_canonical_index_with_generated_at(&index_dir, now);
         let store = IndexStore::new(&index_dir);
 
-        let due = current_generation_is_due(&store, Duration::from_secs(60 * 60), now).unwrap();
+        let config = app_config(&index_dir);
+
+        let due =
+            current_generation_is_due(&config, &store, Duration::from_secs(60 * 60), now).unwrap();
 
         assert!(!due);
     }
@@ -414,7 +456,10 @@ mod tests {
         let index_dir = utf8_path_buf(tempdir.path().to_path_buf());
         let store = IndexStore::new(&index_dir);
 
+        let config = app_config(&index_dir);
+
         let due = current_generation_is_due(
+            &config,
             &store,
             Duration::from_secs(60 * 60),
             time::OffsetDateTime::UNIX_EPOCH,
@@ -433,12 +478,32 @@ mod tests {
         let missing = store.generations_dir().join("missing");
         fs::write(store.current_file(), missing.as_str().as_bytes()).unwrap();
 
+        let config = app_config(&index_dir);
+
         let due = current_generation_is_due(
+            &config,
             &store,
             Duration::from_secs(60 * 60),
             time::OffsetDateTime::UNIX_EPOCH,
         )
         .unwrap();
+
+        assert!(due);
+    }
+
+    #[test]
+    fn current_generation_is_due_returns_true_when_configured_target_missing() {
+        let tempdir = tempdir().unwrap();
+        let now = time::OffsetDateTime::UNIX_EPOCH + TimeDuration::hours(2);
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_index_with_generated_at(&index_dir, now);
+        let store = IndexStore::new(&index_dir);
+        let mut config = app_config(&index_dir);
+        let extra_source = config.sources["fixtures"].clone();
+        config.sources.insert("extra".to_owned(), extra_source);
+
+        let due =
+            current_generation_is_due(&config, &store, Duration::from_secs(60 * 60), now).unwrap();
 
         assert!(due);
     }

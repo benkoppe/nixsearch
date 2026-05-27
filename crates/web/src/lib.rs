@@ -84,7 +84,28 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<maintenance::Pu
     let index_store = IndexStore::new(&config.data.index_dir);
 
     match maintenance::read_current_generation(&index_store) {
-        Ok(maintenance::CurrentGeneration::Found(generation)) => return Ok(generation),
+        Ok(maintenance::CurrentGeneration::Found(generation)) => {
+            let missing = maintenance::missing_configured_targets(config, &generation.manifest);
+
+            if missing.is_empty() {
+                return Ok(generation);
+            }
+
+            if !config.server.bootstrap {
+                return Ok(generation);
+            }
+
+            let missing = missing
+                .iter()
+                .map(|target| format!("{}/{}", target.source, target.ref_id))
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            tracing::info!(
+                missing = %missing,
+                "current index is missing configured targets; bootstrap enabled, rebuilding index"
+            );
+        }
         Ok(maintenance::CurrentGeneration::Missing) => {}
         Err(error) => {
             if !config.server.bootstrap {
@@ -122,8 +143,12 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<maintenance::Pu
 
     match maintenance::read_current_generation(&index_store) {
         Ok(maintenance::CurrentGeneration::Found(generation)) => {
-            tracing::info!("current index was created by another process while waiting for lock");
-            return Ok(generation);
+            if !maintenance::current_generation_missing_configured_targets(config, &generation) {
+                tracing::info!(
+                    "current index was created by another process while waiting for lock"
+                );
+                return Ok(generation);
+            }
         }
         Ok(maintenance::CurrentGeneration::Missing) => {}
         Err(error) => {
@@ -292,6 +317,40 @@ mod tests {
         assert!(generation.path.exists());
         assert_ne!(generation.path, generation_without_manifest);
         assert_canonical_options_manifest_targets(&generation.manifest);
+        assert_eq!(store.current_path().unwrap(), generation.path);
+    }
+
+    #[tokio::test]
+    async fn ensure_current_generation_bootstraps_existing_generation_with_missing_target() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        let published_path = publish_canonical_options_index(&index_dir);
+        let mut config = app_config(&index_dir);
+        config.data.artifact_url = format!("file://{}", tempdir.path().join("artifacts").display());
+        let extra_source = config.sources[SOURCE_FIXTURES].clone();
+        config.sources.insert("extra".to_owned(), extra_source);
+
+        let generation = ensure_current_generation(&config).await.unwrap();
+
+        assert!(generation.path.exists());
+        assert_ne!(generation.path, published_path);
+        assert_eq!(generation.manifest.targets.len(), 2);
+        assert!(
+            generation
+                .manifest
+                .targets
+                .iter()
+                .any(|target| target.source == SOURCE_FIXTURES && target.ref_id == REF_SMALL)
+        );
+        assert!(
+            generation
+                .manifest
+                .targets
+                .iter()
+                .any(|target| target.source == "extra" && target.ref_id == REF_SMALL)
+        );
+
+        let store = IndexStore::new(&index_dir);
         assert_eq!(store.current_path().unwrap(), generation.path);
     }
 
