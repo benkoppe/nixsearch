@@ -2,9 +2,10 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 
-use nixsearch_config::{
-    AppConfig, DownloadCompression as ConfigDownloadCompression, EvalModuleConfig,
-    EvalModuleRefConfig, ProducerConfig,
+use nixsearch_config::AppConfig;
+use nixsearch_config::producer::{
+    DownloadCompression as ConfigDownloadCompression, EvalModuleConfig, EvalModuleRefConfig,
+    ProducerConfig,
 };
 use nixsearch_core::ArtifactKind;
 use nixsearch_source::{

@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 
-use nixsearch_config::{AppConfig, SourceConfig};
+use nixsearch_config::AppConfig;
+use nixsearch_config::source::SourceConfig;
 use nixsearch_core::{CommonDoc, SearchDocument, SourceLinkConfig, SourceLinkResolver};
 use nixsearch_index::{IndexStore, SearchHit, SearchIndex, SearchOptions, SearchScope};
 use nixsearch_ops::generate::build_and_publish_generation;

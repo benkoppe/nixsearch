@@ -3,9 +3,11 @@ use std::path::PathBuf;
 use camino::{Utf8Path, Utf8PathBuf};
 use tempfile::TempDir;
 
-use nixsearch_config::{
-    AppConfig, DataConfig, ProducerConfig, RefConfig, ServerConfig, SourceConfig, SourceKind,
-};
+use nixsearch_config::AppConfig;
+use nixsearch_config::data::DataConfig;
+use nixsearch_config::producer::ProducerConfig;
+use nixsearch_config::server::ServerConfig;
+use nixsearch_config::source::{RefConfig, SourceConfig, SourceKind};
 use nixsearch_core::{
     ArtifactKind, Declaration, IngestContext, OptionDoc, PackageDoc, SearchDocument,
     SourceLinkConfig,

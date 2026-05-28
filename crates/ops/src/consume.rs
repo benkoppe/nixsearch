@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 
-use nixsearch_config::SourceKind;
+use nixsearch_config::source::SourceKind;
 use nixsearch_core::{ArtifactKind, SearchDocument};
 use nixsearch_source::{Consumer, OptionsJsonConsumer, PackagesJsonConsumer, ProducedArtifact};
 use nixsearch_store::ArtifactStore;
