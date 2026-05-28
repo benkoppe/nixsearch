@@ -515,11 +515,10 @@ pub fn navigation_script() -> String {
             bottomSpacer: createVirtualSpacer("bottom"),
             topSpacerHeight: startOffset * rowHeight,
             bottomSpacerHeight: (total - Math.min(total, startOffset + rows.length)) * rowHeight,
-            loadingRow: null,
-            loadingSpacer: null,
           };
 
           results.classList.add("virtual-results-active");
+          applyVirtualSpacerRowHeight();
           table.parentNode.insertBefore(virtualResults.topSpacer, table);
           table.insertAdjacentElement("afterend", virtualResults.bottomSpacer);
           applyVirtualSpacers();
@@ -541,6 +540,30 @@ pub fn navigation_script() -> String {
           spacer.className = `virtual-spacer virtual-${position}-spacer`;
           spacer.dataset.virtualSpacer = position;
           return spacer;
+        }
+
+        function applyVirtualSpacerRowHeight() {
+          if (!virtualResults) return;
+
+          const height = `${virtualResults.rowHeight}px`;
+          virtualResults.topSpacer.style.setProperty("--row-height", height);
+          virtualResults.bottomSpacer.style.setProperty("--row-height", height);
+        }
+
+        function setVirtualSpacerLoading(mode, active) {
+          if (!virtualResults) return;
+
+          const toggle = (spacer) => {
+            spacer.classList.toggle("virtual-spacer-loading", active);
+          };
+
+          if (mode === "prepend" || mode === "replace") {
+            toggle(virtualResults.topSpacer);
+          }
+
+          if (mode === "append" || mode === "replace") {
+            toggle(virtualResults.bottomSpacer);
+          }
         }
 
         function setSpacerHeight(spacer, height) {
@@ -576,7 +599,8 @@ pub fn navigation_script() -> String {
         }
 
         function documentHeight() {
-          return document.documentElement.scrollHeight;
+          const main = document.querySelector("main.main");
+          return main ? main.getBoundingClientRect().height : document.documentElement.scrollHeight;
         }
 
         function runVirtualTransaction(spacer, anchor, mutate) {
@@ -598,73 +622,12 @@ pub fn navigation_script() -> String {
           }
         }
 
-        function clearVirtualLoadingState() {
-          virtualResults.loadingRow = null;
-          virtualResults.loadingSpacer = null;
-        }
-
         function measureRowsHeight(rows) {
           if (!rows.length) return 0;
 
           const first = rows[0].getBoundingClientRect();
           const last = rows[rows.length - 1].getBoundingClientRect();
           return Math.max(0, last.bottom - first.top);
-        }
-
-        function createVirtualLoadingRow() {
-          const row = document.createElement("tr");
-          row.className = "virtual-loading-row";
-
-          const cell = document.createElement("td");
-          cell.colSpan = 2;
-          cell.textContent = "Loading more results...";
-          row.appendChild(cell);
-          return row;
-        }
-
-        function showVirtualLoadingRow(mode, offset) {
-          if (!virtualResults) return;
-
-          removeVirtualLoadingRow();
-
-          const anchor = firstVisibleResultRow();
-
-          const row = createVirtualLoadingRow();
-          const spacer = mode === "prepend" ? "top" : "bottom";
-
-          runVirtualTransaction(spacer, anchor, () => {
-            if (mode === "replace") {
-              virtualResults.tbody.querySelectorAll("tr[data-result-page]").forEach((row) => row.remove());
-              virtualResults.startOffset = offset;
-              virtualResults.endOffset = offset;
-              virtualResults.topSpacerHeight = offset * virtualResults.rowHeight;
-              virtualResults.bottomSpacerHeight =
-                (virtualResults.total - offset) * virtualResults.rowHeight;
-              applyVirtualSpacers();
-            }
-
-            if (spacer === "top") {
-              virtualResults.tbody.insertBefore(row, virtualResults.tbody.firstChild);
-            } else {
-              virtualResults.tbody.appendChild(row);
-            }
-
-            virtualResults.loadingRow = row;
-            virtualResults.loadingSpacer = spacer;
-          });
-        }
-
-        function removeVirtualLoadingRow() {
-          if (!virtualResults || !virtualResults.loadingRow) return;
-
-          const row = virtualResults.loadingRow;
-          const spacer = virtualResults.loadingSpacer;
-          const anchor = firstVisibleResultRow();
-
-          runVirtualTransaction(spacer, anchor, () => {
-            row.remove();
-            clearVirtualLoadingState();
-          });
         }
 
         function virtualOffsetAtViewport() {
@@ -733,7 +696,20 @@ pub fn navigation_script() -> String {
           const requestUrl = state.requestUrl;
           const normalizedOffset = Math.max(0, Math.min(offset, Math.max(0, state.total - 1)));
           const anchor = firstVisibleResultRow();
-          showVirtualLoadingRow(mode, normalizedOffset);
+
+          if (mode === "replace") {
+            runVirtualTransaction("bottom", anchor, () => {
+              state.tbody.querySelectorAll("tr[data-result-page]").forEach((row) => row.remove());
+              state.startOffset = normalizedOffset;
+              state.endOffset = normalizedOffset;
+              state.topSpacerHeight = normalizedOffset * state.rowHeight;
+              state.bottomSpacerHeight =
+                (state.total - normalizedOffset) * state.rowHeight;
+              applyVirtualSpacers();
+            });
+          }
+
+          setVirtualSpacerLoading(mode, true);
 
           try {
             const data = await fetchMoreResults(normalizedOffset, requestUrl);
@@ -751,15 +727,10 @@ pub fn navigation_script() -> String {
               state.total = data.total;
             }
 
-            const spacer = state.loadingSpacer || (mode === "prepend" ? "top" : "bottom");
+            const spacer = mode === "prepend" ? "top" : "bottom";
             let insertedRows = [];
 
             runVirtualTransaction(spacer, anchor, () => {
-              if (state.loadingRow) {
-                state.loadingRow.remove();
-                clearVirtualLoadingState();
-              }
-
               if (mode === "append") {
                 state.tbody.insertAdjacentHTML("beforeend", data.rows);
               } else if (mode === "prepend") {
@@ -786,7 +757,7 @@ pub fn navigation_script() -> String {
           } catch (e) {
             console.error("Failed to load virtual results:", e);
           } finally {
-            removeVirtualLoadingRow();
+            setVirtualSpacerLoading(mode, false);
             virtualLoading = false;
             scheduleVirtualLoad();
           }
@@ -820,6 +791,7 @@ pub fn navigation_script() -> String {
           if (!height) return;
 
           virtualResults.rowHeight = height;
+          applyVirtualSpacerRowHeight();
           resetVirtualSpacerHeights();
         }
 

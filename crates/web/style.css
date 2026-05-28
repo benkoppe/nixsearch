@@ -426,24 +426,17 @@ html.modal-open body {
 .virtual-spacer {
   overflow: hidden;
   overflow-anchor: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0px,
+    transparent calc(var(--row-height, 35px) - 1px),
+    var(--border) calc(var(--row-height, 35px) - 1px),
+    var(--border) var(--row-height, 35px)
+  );
 }
 
-.results-table tr.virtual-loading-row {
-  cursor: default;
-  overflow-anchor: none;
-}
-
-.results-table tr.virtual-loading-row td {
-  text-align: center;
-  padding: 0.45rem 1rem;
-  color: var(--text-dim);
-  font-size: 0.8rem;
-  border-bottom: 1px solid transparent;
+.virtual-spacer.virtual-spacer-loading {
   animation: loading-pulse 1.5s ease-in-out infinite;
-}
-
-.results-table tr.virtual-loading-row:hover td {
-  background: transparent;
 }
 
 @keyframes loading-pulse {
