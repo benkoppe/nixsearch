@@ -68,6 +68,7 @@ fn render_empty() -> Markup {
 fn render_entry(request: &PageRequest, document: &SearchDocument, config: &AppConfig) -> Markup {
     let common = document.common();
     let close_href = close_url_for(request);
+    let source_color = source_tag::color_for_source(config, &common.source);
     let source_href = search_url_for(
         Some(&common.source),
         &PageQuery {
@@ -83,7 +84,22 @@ fn render_entry(request: &PageRequest, document: &SearchDocument, config: &AppCo
                 article.entry {
                     header {
                         div {
-                            h2 { (common.name) }
+                            div.entry-title-row {
+                                h2 { (common.name) }
+                                button.entry-copy
+                                    type="button"
+                                    data-copy-entry=(common.name)
+                                    aria-label="Copy entry name"
+                                    title="Copy"
+                                    style=(format!("--source-color: {source_color};")) {
+                                    svg.copy-icon xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true" {
+                                        path d="M8 7a3 3 0 0 1 3-3h6a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3h-1v1a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3v-6a3 3 0 0 1 3-3h1V7Zm2 1h3a3 3 0 0 1 3 3v3h1a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v1Zm-3 2a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-6a1 1 0 0 0-1-1H7Z" {}
+                                    }
+                                    svg.check-icon xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true" {
+                                        path d="M9.55 17.6 4.7 12.75l1.4-1.4 3.45 3.45 8.35-8.35 1.4 1.4-9.75 9.75Z" {}
+                                    }
+                                }
+                            }
                             div.meta {
                                 (source_tag::render_link(config, &common.source, &source_href))
                                 (common.kind.as_str()) " · " (common.ref_id)

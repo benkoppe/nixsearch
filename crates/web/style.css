@@ -655,8 +655,7 @@ body:has(.home-hero) {
     var(--row-stripe) var(--row-height, 35px),
     var(--row-stripe)
       calc(var(--row-height, 35px) + var(--row-height, 35px) - 1px),
-    var(--border)
-      calc(var(--row-height, 35px) + var(--row-height, 35px) - 1px),
+    var(--border) calc(var(--row-height, 35px) + var(--row-height, 35px) - 1px),
     var(--border) calc(var(--row-height, 35px) + var(--row-height, 35px))
   );
 }
@@ -808,6 +807,50 @@ dialog::backdrop {
     "SF Mono", "Cascadia Code", "Fira Code", "JetBrains Mono", monospace;
   color: var(--text-bright);
   word-break: break-all;
+}
+
+.entry-title-row {
+  display: block;
+}
+
+.entry-title-row h2 {
+  display: inline;
+}
+
+.entry-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  height: auto;
+  margin-left: 0.25rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--source-color, var(--text-dim));
+  cursor: pointer;
+  vertical-align: -0.29em;
+}
+
+.entry-copy:hover,
+.entry-copy:focus-visible {
+  color: var(--source-color, var(--text));
+  outline: none;
+}
+
+.entry-copy svg {
+  width: 1.25rem;
+  height: 1.25rem;
+  fill: currentColor;
+}
+
+.entry-copy .check-icon,
+.entry-copy[data-copied] .copy-icon {
+  display: none;
+}
+
+.entry-copy[data-copied] .check-icon {
+  display: block;
 }
 
 .entry header .meta {

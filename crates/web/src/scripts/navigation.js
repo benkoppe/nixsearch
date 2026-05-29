@@ -470,6 +470,45 @@
     if (q) q.value = params.get("q") || "";
   }
 
+  function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text);
+    }
+
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.top = "-9999px";
+    document.body.appendChild(textarea);
+    textarea.select();
+
+    try {
+      const copied = document.execCommand("copy");
+      return copied ? Promise.resolve() : Promise.reject(new Error("copy failed"));
+    } finally {
+      textarea.remove();
+    }
+  }
+
+  document.addEventListener("click", (evt) => {
+    const button = evt.target.closest("[data-copy-entry]");
+    if (!button) return;
+
+    evt.preventDefault();
+    copyText(button.dataset.copyEntry || "").then(() => {
+      button.dataset.copied = "true";
+      button.setAttribute("aria-label", "Copied entry name");
+      button.setAttribute("title", "Copied");
+      clearTimeout(button._copyReset);
+      button._copyReset = setTimeout(() => {
+        button.removeAttribute("data-copied");
+        button.setAttribute("aria-label", "Copy entry name");
+        button.setAttribute("title", "Copy");
+      }, 1500);
+    });
+  });
+
   document.addEventListener("click", (evt) => {
     const tab = evt.target.closest(".source-tab, .source-tabs-dropdown button");
     if (!tab) return;
