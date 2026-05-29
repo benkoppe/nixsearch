@@ -1,3 +1,6 @@
+use std::borrow::Cow;
+
+use html_escape::decode_html_entities;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::OffsetDateTime;
@@ -87,9 +90,11 @@ pub enum DocText {
 }
 
 impl DocText {
-    pub fn plain_text(&self) -> &str {
+    pub fn plain_text(&self) -> Cow<'_, str> {
         match self {
-            Self::Markdown(value) | Self::DocBook(value) | Self::Plain(value) => value,
+            Self::Markdown(value) => Cow::Owned(markdown_to_plain_text(value)),
+            Self::DocBook(value) => Cow::Owned(docbook_to_plain_text(value)),
+            Self::Plain(value) => Cow::Borrowed(value),
         }
     }
 }
@@ -107,10 +112,9 @@ pub enum DocValue {
 impl DocValue {
     pub fn plain_text(&self) -> String {
         match self {
-            Self::NixExpression(value)
-            | Self::Markdown(value)
-            | Self::DocBook(value)
-            | Self::Plain(value) => value.clone(),
+            Self::NixExpression(value) | Self::Plain(value) => value.clone(),
+            Self::Markdown(value) => markdown_to_plain_text(value),
+            Self::DocBook(value) => docbook_to_plain_text(value),
             Self::Json(value) => value.to_string(),
         }
     }
@@ -121,6 +125,121 @@ impl DocValue {
             _ => None,
         }
     }
+}
+
+pub fn markdown_to_plain_text(value: &str) -> String {
+    let value = strip_html_to_text_preserve_lines(value);
+    let value = strip_nix_doc_roles(&value);
+    let mut output = String::with_capacity(value.len());
+    let mut chars = value.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '[' => {}
+            ']' if chars.peek() == Some(&'(') => {
+                for ch in chars.by_ref() {
+                    if ch == ')' {
+                        break;
+                    }
+                }
+            }
+            '*' | '_' | '`' | '#' | '>' | '~' => output.push(' '),
+            '\\' => {
+                if let Some(ch) = chars.next() {
+                    output.push(ch);
+                }
+            }
+            ch => output.push(ch),
+        }
+    }
+
+    collapse_line_whitespace(&output)
+}
+
+pub fn docbook_to_plain_text(value: &str) -> String {
+    strip_html_to_text(value)
+}
+
+fn strip_html_to_text(value: &str) -> String {
+    collapse_whitespace(&strip_html_to_text_preserve_lines(value))
+}
+
+fn strip_html_to_text_preserve_lines(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut rest = value;
+
+    while let Some(tag_start) = rest.find('<') {
+        output.push_str(&decode_html_entities(&rest[..tag_start]));
+        rest = &rest[tag_start..];
+
+        let Some(tag_end) = rest.find('>') else {
+            output.push_str(&decode_html_entities(rest));
+            return output;
+        };
+
+        let tag = rest[1..tag_end].trim().trim_start_matches('/');
+        if tag.starts_with("para")
+            || tag.starts_with("simpara")
+            || tag.starts_with("listitem")
+            || tag.starts_with("itemizedlist")
+            || tag.starts_with("orderedlist")
+            || tag.starts_with('p')
+            || tag.starts_with("br")
+            || tag.starts_with("li")
+        {
+            output.push(' ');
+        }
+        rest = &rest[tag_end + 1..];
+    }
+
+    output.push_str(&decode_html_entities(rest));
+    output
+}
+
+fn strip_nix_doc_roles(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut rest = value;
+
+    while !rest.is_empty() {
+        if let Some((text, remaining)) = nix_doc_role_at_start(rest) {
+            output.push_str(text);
+            rest = remaining;
+            continue;
+        }
+
+        let ch = rest.chars().next().expect("rest is not empty");
+        output.push(ch);
+        rest = &rest[ch.len_utf8()..];
+    }
+
+    output
+}
+
+fn nix_doc_role_at_start(value: &str) -> Option<(&str, &str)> {
+    let role_end = value.strip_prefix('{')?.find("}`")? + 1;
+    let role = &value[1..role_end];
+    if !matches!(
+        role,
+        "option" | "file" | "var" | "command" | "env" | "manpage"
+    ) {
+        return None;
+    }
+
+    let after_role = &value[role_end + 2..];
+    let value_end = after_role.find('`')?;
+    Some((&after_role[..value_end], &after_role[value_end + 1..]))
+}
+
+fn collapse_whitespace(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn collapse_line_whitespace(value: &str) -> String {
+    value
+        .lines()
+        .map(collapse_whitespace)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 impl OptionDoc {
@@ -241,7 +360,7 @@ impl SearchDocument {
 mod tests {
     use crate::ingest::IngestContext;
 
-    use super::{CommonDoc, DocumentKind, PackageDoc};
+    use super::{CommonDoc, DocText, DocumentKind, PackageDoc};
 
     #[test]
     fn common_doc_uses_context_identity() {
@@ -280,5 +399,33 @@ mod tests {
         assert_eq!(doc.common.name, "python3Packages.requests");
         assert_eq!(doc.attribute, "python3Packages.requests");
         assert_eq!(doc.package_set.as_deref(), Some("python3Packages"));
+    }
+
+    #[test]
+    fn docbook_plain_text_strips_tags_and_decodes_entities() {
+        let value = DocText::DocBook(
+            "<para>Hello <literal>world</literal> &amp; friends</para>".to_owned(),
+        );
+
+        assert_eq!(value.plain_text(), "Hello world & friends");
+    }
+
+    #[test]
+    fn markdown_plain_text_strips_html_and_markup() {
+        let value = DocText::Markdown(
+            "Use **Git** and {option}`programs.git.enable` <em>safely</em>.".to_owned(),
+        );
+
+        assert_eq!(
+            value.plain_text(),
+            "Use Git and programs.git.enable safely."
+        );
+    }
+
+    #[test]
+    fn plain_doc_text_is_borrowed_unchanged() {
+        let value = DocText::Plain("Already plain.".to_owned());
+
+        assert_eq!(value.plain_text(), "Already plain.");
     }
 }

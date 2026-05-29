@@ -131,7 +131,7 @@ fn render_hit_row(
 
     let entry_href = entry_url_for_hit(config, state, hit, None, Some(result_page));
 
-    let desc = summary.unwrap_or("");
+    let desc = summary.as_deref().unwrap_or("");
     let source_color = source_tag::color_for_source(config, &common.source);
     let row_parity = if result_offset.is_multiple_of(2) {
         "even"
@@ -161,16 +161,16 @@ fn page_for_offset(offset: usize) -> usize {
     (offset / DEFAULT_LIMIT) + 1
 }
 
-fn summary_for_document(document: &SearchDocument) -> Option<&str> {
+fn summary_for_document(document: &SearchDocument) -> Option<String> {
     match document {
-        SearchDocument::Option(option) => option
-            .description
-            .as_ref()
-            .and_then(|description| first_non_empty_line(description.plain_text())),
+        SearchDocument::Option(option) => option.description.as_ref().and_then(|description| {
+            first_non_empty_line(description.plain_text().as_ref()).map(ToOwned::to_owned)
+        }),
         SearchDocument::Package(package) => package
             .description
             .as_deref()
-            .and_then(first_non_empty_line),
+            .and_then(first_non_empty_line)
+            .map(ToOwned::to_owned),
     }
 }
 

@@ -2,8 +2,9 @@ use std::borrow::Cow;
 use std::fmt::Write;
 
 use comrak::{Options, markdown_to_html};
-use html_escape::{decode_html_entities, encode_safe};
+use html_escape::encode_safe;
 use maud::{Markup, PreEscaped, html};
+use nixsearch_core::document::docbook_to_plain_text;
 use serde_json::Value;
 
 use nixsearch_core::document::{DocText, DocValue};
@@ -114,50 +115,147 @@ fn language_class(language: CodeLanguage) -> &'static str {
 
 fn render_markdown(value: &str) -> Markup {
     let markdown = preprocess_nix_doc_roles(value);
-    let markdown = render_fenced_code_blocks(&markdown);
+    let mut code_blocks = Vec::new();
+    let markdown = extract_fenced_code_blocks(&markdown, &mut code_blocks);
     let mut options = Options::default();
-    options.render.unsafe_ = true;
+    options.render.unsafe_ = false;
     let html = markdown_to_html(&markdown, &options);
-    let html = ammonia::Builder::default()
+    let mut html = ammonia::Builder::default()
         .add_tags([
             "code", "pre", "span", "table", "thead", "tbody", "tr", "th", "td",
         ])
-        .add_generic_attributes(["class", "style"])
         .clean(&html)
         .to_string();
+
+    for (index, code_block) in code_blocks.into_iter().enumerate() {
+        let placeholder = code_block_placeholder(index);
+        html = html.replace(&format!("<p>{placeholder}</p>"), &code_block);
+        html = html.replace(&placeholder, &code_block);
+    }
 
     html! { div.doc-content { (PreEscaped(html)) } }
 }
 
-fn render_fenced_code_blocks(value: &str) -> String {
+fn extract_fenced_code_blocks(value: &str, code_blocks: &mut Vec<String>) -> String {
     let mut output = String::with_capacity(value.len());
-    let mut lines = value.lines();
+    let lines = value.split_inclusive('\n').collect::<Vec<_>>();
+    let mut index = 0;
 
-    while let Some(line) = lines.next() {
-        let trimmed = line.trim_start();
-        if !trimmed.starts_with("```") {
+    while index < lines.len() {
+        let line = lines[index];
+        let Some(opening) = opening_fence(line) else {
             output.push_str(line);
-            output.push('\n');
+            index += 1;
             continue;
-        }
+        };
 
-        let info = trimmed.trim_start_matches("```").trim();
         let mut code = String::new();
-        for code_line in lines.by_ref() {
-            if code_line.trim_start().starts_with("```") {
+        let mut closing_index = None;
+        let mut code_index = index + 1;
+
+        while code_index < lines.len() {
+            if closing_fence(lines[code_index], opening.marker()) {
+                closing_index = Some(code_index);
                 break;
             }
-            code.push_str(code_line);
-            code.push('\n');
+
+            code.push_str(lines[code_index]);
+            code_index += 1;
         }
 
-        let language = language_from_info(info, &code);
-        let formatted = format_code(language, &code);
-        output.push_str(&render_code(language, &formatted).into_string());
-        output.push('\n');
+        if let Some(closing_index) = closing_index {
+            let language = language_from_info(opening.info, &code);
+            let formatted = format_code(language, &code);
+            let placeholder = code_block_placeholder(code_blocks.len());
+
+            code_blocks.push(render_code(language, &formatted).into_string());
+            output.push_str(&placeholder);
+            output.push('\n');
+            index = closing_index + 1;
+        } else {
+            output.push_str(line);
+            output.push_str(&code);
+            index = lines.len();
+        }
     }
 
     output
+}
+
+fn code_block_placeholder(index: usize) -> String {
+    format!("@@NIXSEARCH_CODE_BLOCK_{index}@@")
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Fence<'a> {
+    marker: char,
+    length: usize,
+    info: &'a str,
+}
+
+impl Fence<'_> {
+    fn marker(self) -> FenceMarker {
+        FenceMarker {
+            marker: self.marker,
+            length: self.length,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FenceMarker {
+    marker: char,
+    length: usize,
+}
+
+fn opening_fence(line: &str) -> Option<Fence<'_>> {
+    let line = strip_line_ending(line);
+    let (indent, rest) = leading_spaces(line);
+    if indent > 3 {
+        return None;
+    }
+
+    let marker = rest.chars().next()?;
+    if !matches!(marker, '`' | '~') {
+        return None;
+    }
+
+    let length = rest.chars().take_while(|&ch| ch == marker).count();
+    if length < 3 {
+        return None;
+    }
+
+    let info = rest[length..].trim();
+    if marker == '`' && info.contains('`') {
+        return None;
+    }
+
+    Some(Fence {
+        marker,
+        length,
+        info,
+    })
+}
+
+fn closing_fence(line: &str, opening: FenceMarker) -> bool {
+    let line = strip_line_ending(line);
+    let (indent, rest) = leading_spaces(line);
+    if indent > 3 || !rest.starts_with(opening.marker) {
+        return false;
+    }
+
+    let length = rest.chars().take_while(|&ch| ch == opening.marker).count();
+
+    length >= opening.length && rest[length..].trim().is_empty()
+}
+
+fn strip_line_ending(line: &str) -> &str {
+    line.trim_end_matches(['\r', '\n'])
+}
+
+fn leading_spaces(value: &str) -> (usize, &str) {
+    let count = value.bytes().take_while(|&byte| byte == b' ').count();
+    (count, &value[count..])
 }
 
 fn language_from_info(info: &str, code: &str) -> CodeLanguage {
@@ -197,19 +295,21 @@ fn format_code(language: CodeLanguage, code: &str) -> Cow<'_, str> {
 
 fn preprocess_nix_doc_roles(value: &str) -> String {
     let mut output = String::with_capacity(value.len());
-    let mut in_fence = false;
+    let mut in_fence = None;
 
     for line in value.split_inclusive('\n') {
         let line_without_newline = line.strip_suffix('\n').unwrap_or(line);
-        let trimmed = line_without_newline.trim_start();
 
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            in_fence = !in_fence;
+        if let Some(fence) = in_fence {
             output.push_str(line);
+            if closing_fence(line_without_newline, fence) {
+                in_fence = None;
+            }
             continue;
         }
 
-        if in_fence {
+        if let Some(fence) = opening_fence(line_without_newline) {
+            in_fence = Some(fence.marker());
             output.push_str(line);
             continue;
         }
@@ -288,7 +388,7 @@ fn json_to_nix_indent(value: &Value, indent: usize) -> String {
         Value::Null => "null".to_owned(),
         Value::Bool(value) => value.to_string(),
         Value::Number(value) => value.to_string(),
-        Value::String(value) => nix_string(value, indent),
+        Value::String(value) => nix_string(value),
         Value::Array(values) => nix_array(values, indent),
         Value::Object(values) => nix_attrset(values, indent),
     }
@@ -349,56 +449,66 @@ fn nix_attrset(values: &serde_json::Map<String, Value>, indent: usize) -> String
 }
 
 fn nix_attr_key(value: &str) -> Cow<'_, str> {
-    let valid = !value.is_empty()
-        && !value.contains(['/', ' '])
-        && !value.as_bytes()[0].is_ascii_digit()
-        && value
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '\''));
-    if valid {
+    if is_bare_nix_attr_name(value) {
         Cow::Borrowed(value)
     } else {
-        Cow::Owned(format!("{:?}", value))
+        Cow::Owned(nix_string(value))
     }
 }
 
-fn nix_string(value: &str, _indent: usize) -> String {
-    serde_json::to_string(value)
-        .expect("serializing a string cannot fail")
-        .replace("${", r"\${")
+fn is_bare_nix_attr_name(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+
+    !is_nix_keyword(value)
+        && (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '\''))
 }
 
-fn docbook_to_plain_text(value: &str) -> String {
-    let mut output = String::with_capacity(value.len());
-    let mut rest = value;
+fn is_nix_keyword(value: &str) -> bool {
+    matches!(
+        value,
+        "assert"
+            | "else"
+            | "false"
+            | "if"
+            | "in"
+            | "inherit"
+            | "let"
+            | "null"
+            | "or"
+            | "rec"
+            | "then"
+            | "true"
+            | "with"
+    )
+}
 
-    while let Some(tag_start) = rest.find('<') {
-        output.push_str(&decode_html_entities(&rest[..tag_start]));
-        rest = &rest[tag_start..];
+fn nix_string(value: &str) -> String {
+    let mut output = String::with_capacity(value.len() + 2);
+    output.push('"');
 
-        let Some(tag_end) = rest.find('>') else {
-            output.push_str(&decode_html_entities(rest));
-            return collapse_whitespace(&output);
-        };
-
-        let tag = rest[1..tag_end].trim().trim_start_matches('/');
-        if tag.starts_with("para")
-            || tag.starts_with("simpara")
-            || tag.starts_with("listitem")
-            || tag.starts_with("itemizedlist")
-            || tag.starts_with("orderedlist")
-        {
-            output.push(' ');
+    let mut chars = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => output.push_str(r#"\""#),
+            '\\' => output.push_str(r"\\"),
+            '\n' => output.push_str(r"\n"),
+            '\r' => output.push_str(r"\r"),
+            '\t' => output.push_str(r"\t"),
+            '$' if chars.peek() == Some(&'{') => output.push_str(r"\$"),
+            ch if ch.is_control() => {
+                output.push_str(r"\\");
+                output.extend(ch.escape_default().skip(1));
+            }
+            ch => output.push(ch),
         }
-        rest = &rest[tag_end + 1..];
     }
 
-    output.push_str(&decode_html_entities(rest));
-    collapse_whitespace(&output)
-}
-
-fn collapse_whitespace(value: &str) -> String {
-    value.split_whitespace().collect::<Vec<_>>().join(" ")
+    output.push('"');
+    output
 }
 
 #[cfg(test)]
@@ -421,7 +531,37 @@ mod tests {
     fn json_strings_are_escaped_for_nix() {
         assert_eq!(json_to_nix(&json!("${pkgs.hello}")), r#""\${pkgs.hello}""#);
         assert_eq!(json_to_nix(&json!("quote: \"")), r#""quote: \"""#);
+        assert_eq!(json_to_nix(&json!("back\\slash")), r#""back\\slash""#);
         assert_eq!(json_to_nix(&json!("one\ntwo")), r#""one\ntwo""#);
+        assert_eq!(json_to_nix(&json!("one\rtwo")), r#""one\rtwo""#);
+        assert_eq!(json_to_nix(&json!("one\ttwo")), r#""one\ttwo""#);
+        assert_eq!(json_to_nix(&json!("one\u{8}two")), r#""one\\u{8}two""#);
+    }
+
+    #[test]
+    fn json_attr_keys_are_escaped_for_nix() {
+        assert_eq!(
+            json_to_nix(&json!({ "valid-key'": "x" })),
+            r#"{ valid-key' = "x"; }"#
+        );
+        assert_eq!(
+            json_to_nix(&json!({ "${pkgs.hello}": "x" })),
+            r#"{ "\${pkgs.hello}" = "x"; }"#
+        );
+        assert_eq!(json_to_nix(&json!({ "-bad": "x" })), r#"{ "-bad" = "x"; }"#);
+        assert_eq!(json_to_nix(&json!({ "or": "x" })), r#"{ "or" = "x"; }"#);
+        assert_eq!(
+            json_to_nix(&json!({ "with space": "x" })),
+            r#"{ "with space" = "x"; }"#
+        );
+        assert_eq!(
+            json_to_nix(&json!({ "quote\"key": "x" })),
+            r#"{ "quote\"key" = "x"; }"#
+        );
+    }
+
+    #[test]
+    fn json_objects_are_printed_as_nix() {
         assert_eq!(
             json_to_nix(&json!({ "not valid": "x" })),
             r#"{ "not valid" = "x"; }"#
@@ -524,6 +664,39 @@ mod tests {
     }
 
     #[test]
+    fn markdown_tilde_fences_are_formatted_and_highlighted() {
+        let rendered = render_doc_text(&DocText::Markdown(
+            "Example:\n\n~~~json\n{\"foo\":\"bar\"}\n~~~".to_owned(),
+        ))
+        .into_string();
+
+        assert!(rendered.contains("code-block"));
+        assert!(rendered.contains("language-json"));
+        assert!(rendered.contains("foo"));
+        assert!(rendered.contains("bar"));
+        assert!(!rendered.contains("~~~"));
+    }
+
+    #[test]
+    fn markdown_fences_require_matching_marker_and_length() {
+        let rendered = render_doc_text(&DocText::Markdown(
+            "````nix\n```\n{ foo = \"bar\"; }\n````".to_owned(),
+        ))
+        .into_string();
+
+        assert!(rendered.contains("code-block"));
+        assert!(rendered.contains("language-nix"));
+        assert!(rendered.contains("foo"));
+    }
+
+    #[test]
+    fn nix_doc_roles_inside_tilde_fences_are_unchanged() {
+        let value = "~~~~\n{option}`services.nginx.enable`\n~~~~";
+
+        assert_eq!(preprocess_nix_doc_roles(value), value);
+    }
+
+    #[test]
     fn markdown_output_is_sanitized() {
         let rendered = render_doc_text(&DocText::Markdown(
             "Safe <script>alert('no')</script> text".to_owned(),
@@ -533,5 +706,18 @@ mod tests {
         assert!(rendered.contains("Safe"));
         assert!(rendered.contains("text"));
         assert!(!rendered.contains("<script"));
+    }
+
+    #[test]
+    fn markdown_output_drops_untrusted_inline_styles() {
+        let rendered = render_doc_text(&DocText::Markdown(
+            r#"Safe <span style="position:fixed">styled</span> text"#.to_owned(),
+        ))
+        .into_string();
+
+        assert!(rendered.contains("Safe"));
+        assert!(rendered.contains("styled"));
+        assert!(!rendered.contains("position:fixed"));
+        assert!(!rendered.contains("style="));
     }
 }

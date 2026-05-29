@@ -273,7 +273,9 @@ fn description_for_document(
         nixsearch_core::document::SearchDocument::Option(option) => option
             .description
             .as_ref()
-            .and_then(|description| first_non_empty_line(description.plain_text()))
+            .and_then(|description| {
+                first_non_empty_line(description.plain_text().as_ref()).map(ToOwned::to_owned)
+            })
             .map(|description| format!("{} · {description}", common.name))
             .unwrap_or_else(|| format!("{} · {source}", common.name)),
         nixsearch_core::document::SearchDocument::Package(package) => {

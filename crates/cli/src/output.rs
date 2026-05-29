@@ -86,7 +86,8 @@ pub(crate) fn print_search_hit(config: &AppConfig, hit: SearchHit) {
     match hit.document {
         SearchDocument::Option(option) => {
             if let Some(description) = option.description {
-                let summary = description.plain_text().lines().next().unwrap_or("").trim();
+                let description = description.plain_text();
+                let summary = description.lines().next().unwrap_or("").trim();
 
                 if !summary.is_empty() {
                     println!("       {summary}");
