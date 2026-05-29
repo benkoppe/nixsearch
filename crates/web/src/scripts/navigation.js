@@ -202,6 +202,18 @@
     return metadata.sources.find((s) => s.id === sourceId);
   }
 
+  function syncLogoAccent(sourceId) {
+    const logo = document.querySelector(".site-title");
+    if (!logo) return;
+
+    const source = sourceMetadata(sourceId);
+    if (source) {
+      logo.style.setProperty("--logo-accent", source.color);
+    } else {
+      logo.style.removeProperty("--logo-accent");
+    }
+  }
+
   function defaultRefSet() {
     return metadata.defaultRefSet || "";
   }
@@ -211,6 +223,7 @@
     if (!container) return;
 
     const source = sourceMetadata(sourceId);
+    syncLogoAccent(sourceId);
 
     if (source) {
       container.style.setProperty("--source-color", source.color);
