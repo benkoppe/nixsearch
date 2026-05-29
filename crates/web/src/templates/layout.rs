@@ -1,6 +1,7 @@
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 
 use nixsearch_config::app::AppConfig;
+use nixsearch_config::source::SourceKind;
 use nixsearch_index::search::SearchResult;
 
 use crate::AppState;
@@ -18,7 +19,7 @@ use super::search;
 use super::source_tag;
 
 static CSS: &str = include_str!("../../style.css");
-const DEFAULT_DESCRIPTION: &str = "Search Nix packages and options";
+const DEFAULT_DESCRIPTION: &str = "Search the Nix ecosystem";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageUrls {
@@ -143,7 +144,7 @@ fn page_metadata(
 ) -> PageMetadata {
     PageMetadata {
         title: title_for_entry(config, request, source_filter, entry.document()),
-        description: description_for(config, request, search_result, entry),
+        description: description_for(config, request, source_filter, search_result, entry),
         url: page_urls.current_url.clone(),
         image_url: page_urls.image_url.clone(),
     }
@@ -181,6 +182,7 @@ fn title_for_entry(
 fn description_for(
     config: &AppConfig,
     request: &PageRequest,
+    source_filter: &SourceFilter,
     search_result: Result<&SearchResult, &str>,
     entry: &EntryData,
 ) -> String {
@@ -192,7 +194,34 @@ fn description_for(
         return format!("{} results for {q}", result.total);
     }
 
-    DEFAULT_DESCRIPTION.to_owned()
+    default_description_for(config, source_filter)
+}
+
+fn default_description_for(config: &AppConfig, source_filter: &SourceFilter) -> String {
+    match source_filter {
+        SourceFilter::All => DEFAULT_DESCRIPTION.to_owned(),
+        SourceFilter::Named(source) => {
+            let source_config = config.sources.get(source);
+            let source_name = source_config
+                .and_then(|source| source.name.as_deref())
+                .unwrap_or(source);
+            let kind = source_config
+                .map(|source| kind_noun(source.kind))
+                .unwrap_or("entries");
+
+            format!("Search {source_name} {kind}")
+        }
+    }
+}
+
+fn kind_noun(kind: SourceKind) -> &'static str {
+    match kind {
+        SourceKind::Packages => "packages",
+        SourceKind::Options => "options",
+        SourceKind::Apps => "apps",
+        SourceKind::Services => "services",
+        SourceKind::Mixed => "packages and options",
+    }
 }
 
 fn description_for_document(
@@ -409,12 +438,35 @@ mod tests {
         );
 
         assert_eq!(metadata.title, "nixsearch");
-        assert_eq!(metadata.description, "Search Nix packages and options");
+        assert_eq!(metadata.description, "Search the Nix ecosystem");
         assert_eq!(metadata.url, "https://search.example.com/?q=git");
         assert_eq!(
             metadata.image_url,
             "https://search.example.com/apple-touch-icon.png"
         );
+    }
+
+    #[test]
+    fn metadata_describes_source_page() {
+        let config = config();
+        let request = PageRequest {
+            source: Some(SOURCE_FIXTURES.to_owned()),
+            ..PageRequest::default()
+        };
+        let search = SearchResult {
+            hits: Vec::new(),
+            total: 0,
+        };
+        let metadata = page_metadata(
+            &config,
+            &request,
+            &SourceFilter::Named(SOURCE_FIXTURES.to_owned()),
+            Ok(&search),
+            &EntryData::Empty,
+            &page_urls(),
+        );
+
+        assert_eq!(metadata.description, "Search Fixtures options");
     }
 
     #[test]
@@ -433,7 +485,13 @@ mod tests {
         };
 
         assert_eq!(
-            description_for(&config, &request, Ok(&search), &EntryData::Empty),
+            description_for(
+                &config,
+                &request,
+                &SourceFilter::All,
+                Ok(&search),
+                &EntryData::Empty
+            ),
             "59526 results for git"
         );
     }
@@ -450,6 +508,7 @@ mod tests {
             description_for(
                 &config,
                 &PageRequest::default(),
+                &SourceFilter::All,
                 Err("unused"),
                 &EntryData::Found(Box::new(document))
             ),
@@ -468,6 +527,7 @@ mod tests {
             description_for(
                 &config,
                 &PageRequest::default(),
+                &SourceFilter::All,
                 Err("unused"),
                 &EntryData::Found(Box::new(document))
             ),
