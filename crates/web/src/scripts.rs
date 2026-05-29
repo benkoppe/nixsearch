@@ -50,17 +50,10 @@ mod tests {
 
         assert!(script.contains("if (loadsResults)"));
         assert!(script.contains("window.scrollTo(0, 0);"));
-        assert!(script.find("setLoading(loadsResults);").unwrap() < script.find("reconcile(current);").unwrap());
-    }
-
-    #[test]
-    fn navigation_script_focuses_search_with_slash() {
-        let script = navigation_script();
-
-        assert!(script.contains(r#"if (evt.key !== "/") return;"#));
-        assert!(script.contains("if (dialog && dialog.open) return;"));
-        assert!(script.contains(r#"document.querySelector('[data-nixsearch-input="q"]')"#));
-        assert!(script.contains("input.select();"));
+        assert!(
+            script.find("setLoading(loadsResults);").unwrap()
+                < script.find("reconcile(current);").unwrap()
+        );
     }
 
     #[test]

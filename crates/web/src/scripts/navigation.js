@@ -169,6 +169,13 @@
     return tab ? tab.dataset.nixsearchSource || "" : "";
   }
 
+  function sourceIdsFromTabs() {
+    return Array.from(
+      document.querySelectorAll(".source-tab[data-nixsearch-source]"),
+      (tab) => tab.dataset.nixsearchSource || "",
+    );
+  }
+
   function setActiveSourceTab(sourceId) {
     document.querySelectorAll(".source-tab").forEach((tab) => {
       if (tab.dataset.nixsearchSource === sourceId) {
@@ -310,6 +317,29 @@
     return qs ? path + "?" + qs : path;
   }
 
+  function selectSource(sourceId) {
+    setActiveSourceTab(sourceId);
+    populateRefRadios(sourceId);
+
+    const dropdown = document.querySelector("[data-nixsearch-overflow-menu]");
+    if (dropdown) dropdown.hidden = true;
+
+    navigate(buildSearchUrlFromInputs());
+  }
+
+  function cycleSourceFilter(direction) {
+    const sourceIds = sourceIdsFromTabs();
+    if (sourceIds.length < 2) return false;
+
+    const currentIndex = sourceIds.indexOf(currentSourceFromTabs());
+    const startIndex = currentIndex >= 0 ? currentIndex : 0;
+    const nextIndex =
+      (startIndex + direction + sourceIds.length) % sourceIds.length;
+
+    selectSource(sourceIds[nextIndex]);
+    return true;
+  }
+
   function navigate(url, { push = true, syncInputs = false } = {}) {
     const next = new URL(url, window.location.href);
     const target = next.pathname + next.search;
@@ -373,13 +403,7 @@
     if (sourceId && sourceId === currentSourceFromTabs()) {
       sourceId = "";
     }
-    setActiveSourceTab(sourceId);
-    populateRefRadios(sourceId);
-
-    const dropdown = document.querySelector("[data-nixsearch-overflow-menu]");
-    if (dropdown) dropdown.hidden = true;
-
-    navigate(buildSearchUrlFromInputs());
+    selectSource(sourceId);
   });
 
   document.addEventListener("change", (evt) => {
@@ -450,6 +474,22 @@
   }
 
   document.addEventListener("keydown", (evt) => {
+    if (
+      evt.ctrlKey &&
+      !evt.metaKey &&
+      !evt.altKey &&
+      !evt.shiftKey &&
+      !evt.isComposing
+    ) {
+      const key = evt.key.toLowerCase();
+      if (key === "n" || key === "p") {
+        const dialog = document.getElementById("entry-modal");
+        if (dialog && dialog.open) return;
+        if (cycleSourceFilter(key === "n" ? 1 : -1)) evt.preventDefault();
+        return;
+      }
+    }
+
     if (evt.key !== "/") return;
     if (evt.metaKey || evt.ctrlKey || evt.altKey || evt.isComposing) return;
     if (isEditableTarget(evt.target)) return;

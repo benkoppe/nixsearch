@@ -116,9 +116,7 @@ pub async fn state_events(
                     templates::results::render(&request, &result.hits, result.total, &state.config)
                         .into_string()
                 }
-                Err(error) => {
-                    templates::results::render_error(&format!("{error:#}")).into_string()
-                }
+                Err(error) => templates::results::render_error(&format!("{error:#}")).into_string(),
             })
         }
     } else {
