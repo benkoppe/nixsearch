@@ -341,6 +341,9 @@
     }
 
     setLoading(loadsResults);
+    if (loadsResults) {
+      window.scrollTo(0, 0);
+    }
     reconcile(current);
   }
 
