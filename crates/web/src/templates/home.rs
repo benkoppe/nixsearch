@@ -19,14 +19,19 @@ pub fn render(state: &AppState, request: &PageRequest) -> Markup {
     let source_filter = SourceFilter::from_request(request);
 
     let (title_prefix, title_accent) = title_for(config, &source_filter);
-    let glass_color = match &source_filter {
-        SourceFilter::All => ALL_GLASS_COLOR.to_owned(),
-        SourceFilter::Named(source) => color_for_source(config, source),
+    // "All" keeps the muted glass blue and lets the title fall back to the
+    // logo's default blues; named sources tint both with the source color.
+    let hero_style = match &source_filter {
+        SourceFilter::All => format!("--glass-color: {ALL_GLASS_COLOR};"),
+        SourceFilter::Named(source) => {
+            let color = color_for_source(config, source);
+            format!("--glass-color: {color}; --home-accent: {color};")
+        }
     };
     let count = count_for(state, request, &source_filter);
 
     html! {
-        div #results.home-hero style=(format!("--glass-color: {glass_color};")) {
+        div #results.home-hero style=(hero_style) {
             div.home-inner {
                 div.home-glass {
                     (PreEscaped(GLASS_SVG))
