@@ -6,13 +6,19 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+ammonia.workspace = true
 axum.workspace = true
 camino.workspace = true
+comrak.workspace = true
 datastar.workspace = true
 futures-util.workspace = true
+html-escape.workspace = true
+lumis.workspace = true
 maud.workspace = true
+nixfmt_rs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+taplo.workspace = true
 time.workspace = true
 tokio.workspace = true
 tower-http.workspace = true

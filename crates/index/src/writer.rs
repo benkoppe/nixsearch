@@ -44,7 +44,7 @@ impl SearchIndexWriter {
         add_name_parts(&mut document, &self.fields, common);
 
         if let Some(description) = &option.description {
-            document.add_text(self.fields.description, description);
+            document.add_text(self.fields.description, description.plain_text());
         }
 
         if let Some(option_set) = &option.option_set {

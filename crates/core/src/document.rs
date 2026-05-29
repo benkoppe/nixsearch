@@ -68,14 +68,59 @@ pub struct OptionDoc {
     pub parents: Vec<String>,
     pub option_set: Option<String>,
     pub declarations: Vec<Declaration>,
-    pub description: Option<String>,
+    pub description: Option<DocText>,
     pub option_type: Option<String>,
-    pub default: Option<Value>,
-    pub example: Option<Value>,
-    pub related_packages: Option<String>,
+    pub default: Option<DocValue>,
+    pub example: Option<DocValue>,
+    pub related_packages: Option<DocText>,
     pub read_only: Option<bool>,
     pub internal: Option<bool>,
     pub visible: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "text", rename_all = "kebab-case")]
+pub enum DocText {
+    Markdown(String),
+    DocBook(String),
+    Plain(String),
+}
+
+impl DocText {
+    pub fn plain_text(&self) -> &str {
+        match self {
+            Self::Markdown(value) | Self::DocBook(value) | Self::Plain(value) => value,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "kebab-case")]
+pub enum DocValue {
+    NixExpression(String),
+    Markdown(String),
+    DocBook(String),
+    Json(Value),
+    Plain(String),
+}
+
+impl DocValue {
+    pub fn plain_text(&self) -> String {
+        match self {
+            Self::NixExpression(value)
+            | Self::Markdown(value)
+            | Self::DocBook(value)
+            | Self::Plain(value) => value.clone(),
+            Self::Json(value) => value.to_string(),
+        }
+    }
+
+    pub fn nix_expression(&self) -> Option<&str> {
+        match self {
+            Self::NixExpression(value) => Some(value),
+            _ => None,
+        }
+    }
 }
 
 impl OptionDoc {

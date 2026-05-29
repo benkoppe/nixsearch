@@ -163,9 +163,10 @@ fn page_for_offset(offset: usize) -> usize {
 
 fn summary_for_document(document: &SearchDocument) -> Option<&str> {
     match document {
-        SearchDocument::Option(option) => {
-            option.description.as_deref().and_then(first_non_empty_line)
-        }
+        SearchDocument::Option(option) => option
+            .description
+            .as_ref()
+            .and_then(|description| first_non_empty_line(description.plain_text())),
         SearchDocument::Package(package) => package
             .description
             .as_deref()

@@ -272,8 +272,8 @@ fn description_for_document(
     match document {
         nixsearch_core::document::SearchDocument::Option(option) => option
             .description
-            .as_deref()
-            .and_then(first_non_empty_line)
+            .as_ref()
+            .and_then(|description| first_non_empty_line(description.plain_text()))
             .map(|description| format!("{} · {description}", common.name))
             .unwrap_or_else(|| format!("{} · {source}", common.name)),
         nixsearch_core::document::SearchDocument::Package(package) => {
@@ -345,7 +345,7 @@ fn source_metadata_json(config: &AppConfig) -> String {
 #[cfg(test)]
 mod tests {
     use nixsearch_config::server::ScriptAttributeValue;
-    use nixsearch_core::document::{OptionDoc, PackageDoc, SearchDocument};
+    use nixsearch_core::document::{DocText, OptionDoc, PackageDoc, SearchDocument};
     use nixsearch_core::ingest::IngestContext;
     use nixsearch_index::search::SearchResult;
     use nixsearch_test_support::{SOURCE_FIXTURES, app_config, utf8_path_buf};
@@ -614,7 +614,9 @@ mod tests {
     fn metadata_describes_option_entry() {
         let config = config();
         let mut option = OptionDoc::new(&ingest_context(), "programs.git.enable");
-        option.description = Some("Enable Git support.\nMore details.".to_owned());
+        option.description = Some(DocText::Markdown(
+            "Enable Git support.\nMore details.".to_owned(),
+        ));
         let document = SearchDocument::Option(option);
 
         assert_eq!(

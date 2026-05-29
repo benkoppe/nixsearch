@@ -52,6 +52,22 @@ bytes = "1"
 camino = { version = "1", features = ["serde1"] }
 hex = "0.4"
 sha2 = "0.11"
+nixfmt_rs = { version = "0.5", default-features = false }
+lumis = { version = "0.9", default-features = false, features = [
+  "lang-nix",
+  "lang-toml",
+  "lang-json",
+  "lang-bash",
+  "lang-fish",
+  "lang-ini",
+  "lang-yaml",
+  "lang-xml",
+  "lang-sql",
+  "lang-nushell",
+] }
+comrak = { version = "0.39", default-features = false }
+ammonia = "4"
+taplo = { version = "0.14", default-features = false }
 
 nixsearch-core = { path = "crates/core" }
 nixsearch-ingest = { path = "crates/ingest" }

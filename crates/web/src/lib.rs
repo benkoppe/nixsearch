@@ -16,6 +16,7 @@ use nixsearch_ops::lock;
 
 mod handlers;
 mod maintenance;
+mod render_docs;
 mod request;
 mod scripts;
 mod templates;

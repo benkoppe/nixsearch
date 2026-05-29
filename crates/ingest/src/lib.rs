@@ -5,7 +5,9 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::Value;
 
-use nixsearch_core::document::{License, Maintainer, OptionDoc, PackageDoc, SearchDocument};
+use nixsearch_core::document::{
+    DocText, DocValue, License, Maintainer, OptionDoc, PackageDoc, SearchDocument,
+};
 use nixsearch_core::ingest::IngestContext;
 use nixsearch_core::source_link::Declaration;
 
@@ -39,7 +41,7 @@ struct RawOption {
     declarations: Vec<RawDeclaration>,
 
     #[serde(default)]
-    description: Option<String>,
+    description: Option<Value>,
 
     #[serde(default, rename = "type")]
     option_type: Option<String>,
@@ -51,7 +53,7 @@ struct RawOption {
     example: Option<Value>,
 
     #[serde(default)]
-    related_packages: Option<String>,
+    related_packages: Option<Value>,
 
     #[serde(default)]
     loc: Vec<String>,
@@ -99,16 +101,64 @@ fn convert_option(name: String, raw: RawOption, context: &IngestContext) -> Opti
     doc.parents = parents_from_loc(&doc.loc);
     doc.option_set = doc.loc.first().cloned();
     doc.declarations = raw.declarations.into_iter().map(Into::into).collect();
-    doc.description = raw.description;
+    doc.description = raw.description.map(doc_text_from_value);
     doc.option_type = raw.option_type;
-    doc.default = raw.default;
-    doc.example = raw.example;
-    doc.related_packages = raw.related_packages;
+    doc.default = raw.default.map(doc_value_from_value);
+    doc.example = raw.example.map(doc_value_from_value);
+    doc.related_packages = raw.related_packages.map(doc_text_from_value);
     doc.read_only = raw.read_only;
     doc.internal = raw.internal;
     doc.visible = raw.visible;
 
     doc
+}
+
+fn doc_text_from_value(value: Value) -> DocText {
+    match value {
+        Value::String(value) => DocText::Markdown(value),
+        Value::Object(mut object) => {
+            let doc_type = object
+                .remove("_type")
+                .and_then(|value| value.as_str().map(ToOwned::to_owned));
+            let text = object
+                .remove("text")
+                .and_then(|value| value.as_str().map(ToOwned::to_owned))
+                .unwrap_or_default();
+
+            match doc_type.as_deref() {
+                Some("mdDoc" | "literalMD") => DocText::Markdown(text),
+                Some("literalDocBook") => DocText::DocBook(text),
+                Some("literalExpression" | "literalExample") => DocText::Plain(text),
+                _ => DocText::Plain(serde_json::to_string(&Value::Object(object)).unwrap_or(text)),
+            }
+        }
+        other => DocText::Plain(other.to_string()),
+    }
+}
+
+fn doc_value_from_value(value: Value) -> DocValue {
+    match value {
+        Value::Object(mut object) => {
+            let original = Value::Object(object.clone());
+            let doc_type = object
+                .remove("_type")
+                .and_then(|value| value.as_str().map(ToOwned::to_owned));
+            let text = object
+                .remove("text")
+                .and_then(|value| value.as_str().map(ToOwned::to_owned));
+
+            match (doc_type.as_deref(), text) {
+                (Some("literalExpression" | "literalExample"), Some(text)) => {
+                    DocValue::NixExpression(text)
+                }
+                (Some("mdDoc" | "literalMD"), Some(text)) => DocValue::Markdown(text),
+                (Some("literalDocBook"), Some(text)) => DocValue::DocBook(text),
+                (Some(_), Some(text)) => DocValue::Plain(text),
+                _ => DocValue::Json(original),
+            }
+        }
+        other => DocValue::Json(other),
+    }
 }
 
 fn parents_from_loc(loc: &[String]) -> Vec<String> {
@@ -307,7 +357,7 @@ fn string_field(object: &serde_json::Map<String, Value>, key: &str) -> Option<St
 
 #[cfg(test)]
 mod tests {
-    use nixsearch_core::document::SearchDocument;
+    use nixsearch_core::document::{DocText, DocValue, SearchDocument};
     use nixsearch_test_support::{OPTION_GIT_ENABLE, OPTION_NGINX_ENABLE, ingest_context};
 
     use super::parse_options_json;
@@ -384,6 +434,37 @@ mod tests {
         assert_eq!(
             option.declarations[0].url.as_deref(),
             Some("https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/programs/git.nix")
+        );
+    }
+
+    #[test]
+    fn parses_option_doc_values_semantically() {
+        let json = r#"
+           {
+             "programs.firefox.profiles.<name>.settings": {
+               "description": "Attribute set of Firefox preferences.",
+               "default": { "_type": "literalExpression", "text": "{ }" },
+               "example": {
+                 "_type": "literalExpression",
+                 "text": "{\n  \"browser.startup.homepage\" = \"https://nixos.org\";\n}\n"
+               }
+             }
+           }
+           "#;
+
+        let docs = parse_options_json(json.as_bytes(), &ingest_context()).unwrap();
+
+        let SearchDocument::Option(option) = &docs[0] else {
+            panic!("expected option document");
+        };
+
+        assert!(matches!(option.description, Some(DocText::Markdown(_))));
+        assert_eq!(
+            option.default,
+            Some(DocValue::NixExpression("{ }".to_owned()))
+        );
+        assert!(
+            matches!(option.example, Some(DocValue::NixExpression(ref text)) if text.contains("browser.startup.homepage"))
         );
     }
 

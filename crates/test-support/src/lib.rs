@@ -9,7 +9,7 @@ use nixsearch_config::producer::ProducerConfig;
 use nixsearch_config::server::ServerConfig;
 use nixsearch_config::source::{RefConfig, SourceConfig, SourceKind};
 use nixsearch_core::artifact::ArtifactKind;
-use nixsearch_core::document::{OptionDoc, PackageDoc, SearchDocument};
+use nixsearch_core::document::{DocText, OptionDoc, PackageDoc, SearchDocument};
 use nixsearch_core::ingest::IngestContext;
 use nixsearch_core::source_link::{Declaration, SourceLinkConfig};
 
@@ -64,7 +64,7 @@ pub fn option_doc(name: &str, description: &str) -> SearchDocument {
 pub fn option_doc_for(context: &IngestContext, name: &str, description: &str) -> SearchDocument {
     let mut doc = OptionDoc::new(context, name);
 
-    doc.description = Some(description.to_owned());
+    doc.description = Some(DocText::Markdown(description.to_owned()));
     doc.loc = name.split('.').map(ToOwned::to_owned).collect();
     doc.option_set = doc.loc.first().cloned();
     doc.parents = (1..doc.loc.len())

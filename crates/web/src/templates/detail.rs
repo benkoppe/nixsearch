@@ -4,6 +4,8 @@ use nixsearch_config::app::AppConfig;
 use nixsearch_core::document::{License, Maintainer, SearchDocument};
 use nixsearch_core::source_link::SourceLinkResolver;
 
+use crate::render_docs::{render_doc_text, render_doc_value};
+
 use super::results::source_link_config_for_document;
 
 pub fn render(document: &SearchDocument, config: &AppConfig) -> Markup {
@@ -11,19 +13,19 @@ pub fn render(document: &SearchDocument, config: &AppConfig) -> Markup {
         SearchDocument::Option(option) => {
             html! {
                 @if let Some(description) = &option.description {
-                    (section("Description", html! { p { (description) } }))
+                    (section("Description", render_doc_text(description)))
                 }
                 @if let Some(option_type) = &option.option_type {
                     (section("Type", html! { p { code { (option_type) } } }))
                 }
                 @if let Some(default) = &option.default {
-                    (json_section("Default", default))
+                    (section("Default", render_doc_value(default)))
                 }
                 @if let Some(example) = &option.example {
-                    (json_section("Example", example))
+                    (section("Example", render_doc_value(example)))
                 }
                 @if let Some(related_packages) = &option.related_packages {
-                    (section("Related packages", html! { p { (related_packages) } }))
+                    (section("Related packages", render_doc_text(related_packages)))
                 }
                 @if !option.declarations.is_empty() {
                     @let resolver = source_link_config_for_document(config, &option.common)
@@ -133,17 +135,6 @@ fn section(title: &str, body: Markup) -> Markup {
             (body)
         }
     }
-}
-
-fn json_section(name: &str, value: &serde_json::Value) -> Markup {
-    let pretty = serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
-
-    section(
-        name,
-        html! {
-            pre { (pretty) }
-        },
-    )
 }
 
 fn licenses_section(licenses: &[License]) -> Markup {

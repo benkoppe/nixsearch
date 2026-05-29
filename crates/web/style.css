@@ -944,6 +944,82 @@ pre {
   margin: 0;
 }
 
+.doc-content {
+  color: var(--text);
+  line-height: 1.55;
+}
+
+.doc-content > :first-child {
+  margin-top: 0;
+}
+
+.doc-content > :last-child {
+  margin-bottom: 0;
+}
+
+.doc-content p,
+.doc-content ul,
+.doc-content ol,
+.doc-content table,
+.doc-content pre {
+  margin: 0.65rem 0;
+}
+
+.doc-content ul,
+.doc-content ol {
+  padding-left: 1.25rem;
+}
+
+.doc-content li {
+  margin-bottom: 0.25rem;
+}
+
+.doc-content code {
+  font-family:
+    "SF Mono", "Cascadia Code", "Fira Code", "JetBrains Mono", monospace;
+  font-size: 0.88em;
+}
+
+.doc-content :not(pre) > code {
+  padding: 0.08rem 0.28rem;
+  border: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+  color: var(--text-bright);
+}
+
+.doc-content table {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
+.doc-content th,
+.doc-content td {
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.doc-content th {
+  color: var(--text-bright);
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+}
+
+.code-block {
+  max-width: 100%;
+  border: 0;
+  line-height: 1.45;
+  white-space: pre;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.04);
+}
+
+.code-block code {
+  font-family:
+    "SF Mono", "Cascadia Code", "Fira Code", "JetBrains Mono", monospace;
+}
+
 a {
   color: var(--accent);
   text-decoration: none;
