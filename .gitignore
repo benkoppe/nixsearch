@@ -8,3 +8,6 @@ result
 # rust
 /target
 /debug
+
+# macos
+.DS_Store
