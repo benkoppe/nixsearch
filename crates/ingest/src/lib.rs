@@ -520,11 +520,14 @@ mod tests {
                "programs.example.docbook-variablelist-string": {
                  "description": "<variablelist><varlistentry><term>foo</term><listitem><para>bar</para></listitem></varlistentry></variablelist>"
               },
-              "programs.example.docbook-replaceable-string": {
-                "description": "<replaceable>name</replaceable>"
-               },
-               "programs.example.object": {
-                 "description": { "unexpected": true }
+               "programs.example.docbook-replaceable-string": {
+                 "description": "<replaceable>name</replaceable>"
+                },
+                "programs.example.placeholder-string": {
+                  "description": "<option> is a placeholder"
+                },
+                "programs.example.object": {
+                  "description": { "unexpected": true }
              }
            }
            "#;
@@ -577,6 +580,10 @@ mod tests {
             &Some(DocText::DocBook(
                 "<replaceable>name</replaceable>".to_owned()
             ))
+        );
+        assert_eq!(
+            descriptions["programs.example.placeholder-string"],
+            &Some(DocText::Markdown("<option> is a placeholder".to_owned()))
         );
         assert_eq!(
             descriptions["programs.example.object"],

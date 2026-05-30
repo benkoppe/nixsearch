@@ -129,20 +129,26 @@ fn render_markdown(value: &str) -> Markup {
     let mut options = Options::default();
     options.extension.table = true;
     options.render.unsafe_ = false;
-    let html = markdown_to_html(&markdown, &options);
-    let mut html = ammonia::Builder::default()
-        .add_tags([
-            "code", "pre", "span", "table", "thead", "tbody", "tr", "th", "td",
-        ])
-        .clean(&html)
-        .to_string();
+    let mut html = markdown_to_html(&markdown, &options);
 
     for code_block in code_blocks {
         let placeholder = code_block.placeholder;
         html = replace_code_block_placeholder(html, &placeholder, &code_block.html);
     }
 
+    let html = sanitize_rendered_markdown(&html);
+
     html! { div.doc-content { (PreEscaped(html)) } }
+}
+
+fn sanitize_rendered_markdown(html: &str) -> String {
+    ammonia::Builder::default()
+        .add_tags([
+            "code", "div", "pre", "span", "table", "thead", "tbody", "tr", "th", "td",
+        ])
+        .add_generic_attributes(["class"])
+        .clean(html)
+        .to_string()
 }
 
 fn replace_code_block_placeholder(mut html: String, placeholder: &str, code_block: &str) -> String {
@@ -204,7 +210,8 @@ fn extract_fenced_code_blocks(value: &str, code_blocks: &mut Vec<ExtractedCodeBl
                 break;
             }
 
-            push_dedented_code_line(&mut code, lines[code_index], opening.indent);
+            let code_line = strip_quote_prefix(lines[code_index], opening.quote_prefix);
+            push_dedented_code_line(&mut code, code_line, opening.indent);
             code_index += 1;
         }
 
@@ -217,6 +224,7 @@ fn extract_fenced_code_blocks(value: &str, code_blocks: &mut Vec<ExtractedCodeBl
                 placeholder: placeholder.clone(),
                 html: render_code(language, &formatted).into_string(),
             });
+            output.push_str(opening.quote_prefix);
             output.push_str(&" ".repeat(opening.indent));
             output.push_str(&placeholder);
             output.push('\n');
@@ -259,25 +267,29 @@ struct Fence<'a> {
     length: usize,
     indent: usize,
     info: &'a str,
+    quote_prefix: &'a str,
 }
 
-impl Fence<'_> {
-    fn marker(self) -> FenceMarker {
+impl<'a> Fence<'a> {
+    fn marker(self) -> FenceMarker<'a> {
         FenceMarker {
             marker: self.marker,
             length: self.length,
+            quote_prefix: self.quote_prefix,
         }
     }
 }
 
 #[derive(Debug, Clone, Copy)]
-struct FenceMarker {
+struct FenceMarker<'a> {
     marker: char,
     length: usize,
+    quote_prefix: &'a str,
 }
 
 fn opening_fence(line: &str) -> Option<Fence<'_>> {
     let line = strip_line_ending(line);
+    let (quote_prefix, line) = split_quote_prefix(line);
     let (indent, rest) = leading_spaces(line);
     if indent > 3 {
         return None;
@@ -303,11 +315,13 @@ fn opening_fence(line: &str) -> Option<Fence<'_>> {
         length,
         indent,
         info,
+        quote_prefix,
     })
 }
 
-fn closing_fence(line: &str, opening: FenceMarker) -> bool {
+fn closing_fence(line: &str, opening: FenceMarker<'_>) -> bool {
     let line = strip_line_ending(line);
+    let line = strip_quote_prefix(line, opening.quote_prefix);
     let (indent, rest) = leading_spaces(line);
     if indent > 3 || !rest.starts_with(opening.marker) {
         return false;
@@ -325,6 +339,34 @@ fn strip_line_ending(line: &str) -> &str {
 fn leading_spaces(value: &str) -> (usize, &str) {
     let count = value.bytes().take_while(|&byte| byte == b' ').count();
     (count, &value[count..])
+}
+
+fn split_quote_prefix(line: &str) -> (&str, &str) {
+    let (indent, mut rest) = leading_spaces(line);
+    if indent > 3 || !rest.starts_with('>') {
+        return ("", line);
+    }
+
+    let mut prefix_len = indent;
+    while rest.starts_with('>') {
+        prefix_len += 1;
+        rest = &line[prefix_len..];
+
+        if rest.starts_with(' ') {
+            prefix_len += 1;
+            rest = &line[prefix_len..];
+        }
+    }
+
+    (&line[..prefix_len], &line[prefix_len..])
+}
+
+fn strip_quote_prefix<'a>(line: &'a str, quote_prefix: &str) -> &'a str {
+    if quote_prefix.is_empty() {
+        line
+    } else {
+        line.strip_prefix(quote_prefix).unwrap_or(line)
+    }
 }
 
 fn language_from_info(info: &str, code: &str) -> CodeLanguage {
@@ -826,8 +868,30 @@ mod tests {
     }
 
     #[test]
+    fn markdown_fences_inside_blockquotes_are_formatted_and_highlighted() {
+        let rendered = render_doc_text(&DocText::Markdown(
+            "> Example:\n>\n> ```nix\n> { foo = \"bar\"; }\n> ```".to_owned(),
+        ))
+        .into_string();
+
+        assert!(rendered.contains("<blockquote>"));
+        assert!(rendered.contains("<pre"));
+        assert!(rendered.contains("language-nix"));
+        assert!(rendered.find("<blockquote>").unwrap() < rendered.find("<pre").unwrap());
+        assert!(rendered.find("<pre").unwrap() < rendered.find("</blockquote>").unwrap());
+        assert!(!rendered.contains("NIXSEARCH_CODE_BLOCK_0"));
+    }
+
+    #[test]
     fn nix_doc_roles_inside_tilde_fences_are_unchanged() {
         let value = "~~~~\n{option}`services.nginx.enable`\n~~~~";
+
+        assert_eq!(preprocess_nix_doc_roles(value), value);
+    }
+
+    #[test]
+    fn nix_doc_roles_inside_blockquote_fences_are_unchanged() {
+        let value = "> ```\n> {option}`services.nginx.enable`\n> ```";
 
         assert_eq!(preprocess_nix_doc_roles(value), value);
     }
@@ -841,6 +905,17 @@ mod tests {
 
         assert!(rendered.contains("Safe"));
         assert!(rendered.contains("text"));
+        assert!(!rendered.contains("<script"));
+    }
+
+    #[test]
+    fn highlighted_markdown_code_is_sanitized_after_insertion() {
+        let rendered = render_doc_text(&DocText::Markdown(
+            "```text\n</code><script>alert('no')</script>\n```".to_owned(),
+        ))
+        .into_string();
+
+        assert!(rendered.contains("code-block"));
         assert!(!rendered.contains("<script"));
     }
 

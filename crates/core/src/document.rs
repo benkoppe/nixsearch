@@ -134,7 +134,7 @@ impl DocValue {
 }
 
 pub fn markdown_to_plain_text(value: &str) -> String {
-    let value = strip_nix_doc_roles(value);
+    let value = preprocess_markdown_nix_doc_roles(value);
     let arena = Arena::new();
     let mut options = Options::default();
     options.extension.table = true;
@@ -153,7 +153,9 @@ fn append_markdown_plain_text<'a>(node: &'a AstNode<'a>, output: &mut String) {
     {
         let data = node.data.borrow();
         match &data.value {
-            NodeValue::Text(value) | NodeValue::Raw(value) => output.push_str(value),
+            NodeValue::Text(value) | NodeValue::Raw(value) => {
+                output.push_str(&strip_html_to_text_preserve_lines(value));
+            }
             NodeValue::Code(value) => output.push_str(&value.literal),
             NodeValue::CodeBlock(value) => {
                 push_line_separator(output);
@@ -218,11 +220,28 @@ pub fn looks_like_docbook_text(value: &str) -> bool {
         return false;
     };
 
-    let name_end = value
-        .find(|ch: char| ch.is_ascii_whitespace() || ch == '>' || ch == '/')
-        .unwrap_or(value.len());
+    let Some(tag_end) = value.find('>') else {
+        return false;
+    };
 
-    is_known_markup_tag_name(&value[..name_end])
+    let tag = &value[..tag_end];
+    let Some(name) = markup_tag_name(tag) else {
+        return false;
+    };
+
+    if !is_known_markup_tag_name(name) {
+        return false;
+    }
+
+    if tag.trim_start().starts_with('/') {
+        return false;
+    }
+
+    if tag_has_attributes_or_self_closes(tag) || is_spacing_markup_tag(tag) {
+        return true;
+    }
+
+    value[tag_end + 1..].contains(&format!("</{name}>"))
 }
 
 fn strip_html_to_text(value: &str) -> String {
@@ -243,7 +262,7 @@ fn strip_html_to_text_preserve_lines(value: &str) -> String {
         };
 
         let tag = &rest[1..tag_end];
-        if is_known_markup_tag(tag) {
+        if is_known_markup_tag_in_context(tag, &rest[tag_end + 1..]) {
             if is_spacing_markup_tag(tag) {
                 output.push(' ');
             }
@@ -269,6 +288,49 @@ fn is_known_markup_tag(tag: &str) -> bool {
     };
 
     is_known_markup_tag_name(name)
+}
+
+fn is_known_markup_tag_in_context(tag: &str, after_tag: &str) -> bool {
+    if !is_known_markup_tag(tag) {
+        return false;
+    }
+
+    let Some(name) = markup_tag_name(tag) else {
+        return true;
+    };
+
+    if tag.trim_start().starts_with('/')
+        || tag_has_attributes_or_self_closes(tag)
+        || is_spacing_markup_tag(tag)
+        || is_unambiguous_inline_markup_tag(name)
+    {
+        return true;
+    }
+
+    after_tag.contains(&format!("</{name}>"))
+}
+
+fn tag_has_attributes_or_self_closes(tag: &str) -> bool {
+    let tag = tag.trim().trim_end();
+    tag.ends_with('/') || tag.contains(char::is_whitespace)
+}
+
+fn is_unambiguous_inline_markup_tag(name: &str) -> bool {
+    matches!(
+        name,
+        "a" | "abbr"
+            | "b"
+            | "code"
+            | "em"
+            | "emphasis"
+            | "filename"
+            | "link"
+            | "literal"
+            | "span"
+            | "strong"
+            | "varname"
+            | "xref"
+    )
 }
 
 fn is_known_markup_tag_name(name: &str) -> bool {
@@ -371,11 +433,57 @@ fn markup_tag_name(tag: &str) -> Option<&str> {
     }
 }
 
-fn strip_nix_doc_roles(value: &str) -> String {
+fn preprocess_markdown_nix_doc_roles(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut in_fence = None;
+
+    for line in value.split_inclusive('\n') {
+        let line_without_newline = line.strip_suffix('\n').unwrap_or(line);
+
+        if let Some(fence) = in_fence {
+            output.push_str(line);
+            if closing_markdown_fence(line_without_newline, fence) {
+                in_fence = None;
+            }
+            continue;
+        }
+
+        if let Some(fence) = opening_markdown_fence(line_without_newline) {
+            in_fence = Some(fence);
+            output.push_str(line);
+            continue;
+        }
+
+        output.push_str(&preprocess_markdown_nix_doc_roles_line(
+            line_without_newline,
+        ));
+        if line.ends_with('\n') {
+            output.push('\n');
+        }
+    }
+
+    output
+}
+
+fn preprocess_markdown_nix_doc_roles_line(value: &str) -> String {
     let mut output = String::with_capacity(value.len());
     let mut rest = value;
 
     while !rest.is_empty() {
+        if rest.starts_with('`') {
+            let tick_count = rest.bytes().take_while(|&byte| byte == b'`').count();
+            let fence = &rest[..tick_count];
+            let after_ticks = &rest[tick_count..];
+            let Some(tick_end) = after_ticks.find(fence) else {
+                output.push_str(rest);
+                return output;
+            };
+            let code_end = tick_count + tick_end + tick_count;
+            output.push_str(&rest[..code_end]);
+            rest = &rest[code_end..];
+            continue;
+        }
+
         if let Some((text, remaining)) = nix_doc_role_at_start(rest) {
             output.push_str(text);
             rest = remaining;
@@ -388,6 +496,52 @@ fn strip_nix_doc_roles(value: &str) -> String {
     }
 
     output
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MarkdownFence {
+    marker: char,
+    length: usize,
+}
+
+fn opening_markdown_fence(line: &str) -> Option<MarkdownFence> {
+    let (indent, rest) = leading_spaces(line);
+    if indent > 3 {
+        return None;
+    }
+
+    let marker = rest.chars().next()?;
+    if !matches!(marker, '`' | '~') {
+        return None;
+    }
+
+    let length = rest.chars().take_while(|&ch| ch == marker).count();
+    if length < 3 {
+        return None;
+    }
+
+    let info = rest[length..].trim();
+    if marker == '`' && info.contains('`') {
+        return None;
+    }
+
+    Some(MarkdownFence { marker, length })
+}
+
+fn closing_markdown_fence(line: &str, opening: MarkdownFence) -> bool {
+    let (indent, rest) = leading_spaces(line);
+    if indent > 3 || !rest.starts_with(opening.marker) {
+        return false;
+    }
+
+    let length = rest.chars().take_while(|&ch| ch == opening.marker).count();
+
+    length >= opening.length && rest[length..].trim().is_empty()
+}
+
+fn leading_spaces(value: &str) -> (usize, &str) {
+    let count = value.bytes().take_while(|&byte| byte == b' ').count();
+    (count, &value[count..])
 }
 
 pub fn nix_doc_role_at_start(value: &str) -> Option<(&str, &str)> {
@@ -633,6 +787,29 @@ mod tests {
         assert_eq!(
             value.plain_text(),
             "Configure services.<name>.enable with paths like <path>."
+        );
+    }
+
+    #[test]
+    fn markdown_plain_text_preserves_known_angle_placeholders() {
+        let value = DocText::Markdown("Use <option> and <command> placeholders.".to_owned());
+
+        assert_eq!(
+            value.plain_text(),
+            "Use <option> and <command> placeholders."
+        );
+    }
+
+    #[test]
+    fn markdown_plain_text_does_not_strip_roles_inside_code() {
+        let value = DocText::Markdown(
+            "Use {option}`services.nginx.enable`, but keep ``{option}`literal` `` and:\n\n```\n{option}`literal`\n```"
+                .to_owned(),
+        );
+
+        assert_eq!(
+            value.plain_text(),
+            "Use services.nginx.enable, but keep {option}`literal` and:\n{option}`literal`"
         );
     }
 
