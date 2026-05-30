@@ -438,8 +438,8 @@ fn add_fuzzy_field_clause(
 
 fn fuzzy_distance(term: &str) -> Option<u8> {
     match term.chars().count() {
-        0..=3 => None,
-        4..=7 => Some(1),
+        0..=2 => None,
+        3..=7 => Some(1),
         _ => Some(2),
     }
 }

@@ -403,6 +403,23 @@ fn short_query_does_not_fuzzy_match_nearby_option_name() {
 }
 
 #[test]
+fn three_character_query_fuzzy_matches_nearby_package_name() {
+    let context = ingest_context_for(SOURCE_NIXPKGS, REF_SMALL);
+    let docs = vec![
+        package_doc_for(&context, "gat", "Gat package."),
+        package_doc_for(&context, "git", "Git package."),
+    ];
+
+    let (_tempdir, index) = build_index(docs);
+
+    let hits = search(&index, "gat");
+
+    assert_contains(&hits, "gat");
+    assert_contains(&hits, "git");
+    assert_ranks_before(&hits, "gat", "git");
+}
+
+#[test]
 fn package_attribute_query_finds_package() {
     let (_tempdir, index) = build_index(canonical_documents());
 
