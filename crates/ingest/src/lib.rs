@@ -73,6 +73,14 @@ pub fn parse_options_json<R: Read>(
     reader: R,
     context: &IngestContext,
 ) -> Result<Vec<SearchDocument>> {
+    parse_options_json_with_strip_prefixes(reader, context, &[])
+}
+
+pub fn parse_options_json_with_strip_prefixes<R: Read>(
+    reader: R,
+    context: &IngestContext,
+    strip_prefixes: &[String],
+) -> Result<Vec<SearchDocument>> {
     let raw_options: serde_json::Map<String, Value> =
         serde_json::from_reader(reader).context("failed to parse options JSON")?;
 
@@ -82,7 +90,12 @@ pub fn parse_options_json<R: Read>(
         let raw: RawOption = serde_json::from_value(value)
             .with_context(|| format!("failed to parse option {name}"))?;
 
-        documents.push(SearchDocument::Option(convert_option(name, raw, context)));
+        documents.push(SearchDocument::Option(convert_option(
+            name,
+            raw,
+            context,
+            strip_prefixes,
+        )));
     }
 
     documents.sort_by(|left, right| left.id().cmp(right.id()));
@@ -90,13 +103,19 @@ pub fn parse_options_json<R: Read>(
     Ok(documents)
 }
 
-fn convert_option(name: String, raw: RawOption, context: &IngestContext) -> OptionDoc {
+fn convert_option(
+    name: String,
+    raw: RawOption,
+    context: &IngestContext,
+    strip_prefixes: &[String],
+) -> OptionDoc {
+    let name = strip_name_prefix(name, strip_prefixes);
     let mut doc = OptionDoc::new(context, name);
 
     doc.loc = if raw.loc.is_empty() {
         doc.common.name.split('.').map(ToOwned::to_owned).collect()
     } else {
-        raw.loc
+        strip_loc_prefix(raw.loc, strip_prefixes)
     };
 
     doc.parents = parents_from_loc(&doc.loc);
@@ -172,6 +191,37 @@ fn parents_from_loc(loc: &[String]) -> Vec<String> {
     (1..loc.len()).map(|end| loc[..end].join(".")).collect()
 }
 
+fn strip_name_prefix(name: String, strip_prefixes: &[String]) -> String {
+    for prefix in strip_prefixes {
+        if let Some(stripped) = name.strip_prefix(prefix) {
+            return stripped.to_owned();
+        }
+    }
+
+    name
+}
+
+fn strip_loc_prefix(loc: Vec<String>, strip_prefixes: &[String]) -> Vec<String> {
+    for prefix in strip_prefixes {
+        let prefix_loc = loc_prefix_from_name_prefix(prefix);
+
+        if !prefix_loc.is_empty() && loc.starts_with(&prefix_loc) {
+            return loc[prefix_loc.len()..].to_vec();
+        }
+    }
+
+    loc
+}
+
+fn loc_prefix_from_name_prefix(prefix: &str) -> Vec<String> {
+    prefix
+        .trim_end_matches('.')
+        .split('.')
+        .filter(|part| !part.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
 #[derive(Debug, Deserialize)]
 struct RawPackagesJson {
     packages: BTreeMap<String, RawPackage>,
@@ -235,6 +285,14 @@ pub fn parse_packages_json<R: Read>(
     reader: R,
     context: &IngestContext,
 ) -> Result<Vec<SearchDocument>> {
+    parse_packages_json_with_strip_prefixes(reader, context, &[])
+}
+
+pub fn parse_packages_json_with_strip_prefixes<R: Read>(
+    reader: R,
+    context: &IngestContext,
+    strip_prefixes: &[String],
+) -> Result<Vec<SearchDocument>> {
     let raw: RawPackagesJson =
         serde_json::from_reader(reader).context("failed to parse packages JSON")?;
 
@@ -242,7 +300,10 @@ pub fn parse_packages_json<R: Read>(
 
     for (attribute, package) in raw.packages {
         documents.push(SearchDocument::Package(convert_package(
-            attribute, package, context,
+            attribute,
+            package,
+            context,
+            strip_prefixes,
         )));
     }
 
@@ -251,7 +312,13 @@ pub fn parse_packages_json<R: Read>(
     Ok(documents)
 }
 
-fn convert_package(attribute: String, raw: RawPackage, context: &IngestContext) -> PackageDoc {
+fn convert_package(
+    attribute: String,
+    raw: RawPackage,
+    context: &IngestContext,
+    strip_prefixes: &[String],
+) -> PackageDoc {
+    let attribute = strip_name_prefix(attribute, strip_prefixes);
     let mut doc = PackageDoc::new(context, attribute);
 
     doc.pname = raw.pname;
@@ -363,7 +430,10 @@ mod tests {
     use nixsearch_core::document::{DocText, DocValue, SearchDocument};
     use nixsearch_test_support::{OPTION_GIT_ENABLE, OPTION_NGINX_ENABLE, ingest_context};
 
-    use super::parse_options_json;
+    use super::{
+        parse_options_json, parse_options_json_with_strip_prefixes,
+        parse_packages_json_with_strip_prefixes,
+    };
 
     #[test]
     fn derives_parents_from_loc() {
@@ -408,6 +478,62 @@ mod tests {
         assert_eq!(option.loc, ["services", "nginx", "enable"]);
         assert_eq!(option.parents, ["services", "services.nginx"]);
         assert_eq!(option.option_set.as_deref(), Some("services"));
+    }
+
+    #[test]
+    fn strips_configured_option_name_and_loc_prefix() {
+        let json = r#"
+           {
+             "hjem.users.<username>.files": {
+               "loc": ["hjem", "users", "<username>", "files"]
+             }
+           }
+           "#;
+
+        let docs = parse_options_json_with_strip_prefixes(
+            json.as_bytes(),
+            &ingest_context(),
+            &["hjem.".to_owned()],
+        )
+        .unwrap();
+
+        let SearchDocument::Option(option) = &docs[0] else {
+            panic!("expected option document");
+        };
+
+        assert_eq!(option.common.name, "users.<username>.files");
+        assert_eq!(option.loc, ["users", "<username>", "files"]);
+        assert_eq!(option.parents, ["users", "users.<username>"]);
+        assert_eq!(option.option_set.as_deref(), Some("users"));
+    }
+
+    #[test]
+    fn strips_configured_package_attribute_prefix() {
+        let json = r#"
+           {
+             "packages": {
+               "packages.foo": {
+                 "pname": "foo",
+                 "version": "1.0",
+                 "meta": {}
+               }
+             }
+           }
+           "#;
+
+        let docs = parse_packages_json_with_strip_prefixes(
+            json.as_bytes(),
+            &ingest_context(),
+            &["packages.".to_owned()],
+        )
+        .unwrap();
+
+        let SearchDocument::Package(package) = &docs[0] else {
+            panic!("expected package document");
+        };
+
+        assert_eq!(package.common.name, "foo");
+        assert_eq!(package.attribute, "foo");
     }
 
     #[test]

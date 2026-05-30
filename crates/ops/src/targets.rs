@@ -11,6 +11,7 @@ use nixsearch_index::store::IndexStore;
 pub struct TargetRef {
     pub source_id: String,
     pub source_kind: SourceKind,
+    pub strip_prefixes: Vec<String>,
     pub ref_config: RefConfig,
 }
 
@@ -91,6 +92,7 @@ fn collect_source_targets(
         targets.push(TargetRef {
             source_id: source_id.to_owned(),
             source_kind: source.kind,
+            strip_prefixes: source.strip_prefixes.clone(),
             ref_config: ref_config.clone(),
         });
     }
@@ -142,6 +144,7 @@ fn resolve_manifest_target(
     Ok(TargetRef {
         source_id: manifest_target.source.clone(),
         source_kind: source.kind,
+        strip_prefixes: source.strip_prefixes.clone(),
         ref_config: ref_config.clone(),
     })
 }

@@ -16,7 +16,7 @@ pub async fn consume_target(
 ) -> Result<Vec<SearchDocument>> {
     match (target.source_kind, produced.artifact_ref.kind) {
         (SourceKind::Options | SourceKind::Mixed, ArtifactKind::OptionsJson) => {
-            let consumer = OptionsJsonConsumer;
+            let consumer = OptionsJsonConsumer::new(target.strip_prefixes.clone());
 
             consumer.consume(store, produced).await.with_context(|| {
                 format!(
@@ -27,7 +27,7 @@ pub async fn consume_target(
         }
 
         (SourceKind::Packages | SourceKind::Mixed, ArtifactKind::PackagesJson) => {
-            let consumer = PackagesJsonConsumer;
+            let consumer = PackagesJsonConsumer::new(target.strip_prefixes.clone());
 
             consumer.consume(store, produced).await.with_context(|| {
                 format!(

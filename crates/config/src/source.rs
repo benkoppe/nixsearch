@@ -24,6 +24,7 @@ pub(crate) struct RawSourceConfig {
     color: Option<String>,
     kind: Option<SourceKind>,
     default_ref: Option<String>,
+    strip_prefixes: Option<Vec<String>>,
     refs: BTreeMap<String, RawRefConfig>,
     preset: Option<SourcePreset>,
     preset_refs: Vec<String>,
@@ -77,6 +78,7 @@ impl RawSourceConfig {
             name: self.name,
             color: self.color,
             kind,
+            strip_prefixes: self.strip_prefixes.unwrap_or_default(),
             default_ref,
             refs,
         })
@@ -138,6 +140,7 @@ impl RawSourceConfig {
             name: self.name.or_else(|| Some("Nixpkgs".to_owned())),
             color: self.color.or_else(|| Some(NIXPKGS_COLOR.to_owned())),
             kind: SourceKind::Packages,
+            strip_prefixes: self.strip_prefixes.unwrap_or_default(),
             default_ref,
             refs,
         })
@@ -164,6 +167,7 @@ impl RawSourceConfig {
             name: self.name.or_else(|| Some("NixOS".to_owned())),
             color: self.color.or_else(|| Some(NIXOS_COLOR.to_owned())),
             kind: SourceKind::Options,
+            strip_prefixes: self.strip_prefixes.unwrap_or_default(),
             default_ref,
             refs,
         })
@@ -200,6 +204,7 @@ impl RawSourceConfig {
             name: self.name.or_else(|| Some("Home Manager".to_owned())),
             color: self.color.or_else(|| Some(HOME_MANAGER_COLOR.to_owned())),
             kind: SourceKind::Options,
+            strip_prefixes: self.strip_prefixes.unwrap_or_default(),
             default_ref,
             refs,
         })
@@ -236,6 +241,7 @@ impl RawSourceConfig {
             name: self.name.or_else(|| Some("Darwin".to_owned())),
             color: self.color.or_else(|| Some(NIX_DARWIN_COLOR.to_owned())),
             kind: SourceKind::Options,
+            strip_prefixes: self.strip_prefixes.unwrap_or_default(),
             default_ref,
             refs,
         })
@@ -259,11 +265,13 @@ impl RawSourceConfig {
             .collect::<Vec<_>>();
 
         let default_ref = effective_default_ref(source_id, self.default_ref, &refs)?;
+        let strip_prefixes = default_strip_prefixes(self.strip_prefixes, "hjem.");
 
         Ok(SourceConfig {
             name: self.name.or_else(|| Some("Hjem".to_owned())),
             color: self.color.or_else(|| Some(HJEM_COLOR.to_owned())),
             kind: SourceKind::Options,
+            strip_prefixes,
             default_ref,
             refs,
         })
@@ -286,8 +294,6 @@ impl RawSourceConfig {
                     inputs: BTreeMap::new(),
                     options: "(evaluatedModules.options.hjem.users.type.getSubOptions []).rum"
                         .to_owned(),
-                    transform_options:
-                        r#"opt: opt // { name = lib.removePrefix "<name>." opt.name; }"#.to_owned(),
                     modules: vec![
                         EvalModuleConfig::FlakeAttr {
                             flake: "inputs.hjem".to_owned(),
@@ -306,11 +312,13 @@ impl RawSourceConfig {
             .collect::<Vec<_>>();
 
         let default_ref = effective_default_ref(source_id, self.default_ref, &refs)?;
+        let strip_prefixes = default_strip_prefixes(self.strip_prefixes, "<name>.");
 
         Ok(SourceConfig {
             name: self.name.or_else(|| Some("Hjem-Rum".to_owned())),
             color: self.color.or_else(|| Some(HJEM_RUM_COLOR.to_owned())),
             kind: SourceKind::Options,
+            strip_prefixes,
             default_ref,
             refs,
         })
@@ -414,6 +422,22 @@ fn effective_default_ref(
     Ok(refs.first().map(|ref_config| ref_config.id.clone()))
 }
 
+fn default_strip_prefixes(configured: Option<Vec<String>>, default_prefix: &str) -> Vec<String> {
+    configured.unwrap_or_else(|| vec![default_prefix.to_owned()])
+}
+
+fn validate_strip_prefixes(source_id: &str, strip_prefixes: &[String]) -> Result<()> {
+    for (index, prefix) in strip_prefixes.iter().enumerate() {
+        if prefix.trim().is_empty() {
+            return Err(ConfigError::Validation(format!(
+                "sources.{source_id}.strip_prefixes[{index}] must not be empty"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceConfig {
     #[serde(default)]
@@ -422,6 +446,8 @@ pub struct SourceConfig {
     pub color: Option<String>,
     #[serde(default)]
     pub kind: SourceKind,
+    #[serde(default)]
+    pub strip_prefixes: Vec<String>,
     #[serde(default)]
     pub default_ref: Option<String>,
     #[serde(default)]
@@ -435,6 +461,8 @@ impl SourceConfig {
         if let Some(color) = &self.color {
             validate_hex_color(&format!("sources.{source_id}.color"), color)?;
         }
+
+        validate_strip_prefixes(source_id, &self.strip_prefixes)?;
 
         for ref_config in &self.refs {
             ref_config.validate(source_id)?;

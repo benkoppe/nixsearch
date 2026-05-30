@@ -300,13 +300,11 @@ fn loads_eval_modules_producer() {
             source_ref,
             inputs,
             options,
-            transform_options,
             modules,
         } => {
             assert_eq!(source_ref, "path:/some/flake");
             assert!(inputs.is_empty());
             assert_eq!(options, "evaluatedModules.options");
-            assert_eq!(transform_options, "opt: opt");
             assert_eq!(modules.len(), 1);
 
             match &modules[0] {
@@ -333,7 +331,6 @@ fn loads_eval_modules_producer_with_inputs_and_module_list_option() {
         type = "eval-modules"
         ref = "github:example/root"
         options = "evaluatedModules.options.programs"
-        transform_options = "opt: opt // { name = opt.name; }"
 
         [sources.fixtures.refs.eval.producer.inputs]
         dependency = "github:example/dependency"
@@ -359,12 +356,10 @@ fn loads_eval_modules_producer_with_inputs_and_module_list_option() {
             source_ref,
             inputs,
             options,
-            transform_options,
             modules,
         } => {
             assert_eq!(source_ref, "github:example/root");
             assert_eq!(options, "evaluatedModules.options.programs");
-            assert_eq!(transform_options, "opt: opt // { name = opt.name; }");
             assert_eq!(
                 inputs.get("dependency").map(String::as_str),
                 Some("github:example/dependency")
@@ -917,6 +912,7 @@ fn loads_hjem_options_preset() {
     assert_eq!(source.name.as_deref(), Some("Hjem"));
     assert_eq!(source.kind, SourceKind::Options);
     assert_eq!(source.color.as_deref(), Some(HJEM_COLOR));
+    assert_eq!(source.strip_prefixes, ["hjem."]);
 
     let ref_config = &source.refs[0];
     assert_eq!(ref_config.id, "main");
@@ -938,6 +934,20 @@ fn loads_hjem_options_preset() {
 }
 
 #[test]
+fn hjem_options_preset_allows_empty_strip_prefixes() {
+    let config = load_toml(
+        r#"
+        [sources.hjem]
+        preset = "hjem-options"
+        preset_refs = ["main"]
+        strip_prefixes = []
+        "#,
+    );
+
+    assert!(config.sources["hjem"].strip_prefixes.is_empty());
+}
+
+#[test]
 fn loads_hjem_rum_options_preset() {
     let config = load_toml(
         r#"
@@ -951,6 +961,7 @@ fn loads_hjem_rum_options_preset() {
     assert_eq!(source.name.as_deref(), Some("Hjem-Rum"));
     assert_eq!(source.kind, SourceKind::Options);
     assert_eq!(source.color.as_deref(), Some(HJEM_RUM_COLOR));
+    assert_eq!(source.strip_prefixes, ["<name>."]);
 
     let ref_config = &source.refs[0];
     assert_eq!(ref_config.id, "main");
@@ -960,7 +971,6 @@ fn loads_hjem_rum_options_preset() {
             source_ref,
             inputs,
             options,
-            transform_options,
             modules,
         } => {
             assert_eq!(source_ref, "github:snugnug/hjem-rum/main");
@@ -968,10 +978,6 @@ fn loads_hjem_rum_options_preset() {
             assert_eq!(
                 options,
                 "(evaluatedModules.options.hjem.users.type.getSubOptions []).rum"
-            );
-            assert_eq!(
-                transform_options,
-                r#"opt: opt // { name = lib.removePrefix "<name>." opt.name; }"#
             );
             assert_eq!(modules.len(), 2);
 
@@ -995,6 +1001,34 @@ fn loads_hjem_rum_options_preset() {
         }
         other => panic!("unexpected producer: {other:?}"),
     }
+}
+
+#[test]
+fn hjem_rum_options_preset_allows_empty_strip_prefixes() {
+    let config = load_toml(
+        r#"
+        [sources.hjem-rum]
+        preset = "hjem-rum-options"
+        preset_refs = ["main"]
+        strip_prefixes = []
+        "#,
+    );
+
+    assert!(config.sources["hjem-rum"].strip_prefixes.is_empty());
+}
+
+#[test]
+fn hjem_options_preset_allows_custom_strip_prefixes() {
+    let config = load_toml(
+        r#"
+        [sources.hjem]
+        preset = "hjem-options"
+        preset_refs = ["main"]
+        strip_prefixes = ["custom."]
+        "#,
+    );
+
+    assert_eq!(config.sources["hjem"].strip_prefixes, ["custom."]);
 }
 
 #[test]
@@ -1412,6 +1446,47 @@ fn loads_source_color() {
         config.sources[FIXTURES_SOURCE].color.as_deref(),
         Some("#abc")
     );
+}
+
+#[test]
+fn loads_source_strip_prefixes() {
+    let config = load_toml(
+        r#"
+        [sources.fixtures]
+        name = "Fixtures"
+        kind = "options"
+        strip_prefixes = ["hjem.", "<name>."]
+
+        [sources.fixtures.refs.small.producer]
+        type = "existing-file"
+        path = "fixtures/search-small/options.json"
+        artifact = "options-json"
+        "#,
+    );
+
+    assert_eq!(
+        config.sources[FIXTURES_SOURCE].strip_prefixes,
+        ["hjem.", "<name>."]
+    );
+}
+
+#[test]
+fn rejects_empty_source_strip_prefix() {
+    let error = load_toml_error(
+        r#"
+        [sources.fixtures]
+        name = "Fixtures"
+        kind = "options"
+        strip_prefixes = [""]
+
+        [sources.fixtures.refs.small.producer]
+        type = "existing-file"
+        path = "fixtures/search-small/options.json"
+        artifact = "options-json"
+        "#,
+    );
+
+    assert_error_contains(&error, "strip_prefixes[0] must not be empty");
 }
 
 #[test]

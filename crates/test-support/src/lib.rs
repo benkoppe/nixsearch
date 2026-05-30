@@ -180,6 +180,7 @@ pub fn app_config(index_dir: impl AsRef<Utf8Path>) -> AppConfig {
                 name: Some("Fixtures".to_owned()),
                 color: None,
                 kind: SourceKind::Options,
+                strip_prefixes: Vec::new(),
                 default_ref: Some(REF_SMALL.to_owned()),
                 refs: vec![RefConfig {
                     id: REF_SMALL.to_owned(),

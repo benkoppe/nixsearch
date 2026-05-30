@@ -4,7 +4,9 @@ use async_trait::async_trait;
 use nixsearch_core::artifact::ArtifactKind;
 use nixsearch_core::document::SearchDocument;
 use nixsearch_core::ingest::IngestContext;
-use nixsearch_ingest::{parse_options_json, parse_packages_json};
+use nixsearch_ingest::{
+    parse_options_json_with_strip_prefixes, parse_packages_json_with_strip_prefixes,
+};
 use nixsearch_store::ArtifactStore;
 
 use crate::artifact::ProducedArtifact;
@@ -19,7 +21,15 @@ pub trait Consumer: Send + Sync {
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct OptionsJsonConsumer;
+pub struct OptionsJsonConsumer {
+    strip_prefixes: Vec<String>,
+}
+
+impl OptionsJsonConsumer {
+    pub fn new(strip_prefixes: Vec<String>) -> Self {
+        Self { strip_prefixes }
+    }
+}
 
 #[async_trait]
 impl Consumer for OptionsJsonConsumer {
@@ -47,12 +57,21 @@ impl Consumer for OptionsJsonConsumer {
             repo: None,
         };
 
-        parse_options_json(bytes.as_ref(), &context).context("failed to parse options artifact")
+        parse_options_json_with_strip_prefixes(bytes.as_ref(), &context, &self.strip_prefixes)
+            .context("failed to parse options artifact")
     }
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct PackagesJsonConsumer;
+pub struct PackagesJsonConsumer {
+    strip_prefixes: Vec<String>,
+}
+
+impl PackagesJsonConsumer {
+    pub fn new(strip_prefixes: Vec<String>) -> Self {
+        Self { strip_prefixes }
+    }
+}
 
 #[async_trait]
 impl Consumer for PackagesJsonConsumer {
@@ -80,7 +99,8 @@ impl Consumer for PackagesJsonConsumer {
             repo: None,
         };
 
-        parse_packages_json(bytes.as_ref(), &context).context("failed to parse packages artifact")
+        parse_packages_json_with_strip_prefixes(bytes.as_ref(), &context, &self.strip_prefixes)
+            .context("failed to parse packages artifact")
     }
 }
 
@@ -122,7 +142,7 @@ mod tests {
 
         let produced = producer.produce(&store, &request).await.unwrap();
 
-        let consumer = OptionsJsonConsumer;
+        let consumer = OptionsJsonConsumer::default();
         let docs = consumer.consume(&store, &produced).await.unwrap();
 
         assert_eq!(docs.len(), 4);

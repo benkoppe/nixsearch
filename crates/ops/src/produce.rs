@@ -86,12 +86,11 @@ pub async fn produce_target(store: &ArtifactStore, target: &TargetRef) -> Result
             source_ref,
             inputs,
             options,
-            transform_options,
             modules,
         } => {
             let producer =
                 EvalModulesProducer::new(source_ref, inputs.clone(), source_eval_modules(modules))
-                    .with_options(options.clone(), transform_options.clone());
+                    .with_options(options.clone());
 
             producer.produce(store, &request).await.with_context(|| {
                 format!(

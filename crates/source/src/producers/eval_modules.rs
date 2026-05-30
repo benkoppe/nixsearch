@@ -20,7 +20,6 @@ pub struct EvalModulesProducer {
     inputs: BTreeMap<String, String>,
     modules: Vec<EvalModule>,
     options: String,
-    transform_options: String,
     producer_name: String,
 }
 
@@ -50,18 +49,12 @@ impl EvalModulesProducer {
             inputs,
             modules,
             options: "evaluatedModules.options".to_owned(),
-            transform_options: "opt: opt".to_owned(),
             producer_name: "eval-modules".to_owned(),
         }
     }
 
-    pub fn with_options(
-        mut self,
-        options: impl Into<String>,
-        transform_options: impl Into<String>,
-    ) -> Self {
+    pub fn with_options(mut self, options: impl Into<String>) -> Self {
         self.options = options.into();
-        self.transform_options = transform_options.into();
         self
     }
 }
@@ -83,7 +76,6 @@ impl Producer for EvalModulesProducer {
             inputs: &inputs,
             modules: &self.modules,
             options: &self.options,
-            transform_options: &self.transform_options,
         });
         tokio::fs::write(&expression_path, expression)
             .await
@@ -142,7 +134,6 @@ struct EvalModulesExpression<'a> {
     inputs: &'a BTreeMap<String, String>,
     modules: &'a [EvalModule],
     options: &'a str,
-    transform_options: &'a str,
 }
 
 fn eval_modules_expression(input: EvalModulesExpression<'_>) -> String {
@@ -226,11 +217,9 @@ let
   }};
 
   selectedOptions = {options};
-  selectedTransformOptions = {transform_options};
 in
   (pkgs.nixosOptionsDoc {{
     options = selectedOptions;
-    transformOptions = selectedTransformOptions;
     warningsAreErrors = false;
   }}).optionsJSON
 "#,
@@ -238,7 +227,6 @@ in
         explicit_inputs = explicit_inputs,
         modules = modules,
         options = input.options,
-        transform_options = input.transform_options,
     )
 }
 
@@ -379,7 +367,7 @@ mod tests {
             Some(source_ref.as_str())
         );
 
-        let consumer = OptionsJsonConsumer;
+        let consumer = OptionsJsonConsumer::default();
         let docs = consumer.consume(&store, &produced).await.unwrap();
 
         let fixture_option = docs
@@ -407,7 +395,6 @@ mod tests {
                 attr: "nixosModules.default".to_owned(),
             })],
             options: "evaluatedModules.options",
-            transform_options: "opt: opt",
         });
 
         assert!(expression.contains("\"github:example/project\""));
@@ -425,9 +412,8 @@ mod tests {
         assert!(expression.contains("config._module.check = false;"));
         assert!(expression.contains("pkgs.nixosOptionsDoc"));
         assert!(expression.contains("selectedOptions = evaluatedModules.options;"));
-        assert!(expression.contains("selectedTransformOptions = opt: opt;"));
         assert!(expression.contains("options = selectedOptions;"));
-        assert!(expression.contains("transformOptions = selectedTransformOptions;"));
+        assert!(!expression.contains("transformOptions"));
     }
 
     #[test]
@@ -454,7 +440,6 @@ mod tests {
                 },
             ],
             options: "evaluatedModules.options",
-            transform_options: "opt: opt",
         });
 
         assert!(
@@ -476,7 +461,6 @@ mod tests {
                 attr: "nixosModules.default".to_owned(),
             })],
             options: "evaluatedModules.options",
-            transform_options: "opt: opt",
         });
 
         assert!(expression.contains("(moduleAttr \"self.inputs.hjem\" \"nixosModules.default\")"));
@@ -492,15 +476,12 @@ mod tests {
                 attr: "nixosModules.default".to_owned(),
             })],
             options: "(evaluatedModules.options.hjem.users.type.getSubOptions []).rum",
-            transform_options: r#"opt: opt // { name = lib.removePrefix "<name>." opt.name; }"#,
         });
 
         assert!(expression.contains(
             "selectedOptions = (evaluatedModules.options.hjem.users.type.getSubOptions []).rum;"
         ));
-        assert!(expression.contains(
-            r#"selectedTransformOptions = opt: opt // { name = lib.removePrefix "<name>." opt.name; };"#
-        ));
+        assert!(!expression.contains("selectedTransformOptions"));
     }
 
     #[test]

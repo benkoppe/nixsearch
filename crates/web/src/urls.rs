@@ -297,6 +297,7 @@ mod tests {
                     name: None,
                     color: None,
                     kind: SourceKind::Packages,
+                    strip_prefixes: Vec::new(),
                     default_ref: Some("nixos-unstable".to_owned()),
                     refs: vec![ref_config("nixos-unstable"), ref_config("nixos-25.11")],
                 },
