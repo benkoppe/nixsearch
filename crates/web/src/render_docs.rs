@@ -8,8 +8,8 @@ use comrak::{Options, markdown_to_html};
 use html_escape::encode_safe;
 use maud::{Markup, PreEscaped, html};
 use nixsearch_core::document::{
-    docbook_to_plain_text, markdown_closing_fence, markdown_opening_fence, nix_doc_role_at_start,
-    strip_markdown_quote_prefix,
+    docbook_to_plain_text, markdown_closing_fence, markdown_nix_doc_roles_to_inline_code,
+    markdown_opening_fence, strip_markdown_quote_prefix,
 };
 use serde_json::Value;
 
@@ -126,7 +126,7 @@ fn language_class(language: CodeLanguage) -> &'static str {
 }
 
 fn render_markdown(value: &str) -> Markup {
-    let markdown = preprocess_nix_doc_roles(value);
+    let markdown = markdown_nix_doc_roles_to_inline_code(value);
     let mut code_blocks = Vec::new();
     let markdown = extract_fenced_code_blocks(&markdown, &mut code_blocks);
     let mut options = Options::default();
@@ -215,30 +215,24 @@ fn extract_fenced_code_blocks(value: &str, code_blocks: &mut Vec<ExtractedCodeBl
                 break;
             }
 
-            let code_line = strip_markdown_quote_prefix(lines[code_index], opening.quote_prefix());
+            let code_line = strip_markdown_quote_prefix(lines[code_index], opening.quote_depth());
             push_dedented_code_line(&mut code, code_line, opening.indent());
             code_index += 1;
         }
 
-        if let Some(closing_index) = closing_index {
-            let language = language_from_info(opening.info(), &code);
-            let formatted = format_code(language, &code);
-            let placeholder = code_block_placeholder(code_blocks.len(), &code, value);
+        let language = language_from_info(opening.info(), &code);
+        let formatted = format_code(language, &code);
+        let placeholder = code_block_placeholder(code_blocks.len(), &code, value);
 
-            code_blocks.push(ExtractedCodeBlock {
-                placeholder: placeholder.clone(),
-                html: render_code(language, &formatted).into_string(),
-            });
-            output.push_str(opening.quote_prefix());
-            output.push_str(&" ".repeat(opening.indent()));
-            output.push_str(&placeholder);
-            output.push('\n');
-            index = closing_index + 1;
-        } else {
-            output.push_str(line);
-            output.push_str(&code);
-            index = lines.len();
-        }
+        code_blocks.push(ExtractedCodeBlock {
+            placeholder: placeholder.clone(),
+            html: render_code(language, &formatted).into_string(),
+        });
+        output.push_str(&"> ".repeat(opening.quote_depth()));
+        output.push_str(&" ".repeat(opening.indent()));
+        output.push_str(&placeholder);
+        output.push('\n');
+        index = closing_index.map_or(lines.len(), |closing_index| closing_index + 1);
     }
 
     output
@@ -308,71 +302,6 @@ fn format_code(language: CodeLanguage, code: &str) -> Cow<'_, str> {
             .unwrap_or(Cow::Borrowed(code)),
         _ => Cow::Borrowed(code.trim_end()),
     }
-}
-
-fn preprocess_nix_doc_roles(value: &str) -> String {
-    let mut output = String::with_capacity(value.len());
-    let mut in_fence = None;
-
-    for line in value.split_inclusive('\n') {
-        let line_without_newline = line.strip_suffix('\n').unwrap_or(line);
-
-        if let Some(fence) = in_fence {
-            output.push_str(line);
-            if markdown_closing_fence(line_without_newline, fence) {
-                in_fence = None;
-            }
-            continue;
-        }
-
-        if let Some(fence) = markdown_opening_fence(line_without_newline) {
-            in_fence = Some(fence.marker());
-            output.push_str(line);
-            continue;
-        }
-
-        output.push_str(&preprocess_nix_doc_roles_line(line_without_newline));
-        if line.ends_with('\n') {
-            output.push('\n');
-        }
-    }
-
-    output
-}
-
-fn preprocess_nix_doc_roles_line(value: &str) -> String {
-    let mut output = String::with_capacity(value.len());
-    let mut rest = value;
-
-    while !rest.is_empty() {
-        if rest.starts_with('`') {
-            let tick_count = rest.bytes().take_while(|&byte| byte == b'`').count();
-            let fence = &rest[..tick_count];
-            let after_ticks = &rest[tick_count..];
-            let Some(tick_end) = after_ticks.find(fence) else {
-                output.push_str(rest);
-                return output;
-            };
-            let code_end = tick_count + tick_end + tick_count;
-            output.push_str(&rest[..code_end]);
-            rest = &rest[code_end..];
-            continue;
-        }
-
-        if let Some((text, remaining)) = nix_doc_role_at_start(rest) {
-            output.push('`');
-            output.push_str(text);
-            output.push('`');
-            rest = remaining;
-            continue;
-        }
-
-        let ch = rest.chars().next().expect("rest is not empty");
-        output.push(ch);
-        rest = &rest[ch.len_utf8()..];
-    }
-
-    output
 }
 
 pub fn format_nix(value: &str) -> String {
@@ -573,7 +502,7 @@ mod tests {
     #[test]
     fn nix_doc_roles_become_inline_code() {
         assert_eq!(
-            preprocess_nix_doc_roles("Use {option}`services.nginx.enable` here."),
+            markdown_nix_doc_roles_to_inline_code("Use {option}`services.nginx.enable` here."),
             "Use `services.nginx.enable` here."
         );
     }
@@ -581,11 +510,11 @@ mod tests {
     #[test]
     fn nix_doc_roles_inside_code_are_unchanged() {
         assert_eq!(
-            preprocess_nix_doc_roles("``{option}`services.nginx.enable` ``"),
+            markdown_nix_doc_roles_to_inline_code("``{option}`services.nginx.enable` ``"),
             "``{option}`services.nginx.enable` ``"
         );
         assert_eq!(
-            preprocess_nix_doc_roles("```\n{option}`services.nginx.enable`\n```"),
+            markdown_nix_doc_roles_to_inline_code("```\n{option}`services.nginx.enable`\n```"),
             "```\n{option}`services.nginx.enable`\n```"
         );
     }
@@ -593,7 +522,9 @@ mod tests {
     #[test]
     fn malformed_nix_doc_roles_are_unchanged() {
         assert_eq!(
-            preprocess_nix_doc_roles("Use {unknown}`value` and {option}`unterminated."),
+            markdown_nix_doc_roles_to_inline_code(
+                "Use {unknown}`value` and {option}`unterminated."
+            ),
             "Use {unknown}`value` and {option}`unterminated."
         );
     }
@@ -824,17 +755,53 @@ mod tests {
     }
 
     #[test]
+    fn markdown_blockquote_fences_accept_marker_spacing_variations() {
+        let rendered = render_doc_text(&DocText::Markdown(
+            "> Example:\n> ```nix\n>{ foo = \"bar\"; }\n>```".to_owned(),
+        ))
+        .into_string();
+
+        assert!(rendered.contains("<blockquote>"));
+        assert!(rendered.contains("<pre"));
+        assert!(rendered.contains("language-nix"));
+        assert!(rendered.contains("foo"));
+        assert!(rendered.find("<pre").unwrap() < rendered.find("</blockquote>").unwrap());
+        assert!(!rendered.contains("NIXSEARCH_CODE_BLOCK_0"));
+    }
+
+    #[test]
+    fn unclosed_markdown_fences_are_formatted_and_highlighted() {
+        let rendered = render_doc_text(&DocText::Markdown(
+            "Example:\n\n```nix\n{ foo = \"bar\"; }".to_owned(),
+        ))
+        .into_string();
+
+        assert!(rendered.contains("<pre"));
+        assert!(rendered.contains("language-nix"));
+        assert!(rendered.contains("foo"));
+        assert!(!rendered.contains("```"));
+        assert!(!rendered.contains("NIXSEARCH_CODE_BLOCK_0"));
+    }
+
+    #[test]
     fn nix_doc_roles_inside_tilde_fences_are_unchanged() {
         let value = "~~~~\n{option}`services.nginx.enable`\n~~~~";
 
-        assert_eq!(preprocess_nix_doc_roles(value), value);
+        assert_eq!(markdown_nix_doc_roles_to_inline_code(value), value);
     }
 
     #[test]
     fn nix_doc_roles_inside_blockquote_fences_are_unchanged() {
         let value = "> ```\n> {option}`services.nginx.enable`\n> ```";
 
-        assert_eq!(preprocess_nix_doc_roles(value), value);
+        assert_eq!(markdown_nix_doc_roles_to_inline_code(value), value);
+    }
+
+    #[test]
+    fn nix_doc_roles_inside_blockquote_fences_with_marker_spacing_are_unchanged() {
+        let value = "> ```\n>{option}`services.nginx.enable`\n>```";
+
+        assert_eq!(markdown_nix_doc_roles_to_inline_code(value), value);
     }
 
     #[test]

@@ -134,7 +134,7 @@ impl DocValue {
 }
 
 pub fn markdown_to_plain_text(value: &str) -> String {
-    let value = preprocess_markdown_nix_doc_roles(value);
+    let value = markdown_nix_doc_roles_to_plain_text(value);
     let arena = Arena::new();
     let mut options = Options::default();
     options.extension.table = true;
@@ -433,7 +433,22 @@ fn markup_tag_name(tag: &str) -> Option<&str> {
     }
 }
 
-fn preprocess_markdown_nix_doc_roles(value: &str) -> String {
+pub fn markdown_nix_doc_roles_to_plain_text(value: &str) -> String {
+    preprocess_markdown_nix_doc_roles(value, |output, text| output.push_str(text))
+}
+
+pub fn markdown_nix_doc_roles_to_inline_code(value: &str) -> String {
+    preprocess_markdown_nix_doc_roles(value, |output, text| {
+        output.push('`');
+        output.push_str(text);
+        output.push('`');
+    })
+}
+
+fn preprocess_markdown_nix_doc_roles(
+    value: &str,
+    mut push_role: impl FnMut(&mut String, &str),
+) -> String {
     let mut output = String::with_capacity(value.len());
     let mut in_fence = None;
 
@@ -456,6 +471,7 @@ fn preprocess_markdown_nix_doc_roles(value: &str) -> String {
 
         output.push_str(&preprocess_markdown_nix_doc_roles_line(
             line_without_newline,
+            &mut push_role,
         ));
         if line.ends_with('\n') {
             output.push('\n');
@@ -465,7 +481,10 @@ fn preprocess_markdown_nix_doc_roles(value: &str) -> String {
     output
 }
 
-fn preprocess_markdown_nix_doc_roles_line(value: &str) -> String {
+fn preprocess_markdown_nix_doc_roles_line(
+    value: &str,
+    push_role: &mut impl FnMut(&mut String, &str),
+) -> String {
     let mut output = String::with_capacity(value.len());
     let mut rest = value;
 
@@ -485,7 +504,7 @@ fn preprocess_markdown_nix_doc_roles_line(value: &str) -> String {
         }
 
         if let Some((text, remaining)) = nix_doc_role_at_start(rest) {
-            output.push_str(text);
+            push_role(&mut output, text);
             rest = remaining;
             continue;
         }
@@ -504,7 +523,7 @@ pub struct MarkdownFence<'a> {
     length: usize,
     indent: usize,
     info: &'a str,
-    quote_prefix: &'a str,
+    quote_depth: usize,
 }
 
 impl<'a> MarkdownFence<'a> {
@@ -516,29 +535,29 @@ impl<'a> MarkdownFence<'a> {
         self.info
     }
 
-    pub fn quote_prefix(self) -> &'a str {
-        self.quote_prefix
+    pub fn quote_depth(self) -> usize {
+        self.quote_depth
     }
 
-    pub fn marker(self) -> MarkdownFenceMarker<'a> {
+    pub fn marker(self) -> MarkdownFenceMarker {
         MarkdownFenceMarker {
             marker: self.marker,
             length: self.length,
-            quote_prefix: self.quote_prefix,
+            quote_depth: self.quote_depth,
         }
     }
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct MarkdownFenceMarker<'a> {
+pub struct MarkdownFenceMarker {
     marker: char,
     length: usize,
-    quote_prefix: &'a str,
+    quote_depth: usize,
 }
 
 pub fn markdown_opening_fence(line: &str) -> Option<MarkdownFence<'_>> {
     let line = strip_line_ending(line);
-    let (quote_prefix, line) = split_quote_prefix(line);
+    let (quote_depth, line) = strip_block_quote_markers(line, usize::MAX).unwrap_or((0, line));
     let (indent, rest) = leading_spaces(line);
     if indent > 3 {
         return None;
@@ -564,13 +583,15 @@ pub fn markdown_opening_fence(line: &str) -> Option<MarkdownFence<'_>> {
         length,
         indent,
         info,
-        quote_prefix,
+        quote_depth,
     })
 }
 
-pub fn markdown_closing_fence(line: &str, opening: MarkdownFenceMarker<'_>) -> bool {
+pub fn markdown_closing_fence(line: &str, opening: MarkdownFenceMarker) -> bool {
     let line = strip_line_ending(line);
-    let line = strip_quote_prefix(line, opening.quote_prefix);
+    let Some((_, line)) = strip_block_quote_markers(line, opening.quote_depth) else {
+        return false;
+    };
     let (indent, rest) = leading_spaces(line);
     if indent > 3 || !rest.starts_with(opening.marker) {
         return false;
@@ -581,8 +602,10 @@ pub fn markdown_closing_fence(line: &str, opening: MarkdownFenceMarker<'_>) -> b
     length >= opening.length && rest[length..].trim().is_empty()
 }
 
-pub fn strip_markdown_quote_prefix<'a>(line: &'a str, quote_prefix: &str) -> &'a str {
-    strip_quote_prefix(line, quote_prefix)
+pub fn strip_markdown_quote_prefix(line: &str, quote_depth: usize) -> &str {
+    strip_block_quote_markers(line, quote_depth)
+        .map(|(_, line)| line)
+        .unwrap_or(line)
 }
 
 fn strip_line_ending(line: &str) -> &str {
@@ -594,31 +617,26 @@ fn leading_spaces(value: &str) -> (usize, &str) {
     (count, &value[count..])
 }
 
-fn split_quote_prefix(line: &str) -> (&str, &str) {
-    let (indent, mut rest) = leading_spaces(line);
-    if indent > 3 || !rest.starts_with('>') {
-        return ("", line);
-    }
+fn strip_block_quote_markers(mut line: &str, max_depth: usize) -> Option<(usize, &str)> {
+    let mut depth = 0;
 
-    let mut prefix_len = indent;
-    while rest.starts_with('>') {
-        prefix_len += 1;
-        rest = &line[prefix_len..];
-
-        if rest.starts_with(' ') {
-            prefix_len += 1;
-            rest = &line[prefix_len..];
+    while depth < max_depth {
+        let (indent, rest) = leading_spaces(line);
+        if indent > 3 || !rest.starts_with('>') {
+            break;
         }
+
+        line = &rest[1..];
+        if let Some(rest) = line.strip_prefix(' ') {
+            line = rest;
+        }
+        depth += 1;
     }
 
-    (&line[..prefix_len], &line[prefix_len..])
-}
-
-fn strip_quote_prefix<'a>(line: &'a str, quote_prefix: &str) -> &'a str {
-    if quote_prefix.is_empty() {
-        line
+    if depth == max_depth || max_depth == usize::MAX {
+        Some((depth, line))
     } else {
-        line.strip_prefix(quote_prefix).unwrap_or(line)
+        None
     }
 }
 
@@ -895,6 +913,18 @@ mod tests {
     fn markdown_plain_text_does_not_strip_roles_inside_blockquote_fences() {
         let value = DocText::Markdown(
             "> Example:\n>\n> ```\n> {option}`services.nginx.enable`\n> ```".to_owned(),
+        );
+
+        assert_eq!(
+            value.plain_text(),
+            "Example:\n{option}`services.nginx.enable`"
+        );
+    }
+
+    #[test]
+    fn markdown_plain_text_handles_blockquote_fence_marker_spacing() {
+        let value = DocText::Markdown(
+            "> Example:\n> ```\n>{option}`services.nginx.enable`\n>```".to_owned(),
         );
 
         assert_eq!(
