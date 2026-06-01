@@ -64,6 +64,30 @@ mod tests {
     }
 
     #[test]
+    fn navigation_script_preserves_invalid_ref_without_selecting_it() {
+        let script = navigation_script();
+
+        assert!(
+            script.contains(r#"refId: requestedRef && requestedRef !== refs[0] ? "" : refs[0]"#)
+        );
+        assert!(script.contains(
+            "invalidRefId: requestedRef && requestedRef !== refs[0] ? requestedRef : \"\""
+        ));
+        assert!(
+            script.contains("const preservedRef = context.refId || context.invalidRefId || \"\";")
+        );
+    }
+
+    #[test]
+    fn navigation_script_resyncs_inputs_after_bfcache_restore() {
+        let script = navigation_script();
+
+        assert!(script.contains(r#"window.addEventListener("pageshow""#));
+        assert!(script.contains("if (!evt.persisted) return;"));
+        assert!(script.contains("syncInputsFromUrl();"));
+    }
+
+    #[test]
     fn navigation_script_routes_modal_cancel_through_navigation() {
         let script = navigation_script();
 

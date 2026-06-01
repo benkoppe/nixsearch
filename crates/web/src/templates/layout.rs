@@ -90,10 +90,12 @@ pub fn render_full_page(
     };
     let logo_style = match source_filter {
         SourceFilter::All => None,
-        SourceFilter::Named(source) => Some(format!(
-            "--logo-accent: {};",
-            source_tag::color_for_source(&state.config, source)
-        )),
+        SourceFilter::Named(source) => state.config.sources.contains_key(source).then(|| {
+            format!(
+                "--logo-accent: {};",
+                source_tag::color_for_source(&state.config, source)
+            )
+        }),
     };
 
     let reconcile_attr = format!(

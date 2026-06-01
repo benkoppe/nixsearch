@@ -12,8 +12,11 @@ const ALL_TAB_COLOR: &str = "#d4d4d8";
 pub fn render_form(config: &AppConfig, state: &PageState, form_action: &str, q: &str) -> Markup {
     let has_multiple_sources = config.sources.len() > 1;
     let source_color = match &state.source_filter {
-        SourceFilter::Named(source_id) => Some(color_for_source(config, source_id)),
+        SourceFilter::Named(source_id) if config.sources.contains_key(source_id) => {
+            Some(color_for_source(config, source_id))
+        }
         SourceFilter::All => None,
+        SourceFilter::Named(_) => None,
     };
     html! {
         form.search-form action=(form_action) method="get"

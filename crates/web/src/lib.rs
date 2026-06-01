@@ -422,31 +422,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn state_events_unknown_ref_returns_404() {
+    async fn state_events_unknown_ref_patches_error() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_options_index(&index_dir);
 
         let app = test_app(app_config(&index_dir));
+        let (status, body) =
+            request_body(app, "/-/state/events?url=%2Ffixtures%3Fref%3Dmissing").await;
 
-        assert_eq!(
-            request_status(app, "/-/state/events?url=%2Ffixtures%3Fref%3Dmissing").await,
-            StatusCode::NOT_FOUND
-        );
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("Request failed"));
+        assert!(body.contains("unknown ref"));
     }
 
     #[tokio::test]
-    async fn state_events_multi_ref_ref_set_without_explicit_ref_returns_400() {
+    async fn state_events_multi_ref_ref_set_without_explicit_ref_patches_error() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_options_index(&index_dir);
 
         let app = test_app(multi_ref_app_config(&index_dir));
+        let (status, body) =
+            request_body(app, "/-/state/events?url=%2Ffixtures%3Fref_set%3Dmulti").await;
 
-        assert_eq!(
-            request_status(app, "/-/state/events?url=%2Ffixtures%3Fref_set%3Dmulti").await,
-            StatusCode::BAD_REQUEST
-        );
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("Request failed"));
+        assert!(body.contains("explicit ref is required"));
     }
 
     #[tokio::test]
@@ -521,15 +523,21 @@ mod tests {
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_options_index(&index_dir);
 
-        let app = test_app(app_config(&index_dir));
+        let app = test_app(app_config_with_extra_fixture_source(&index_dir, "extra"));
         let (status, body) = request_body(app, "/missing?q=git").await;
 
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert!(body.contains("search-form"));
-        assert!(body.contains("action=\"/\""));
+        assert!(body.contains("action=\"/missing\""));
         assert!(body.contains("value=\"git\""));
         assert!(body.contains("Page unavailable"));
         assert!(body.contains("unknown source"));
+        assert!(!body.contains("data-nixsearch-source=\"\" data-active"));
+        assert!(!body.contains("data-nixsearch-source=\"fixtures\" data-active"));
+        assert!(!body.contains("data-nixsearch-source=\"extra\" data-active"));
+        assert!(!body.contains("style=\"--logo-accent:"));
+        assert!(!body.contains("style=\"--search-focus-color:"));
+        assert!(!body.contains("style=\"--source-color:"));
     }
 
     #[tokio::test]
@@ -548,6 +556,25 @@ mod tests {
         assert!(body.contains("Page unavailable"));
         assert!(body.contains("unknown ref"));
         assert!(!body.contains("value=\"missing\""));
+        assert!(!body.contains("checked data-nixsearch-input=\"ref\""));
+    }
+
+    #[tokio::test]
+    async fn unknown_ref_set_error_page_keeps_ref_set_unselected() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(multi_ref_app_config(&index_dir));
+        let (status, body) = request_body(app, "/?q=git&ref_set=missing").await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body.contains("search-form"));
+        assert!(body.contains("action=\"/\""));
+        assert!(body.contains("value=\"git\""));
+        assert!(body.contains("Page unavailable"));
+        assert!(body.contains("unknown ref set"));
+        assert!(!body.contains("checked data-nixsearch-input=\"ref\""));
     }
 
     #[tokio::test]
@@ -565,6 +592,7 @@ mod tests {
         assert!(body.contains("value=\"git\""));
         assert!(body.contains("Page unavailable"));
         assert!(body.contains("explicit ref is required"));
+        assert!(!body.contains("checked data-nixsearch-input=\"ref\""));
     }
 
     #[tokio::test]

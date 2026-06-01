@@ -315,42 +315,54 @@
     const sourceAll = params.get("source") === "__SOURCE_ALL_VALUE__";
     const sourceId = sourceAll ? "" : parts[0] ? decodeURIComponent(parts[0]) : "";
     const source = sourceMetadata(sourceId);
+    const requestedRefSet = (params.get("ref_set") || "").trim();
 
     if (!sourceId) {
       return {
         sourceId: "",
         refId: "",
-        activeRefSet: normalizeAllRefSet(params.get("ref_set") || ""),
+        activeRefSet: requestedRefSet || defaultRefSet(),
         activeRefSetExplicit: true,
       };
     }
 
     const requestedRef = (params.get("ref") || "").trim();
-    const refSetContext = normalizeSourceRefSetContext(
-      sourceId,
-      requestedRef,
-      params.get("ref_set") || "",
-    );
-    let refId = requestedRef || (source ? source.defaultRef : "");
-    if (refSetContext.activeRefSetExplicit) {
-      const refs = refsForRefSetSource(refSetContext.activeRefSet, sourceId);
+    if (requestedRefSet) {
+      const refs = refsForRefSetSource(requestedRefSet, sourceId);
+
       if (refs.length === 1) {
-        refId = refs[0];
-      } else {
-        refId = refSetContainsSourceRef(
-          refSetContext.activeRefSet,
+        return {
           sourceId,
-          requestedRef,
-        )
-          ? requestedRef
-          : refs[0] || "";
+          refId: requestedRef && requestedRef !== refs[0] ? "" : refs[0],
+          invalidRefId: requestedRef && requestedRef !== refs[0] ? requestedRef : "",
+          activeRefSet: requestedRefSet,
+          activeRefSetExplicit: true,
+        };
       }
+
+      return {
+        sourceId,
+        refId: refs.length > 1 ? requestedRef : "",
+        invalidRefId: "",
+        activeRefSet: requestedRefSet,
+        activeRefSetExplicit: true,
+      };
     }
 
-    return { sourceId, refId, ...refSetContext };
+    return {
+      sourceId,
+      refId: requestedRef || (source ? source.defaultRef : ""),
+      invalidRefId: "",
+      activeRefSet: "",
+      activeRefSetExplicit: false,
+    };
   }
 
-  function populateRefRadios(sourceId, activeRefSet = "") {
+  function populateRefRadios(
+    sourceId,
+    activeRefSet = "",
+    selectedRefId = undefined,
+  ) {
     const container = getRefContainer();
     if (!container) return;
 
@@ -372,7 +384,10 @@
         return;
       }
 
-      const selectedRefSet = normalizeAllRefSet(activeRefSet);
+      const selectedRefSet =
+        selectedRefId === undefined
+          ? activeRefSet || defaultRefSet()
+          : selectedRefId;
       container.innerHTML = refSets
         .map((r) => {
           const checked = r === selectedRefSet ? " checked" : "";
@@ -389,7 +404,10 @@
       return;
     }
 
-    const selectedRef = firstRefForRefSetSource(activeRefSet, sourceId) || source.defaultRef;
+    const selectedRef =
+      selectedRefId === undefined
+        ? firstRefForRefSetSource(activeRefSet, sourceId) || source.defaultRef
+        : selectedRefId;
     container.innerHTML = source.refs
       .map((r) => {
         const checked = r === selectedRef ? " checked" : "";
@@ -523,7 +541,10 @@
     }
     const contextActiveRefSet = context.activeRefSet || "";
     const contextActiveRefSetExplicit = !!context.activeRefSetExplicit;
-    const sourceId = currentSourceFromTabs();
+    const activeSourceTab = getActiveSourceTab();
+    const sourceId = activeSourceTab
+      ? activeSourceTab.dataset.nixsearchSource || ""
+      : context.sourceId || "";
     const path = sourcePath(sourceId);
     const params = new URLSearchParams();
 
@@ -538,6 +559,7 @@
         : [];
       const shouldUseRefSet = refSetRefs.length > 0;
       const shouldSetRef = !shouldUseRefSet || refSetRefs.length > 1;
+      const sourceMatchesContext = context.sourceId === sourceId;
 
       if (
         shouldSetRef &&
@@ -545,13 +567,27 @@
         (!source || shouldUseRefSet || refValue !== source.defaultRef)
       ) {
         params.set("ref", refValue);
+      } else if (shouldSetRef && sourceMatchesContext) {
+        const preservedRef = context.refId || context.invalidRefId || "";
+        if (preservedRef) params.set("ref", preservedRef);
       }
       if (shouldUseRefSet && refSetForLink(contextActiveRefSet)) {
+        params.set("ref_set", contextActiveRefSet);
+      } else if (
+        !refValue &&
+        sourceMatchesContext &&
+        contextActiveRefSetExplicit &&
+        contextActiveRefSet
+      ) {
         params.set("ref_set", contextActiveRefSet);
       }
     } else {
       const refSetValue = currentRefFromRadios();
-      const activeRefSet = normalizeAllRefSet(refSetValue || contextActiveRefSet);
+      const activeRefSet = refSetValue
+        ? normalizeAllRefSet(refSetValue)
+        : contextActiveRefSetExplicit
+          ? contextActiveRefSet
+          : normalizeAllRefSet(contextActiveRefSet);
       if (refSetForLink(activeRefSet)) {
         params.set("ref_set", activeRefSet);
       }
@@ -716,6 +752,7 @@
     populateRefRadios(
       effectiveSource,
       state.activeRefSetExplicit ? state.activeRefSet : "",
+      effectiveSource ? state.refId : state.activeRefSet,
     );
 
     const refParam = effectiveSource ? state.refId : state.activeRefSet;
@@ -989,6 +1026,15 @@
     setLoading(shouldLoadResults(previous, currentPublicUrl()));
     syncTitle();
     reconcile(previous);
+  });
+
+  window.addEventListener("pageshow", (evt) => {
+    if (!evt.persisted) return;
+
+    syncInputsFromUrl();
+    setLoading(false);
+    syncTitle();
+    currentUrl = currentPublicUrl();
   });
 
   window.nixsearchNavigate = navigate;

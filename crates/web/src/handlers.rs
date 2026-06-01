@@ -126,7 +126,7 @@ pub async fn state_events(
     let request = match page_request_from_public_url(&query.url) {
         Ok(request) => request,
         Err(error) => {
-            return sse_error_response(StatusCode::BAD_REQUEST, &error);
+            return sse_error_response(&error);
         }
     };
 
@@ -134,7 +134,7 @@ pub async fn state_events(
     let page_state = match resolve_page_state(&state, &snapshot, &request) {
         Ok(page_state) => page_state,
         Err(error) => {
-            return sse_error_response(status_for_resolution_error(&error), &error.to_string());
+            return sse_error_response(&error.to_string());
         }
     };
 
@@ -158,10 +158,7 @@ pub async fn state_events(
                 )
                 .into_string(),
                 Err(ServiceError::Resolution(error)) => {
-                    return sse_error_response(
-                        status_for_resolution_error(error),
-                        &error.to_string(),
-                    );
+                    return sse_error_response(&error.to_string());
                 }
                 Err(error) => {
                     templates::results::render_error("Search failed", &format!("{error:#}"))
@@ -352,13 +349,12 @@ fn render_full_page_error_response(
     request: &PageRequest,
     error: &RequestResolutionError,
 ) -> Response {
-    let recovery_request = recovery_request_for_error(state, request, error);
-    let page_state = page_state(&state.config, &recovery_request);
+    let page_state = page_state(&state.config, request);
     let message = error.to_string();
 
     let markup = templates::layout::render_full_page(
         state,
-        &recovery_request,
+        request,
         &page_state,
         &page_urls,
         snapshot,
@@ -374,57 +370,6 @@ fn render_full_page_error_response(
         Html(markup.into_string()),
     )
         .into_response()
-}
-
-fn recovery_request_for_error(
-    state: &AppState,
-    request: &PageRequest,
-    error: &RequestResolutionError,
-) -> PageRequest {
-    let q = request.query.q.clone();
-
-    match error {
-        RequestResolutionError::UnknownSource { .. }
-        | RequestResolutionError::RefRequiresSource
-        | RequestResolutionError::MissingDefaultRef { .. }
-        | RequestResolutionError::NoServedSearchScopes => PageRequest {
-            source: None,
-            entry: None,
-            query: PageQuery {
-                q,
-                ..PageQuery::default()
-            },
-        },
-
-        RequestResolutionError::UnknownRef { source_id, .. }
-        | RequestResolutionError::UnservedRef { source_id, .. }
-        | RequestResolutionError::AmbiguousRefSetSource { source_id, .. }
-        | RequestResolutionError::InvalidRefForRefSet { source_id, .. } => PageRequest {
-            source: state
-                .config
-                .sources
-                .contains_key(source_id)
-                .then(|| source_id.clone()),
-            entry: None,
-            query: PageQuery {
-                q,
-                ..PageQuery::default()
-            },
-        },
-
-        RequestResolutionError::UnknownRefSet { .. } => PageRequest {
-            source: request
-                .source
-                .as_ref()
-                .filter(|source| state.config.sources.contains_key(source.as_str()))
-                .cloned(),
-            entry: None,
-            query: PageQuery {
-                q,
-                ..PageQuery::default()
-            },
-        },
-    }
 }
 
 #[derive(Debug)]
@@ -581,12 +526,12 @@ fn status_for_resolution_error(error: &RequestResolutionError) -> StatusCode {
     }
 }
 
-fn sse_error_response(status: StatusCode, error: &str) -> Response {
+fn sse_error_response(error: &str) -> Response {
     let html = templates::results::render_error("Request failed", error).into_string();
     let event = PatchElements::new(html).write_as_axum_sse_event();
     let events: Vec<std::result::Result<Event, Infallible>> = vec![Ok(event)];
 
-    (status, Sse::new(stream::iter(events))).into_response()
+    Sse::new(stream::iter(events)).into_response()
 }
 
 fn sse_entry_error_response(

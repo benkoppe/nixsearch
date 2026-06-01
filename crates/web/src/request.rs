@@ -136,6 +136,10 @@ pub fn page_state(config: &AppConfig, request: &PageRequest) -> PageState {
             let (ref_scope, source_ref) =
                 normalize_source_ref_scope(config, source, raw_ref, raw_ref_set);
             let source_ref = source_ref.or_else(|| {
+                if raw_ref.is_some() || raw_ref_set.is_some() {
+                    return None;
+                }
+
                 config
                     .sources
                     .get(source)
@@ -196,13 +200,15 @@ fn detail_ref(
         active_ref_set.and_then(|ref_set| config.refs_for_ref_set_source(ref_set, source))
     {
         if refs.len() == 1 {
-            return refs.first().cloned();
+            return match raw_ref {
+                Some(ref_id) if !refs.iter().any(|candidate| candidate == ref_id) => None,
+                _ => refs.first().cloned(),
+            };
         }
 
         return raw_ref
             .filter(|ref_id| refs.iter().any(|candidate| candidate == ref_id))
-            .map(ToOwned::to_owned)
-            .or_else(|| refs.first().cloned());
+            .map(ToOwned::to_owned);
     }
 
     source_ref
@@ -211,10 +217,10 @@ fn detail_ref(
 }
 
 fn normalize_all_ref_set(config: &AppConfig, ref_set: Option<&str>) -> Option<String> {
-    ref_set
-        .filter(|ref_set| config.ref_sets.contains_key(*ref_set))
-        .or_else(|| config.default_ref_set())
-        .map(ToOwned::to_owned)
+    match ref_set {
+        Some(ref_set) => Some(ref_set.to_owned()),
+        None => config.default_ref_set().map(ToOwned::to_owned),
+    }
 }
 
 fn normalize_source_ref_scope(
@@ -223,17 +229,18 @@ fn normalize_source_ref_scope(
     ref_id: Option<&str>,
     ref_set: Option<&str>,
 ) -> (RefScope, Option<String>) {
-    if let Some(ref_set) = ref_set.filter(|ref_set| config.ref_sets.contains_key(*ref_set))
-        && let Some(refs) = config.refs_for_ref_set_source(ref_set, source)
-    {
-        let source_ref = if refs.len() == 1 {
-            refs.first().cloned()
-        } else {
-            ref_id
+    if let Some(ref_set) = ref_set {
+        let source_ref = match config.refs_for_ref_set_source(ref_set, source) {
+            Some(refs) if refs.len() == 1 => match ref_id {
+                Some(ref_id) if !refs.iter().any(|candidate| candidate == ref_id) => None,
+                _ => refs.first().cloned(),
+            },
+            Some(refs) => ref_id
                 .filter(|ref_id| refs.iter().any(|candidate| candidate == ref_id))
-                .map(ToOwned::to_owned)
-                .or_else(|| refs.first().cloned())
+                .map(ToOwned::to_owned),
+            None => None,
         };
+
         return (
             RefScope::RefSet {
                 ref_set: ref_set.to_owned(),
@@ -508,25 +515,48 @@ mod tests {
     }
 
     #[test]
-    fn page_state_detail_ref_set_wins_over_stale_ref() {
+    fn page_state_detail_stale_ref_set_ref_stays_unselected() {
         let config = handoff_config();
         let request =
             page_request_from_public_url("/nixpkgs/git?ref=nixos-unstable&ref_set=25.11").unwrap();
         let state = page_state(&config, &request);
         let detail = state.detail.as_ref().unwrap();
 
-        assert_eq!(state.source_ref.as_deref(), Some("nixos-25.11"));
-        assert_eq!(detail.ref_id.as_deref(), Some("nixos-25.11"));
+        assert_eq!(state.source_ref, None);
+        assert_eq!(detail.ref_id, None);
     }
 
     #[test]
-    fn page_state_detail_ambiguous_ref_set_falls_back_to_first_ref() {
+    fn page_state_detail_invalid_ref_set_ref_stays_unselected() {
         let config = handoff_config();
         let request = page_request_from_public_url("/nixpkgs/git?ref=bogus&ref_set=multi").unwrap();
         let state = page_state(&config, &request);
         let detail = state.detail.as_ref().unwrap();
 
-        assert_eq!(state.source_ref.as_deref(), Some("nixos-unstable"));
-        assert_eq!(detail.ref_id.as_deref(), Some("nixos-unstable"));
+        assert_eq!(state.source_ref, None);
+        assert_eq!(detail.ref_id, None);
+    }
+
+    #[test]
+    fn page_state_ambiguous_ref_set_without_ref_stays_unselected() {
+        let config = handoff_config();
+        let request = page_request_from_public_url("/nixpkgs/git?ref_set=multi").unwrap();
+        let state = page_state(&config, &request);
+        let detail = state.detail.as_ref().unwrap();
+
+        assert_eq!(state.source_ref, None);
+        assert_eq!(detail.ref_id, None);
+    }
+
+    #[test]
+    fn page_state_unknown_ref_set_stays_unselected() {
+        let config = handoff_config();
+        let request = page_request_from_public_url("/nixpkgs/git?ref_set=missing").unwrap();
+        let state = page_state(&config, &request);
+        let detail = state.detail.as_ref().unwrap();
+
+        assert_eq!(state.active_ref_set(), Some("missing"));
+        assert_eq!(state.source_ref, None);
+        assert_eq!(detail.ref_id, None);
     }
 }
