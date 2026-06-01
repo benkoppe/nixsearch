@@ -80,26 +80,42 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<maintenance::Pu
 
     match maintenance::read_current_generation(&index_store) {
         Ok(maintenance::CurrentGeneration::Found(generation)) => {
-            let missing = maintenance::missing_configured_targets(config, &generation.manifest);
+            if let Err(error) = SearchService::validate_generation(&generation.path) {
+                if !config.server.bootstrap {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "failed to open current index generation {}; run `nixsearch update` first",
+                            generation.path
+                        )
+                    });
+                }
 
-            if missing.is_empty() {
-                return Ok(generation);
+                tracing::warn!(
+                    generation = %generation.path,
+                    "current index generation cannot be opened; bootstrap will rebuild it: {error:#}"
+                );
+            } else {
+                let missing = maintenance::missing_configured_targets(config, &generation.manifest);
+
+                if missing.is_empty() {
+                    return Ok(generation);
+                }
+
+                if !config.server.bootstrap {
+                    return Ok(generation);
+                }
+
+                let missing = missing
+                    .iter()
+                    .map(|target| format!("{}/{}", target.source, target.ref_id))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+
+                tracing::info!(
+                    missing = %missing,
+                    "current index is missing configured targets; bootstrap enabled, rebuilding index"
+                );
             }
-
-            if !config.server.bootstrap {
-                return Ok(generation);
-            }
-
-            let missing = missing
-                .iter()
-                .map(|target| format!("{}/{}", target.source, target.ref_id))
-                .collect::<Vec<_>>()
-                .join(", ");
-
-            tracing::info!(
-                missing = %missing,
-                "current index is missing configured targets; bootstrap enabled, rebuilding index"
-            );
         }
         Ok(maintenance::CurrentGeneration::Missing) => {}
         Err(error) => {
@@ -128,7 +144,7 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<maintenance::Pu
 
     tracing::info!(
         index_dir = %config.data.index_dir,
-        "no current index found; bootstrap enabled, building initial index"
+        "current index requires bootstrap; building index generation"
     );
 
     let index_dir = config.data.index_dir.clone();
@@ -139,10 +155,20 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<maintenance::Pu
     match maintenance::read_current_generation(&index_store) {
         Ok(maintenance::CurrentGeneration::Found(generation)) => {
             if !maintenance::current_generation_missing_configured_targets(config, &generation) {
-                tracing::info!(
-                    "current index was created by another process while waiting for lock"
-                );
-                return Ok(generation);
+                match SearchService::validate_generation(&generation.path) {
+                    Ok(()) => {
+                        tracing::info!(
+                            "current index was created by another process while waiting for lock"
+                        );
+                        return Ok(generation);
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            generation = %generation.path,
+                            "current index generation is still unopenable after acquiring lock; rebuilding it: {error:#}"
+                        );
+                    }
+                }
             }
         }
         Ok(maintenance::CurrentGeneration::Missing) => {}
@@ -155,10 +181,19 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<maintenance::Pu
 
     generate::regenerate_all(config)
         .await
-        .context("failed to bootstrap missing index")?;
+        .context("failed to bootstrap current index")?;
 
     match maintenance::read_current_generation(&index_store)? {
-        maintenance::CurrentGeneration::Found(generation) => Ok(generation),
+        maintenance::CurrentGeneration::Found(generation) => {
+            SearchService::validate_generation(&generation.path).with_context(|| {
+                format!(
+                    "bootstrap published index generation {} but it cannot be opened",
+                    generation.path
+                )
+            })?;
+
+            Ok(generation)
+        }
         maintenance::CurrentGeneration::Missing => {
             bail!("bootstrap completed without publishing a current index")
         }
@@ -213,6 +248,7 @@ fn log_startup_maintenance_state(
 mod tests {
     use std::fs;
 
+    use nixsearch_index::search::SearchIndex;
     use nixsearch_index::store::IndexStore;
     use nixsearch_index_test_support::{
         assert_canonical_options_manifest_targets, publish_canonical_options_index,
@@ -313,6 +349,48 @@ mod tests {
         assert_ne!(generation.path, generation_without_manifest);
         assert_canonical_options_manifest_targets(&generation.manifest);
         assert_eq!(store.current_path().unwrap(), generation.path);
+    }
+
+    #[tokio::test]
+    async fn ensure_current_generation_bootstraps_unopenable_generation() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+        let store = IndexStore::new(&index_dir);
+        let manifest = store.current_manifest().unwrap();
+        let broken = store.create_generation_path().unwrap();
+        store.write_manifest(&broken, &manifest).unwrap();
+        store.publish(&broken).unwrap();
+
+        let mut config = app_config(&index_dir);
+        config.data.artifact_url = format!("file://{}", tempdir.path().join("artifacts").display());
+
+        let generation = ensure_current_generation(&config).await.unwrap();
+
+        assert_ne!(generation.path, broken);
+        assert_canonical_options_manifest_targets(&generation.manifest);
+        assert_eq!(store.current_path().unwrap(), generation.path);
+        SearchIndex::open(&generation.path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn ensure_current_generation_errors_on_unopenable_generation_when_bootstrap_disabled() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+        let store = IndexStore::new(&index_dir);
+        let manifest = store.current_manifest().unwrap();
+        let broken = store.create_generation_path().unwrap();
+        store.write_manifest(&broken, &manifest).unwrap();
+        store.publish(&broken).unwrap();
+        let mut config = app_config(&index_dir);
+        config.server.bootstrap = false;
+
+        let error = ensure_current_generation(&config).await.unwrap_err();
+
+        let error = format!("{error:#}");
+        assert!(error.contains("failed to open current index generation"));
+        assert!(error.contains("run `nixsearch update` first"));
     }
 
     #[tokio::test]
