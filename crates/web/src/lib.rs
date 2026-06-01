@@ -247,16 +247,261 @@ fn log_startup_maintenance_state(
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::Arc;
 
+    use axum::Router;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::routing::get;
+    use nixsearch_config::app::AppConfig;
     use nixsearch_index::search::SearchIndex;
     use nixsearch_index::store::IndexStore;
     use nixsearch_index_test_support::{
         assert_canonical_options_manifest_targets, publish_canonical_options_index,
+        publish_fixture_options_index_for_refs,
     };
-    use nixsearch_test_support::{REF_SMALL, SOURCE_FIXTURES, app_config, utf8_path_buf};
+    use nixsearch_service::SearchService;
+    use nixsearch_test_support::{
+        REF_SMALL, REF_STABLE, SOURCE_FIXTURES, app_config, app_config_with_extra_fixture_source,
+        multi_ref_app_config, utf8_path_buf,
+    };
     use tempfile::tempdir;
+    use tower::ServiceExt;
 
-    use super::ensure_current_generation;
+    use super::{
+        AppState, RECONCILE_EVENTS_URL, RESULTS_SLICE_URL, ensure_current_generation, handlers,
+    };
+
+    fn test_app(config: AppConfig) -> Router {
+        let config = Arc::new(config);
+        let search = SearchService::open_current(Arc::clone(&config)).unwrap();
+
+        Router::new()
+            .route(RECONCILE_EVENTS_URL, get(handlers::state_events))
+            .route(RESULTS_SLICE_URL, get(handlers::results_slice))
+            .route("/", get(handlers::root_page))
+            .route("/{source}", get(handlers::source_page))
+            .route("/{source}/{*entry}", get(handlers::entry_page))
+            .with_state(AppState { config, search })
+    }
+
+    async fn request_status(app: Router, uri: &str) -> StatusCode {
+        app.oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+            .status()
+    }
+
+    #[tokio::test]
+    async fn full_page_unknown_source_returns_404() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config(&index_dir));
+
+        assert_eq!(request_status(app, "/missing").await, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn full_page_unknown_ref_returns_404() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config(&index_dir));
+
+        assert_eq!(
+            request_status(app, "/fixtures?ref=missing").await,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn full_page_unknown_ref_set_returns_404() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(multi_ref_app_config(&index_dir));
+
+        assert_eq!(
+            request_status(app, "/fixtures?ref_set=missing").await,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn full_page_configured_but_unserved_ref_returns_404() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(multi_ref_app_config(&index_dir));
+
+        assert_eq!(
+            request_status(app, "/fixtures?ref=stable").await,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn full_page_default_served_ref_returns_200() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(multi_ref_app_config(&index_dir));
+
+        assert_eq!(request_status(app, "/fixtures").await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn full_page_non_default_served_ref_returns_200() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_fixture_options_index_for_refs(&index_dir, &[REF_SMALL, REF_STABLE]);
+
+        let app = test_app(multi_ref_app_config(&index_dir));
+
+        assert_eq!(
+            request_status(app, "/fixtures?ref=stable").await,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn full_page_multi_ref_ref_set_without_explicit_ref_returns_400() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(multi_ref_app_config(&index_dir));
+
+        assert_eq!(
+            request_status(app, "/fixtures?ref_set=multi").await,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[tokio::test]
+    async fn full_page_multi_ref_ref_set_with_explicit_valid_ref_returns_200() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_fixture_options_index_for_refs(&index_dir, &[REF_SMALL, REF_STABLE]);
+
+        let app = test_app(multi_ref_app_config(&index_dir));
+
+        assert_eq!(
+            request_status(app, "/fixtures?ref_set=multi&ref=stable").await,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn all_source_search_works_when_some_configured_refs_are_missing() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config_with_extra_fixture_source(&index_dir, "extra"));
+
+        assert_eq!(request_status(app, "/?q=git").await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn state_events_unknown_ref_returns_404() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config(&index_dir));
+
+        assert_eq!(
+            request_status(app, "/-/state/events?url=%2Ffixtures%3Fref%3Dmissing").await,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn state_events_multi_ref_ref_set_without_explicit_ref_returns_400() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(multi_ref_app_config(&index_dir));
+
+        assert_eq!(
+            request_status(app, "/-/state/events?url=%2Ffixtures%3Fref_set%3Dmulti").await,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[tokio::test]
+    async fn results_slice_unknown_ref_returns_404() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config(&index_dir));
+
+        assert_eq!(
+            request_status(
+                app,
+                "/-/results/slice?url=%2Ffixtures%3Fq%3Dgit%26ref%3Dmissing&offset=0",
+            )
+            .await,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn results_slice_multi_ref_ref_set_without_explicit_ref_returns_400() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(multi_ref_app_config(&index_dir));
+
+        assert_eq!(
+            request_status(
+                app,
+                "/-/results/slice?url=%2Ffixtures%3Fq%3Dgit%26ref_set%3Dmulti&offset=0",
+            )
+            .await,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[tokio::test]
+    async fn full_page_state_events_and_results_slice_accept_valid_ref() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_fixture_options_index_for_refs(&index_dir, &[REF_SMALL, REF_STABLE]);
+
+        let app = test_app(multi_ref_app_config(&index_dir));
+
+        assert_eq!(
+            request_status(app.clone(), "/fixtures?ref=stable").await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            request_status(
+                app.clone(),
+                "/-/state/events?url=%2Ffixtures%3Fref%3Dstable",
+            )
+            .await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            request_status(
+                app,
+                "/-/results/slice?url=%2Ffixtures%3Fq%3Dgit%26ref%3Dstable&offset=0",
+            )
+            .await,
+            StatusCode::OK
+        );
+    }
 
     #[tokio::test]
     async fn ensure_current_generation_returns_existing_generation() {

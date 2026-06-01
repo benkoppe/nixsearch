@@ -35,3 +35,4 @@ nixsearch-service.workspace = true
 nixsearch-index-test-support.workspace = true
 nixsearch-test-support.workspace = true
 tempfile.workspace = true
+tower.workspace = true

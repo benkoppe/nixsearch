@@ -640,12 +640,19 @@ mod tests {
     use nixsearch_index::search::EntryLookupResult;
     use nixsearch_index::store::IndexStore;
     use nixsearch_index_test_support::{
-        publish_canonical_index, publish_canonical_index_with_generated_at,
+        options_target, publish_canonical_index, publish_canonical_index_with_generated_at,
+        publish_documents_with_manifest_targets, publish_fixture_options_index_for_refs,
     };
-    use nixsearch_test_support::{REF_SMALL, SOURCE_FIXTURES, app_config, utf8_path_buf};
+    use nixsearch_test_support::{
+        REF_SMALL, REF_STABLE, SOURCE_FIXTURES, app_config, app_config_with_extra_fixture_source,
+        ingest_context_for, multi_ref_app_config, option_doc_for, utf8_path_buf,
+    };
     use time::Duration as TimeDuration;
 
-    use super::{EntryRequest, ReconcileOutcome, SearchRequest, SearchService};
+    use super::{
+        EntryRequest, ReconcileOutcome, RequestResolutionError, SearchRequest, SearchService,
+        ServiceError,
+    };
 
     #[test]
     fn search_current_uses_configured_default_scopes() {
@@ -715,6 +722,328 @@ mod tests {
             .unwrap();
 
         assert!(matches!(result, EntryLookupResult::Found(_)));
+    }
+
+    #[test]
+    fn helpers_report_configured_and_served_refs() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_index(&index_dir);
+
+        let config = Arc::new(multi_ref_app_config(&index_dir));
+        let service = SearchService::open_current(config).unwrap();
+
+        assert!(service.configured_source_exists(SOURCE_FIXTURES));
+        assert!(!service.configured_source_exists("missing"));
+        assert!(service.configured_ref_exists(SOURCE_FIXTURES, REF_SMALL));
+        assert!(service.configured_ref_exists(SOURCE_FIXTURES, REF_STABLE));
+        assert!(!service.configured_ref_exists(SOURCE_FIXTURES, "missing"));
+        assert!(!service.configured_ref_exists("missing", REF_SMALL));
+        assert!(service.served_ref_exists(SOURCE_FIXTURES, REF_SMALL));
+        assert!(!service.served_ref_exists(SOURCE_FIXTURES, REF_STABLE));
+    }
+
+    #[test]
+    fn default_served_ref_is_indexable() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_index(&index_dir);
+
+        let config = Arc::new(multi_ref_app_config(&index_dir));
+        let service = SearchService::open_current(config).unwrap();
+
+        assert!(service.is_indexable_ref(SOURCE_FIXTURES, REF_SMALL));
+    }
+
+    #[test]
+    fn non_default_served_ref_is_not_indexable() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_fixture_options_index_for_refs(&index_dir, &[REF_SMALL, REF_STABLE]);
+
+        let config = Arc::new(multi_ref_app_config(&index_dir));
+        let service = SearchService::open_current(config).unwrap();
+
+        assert!(service.served_ref_exists(SOURCE_FIXTURES, REF_STABLE));
+        assert!(!service.is_indexable_ref(SOURCE_FIXTURES, REF_STABLE));
+    }
+
+    #[test]
+    fn unknown_source_returns_typed_error() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_index(&index_dir);
+
+        let config = Arc::new(app_config(&index_dir));
+        let service = SearchService::open_current(config).unwrap();
+
+        let error = service
+            .search_scopes(Some("missing"), None, None)
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RequestResolutionError::UnknownSource { source_id } if source_id == "missing"
+        ));
+    }
+
+    #[test]
+    fn unknown_ref_returns_typed_error() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_index(&index_dir);
+
+        let config = Arc::new(app_config(&index_dir));
+        let service = SearchService::open_current(config).unwrap();
+
+        let error = service
+            .search_scopes(Some(SOURCE_FIXTURES), Some("missing"), None)
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RequestResolutionError::UnknownRef { source_id, ref_id }
+                if source_id == SOURCE_FIXTURES && ref_id == "missing"
+        ));
+    }
+
+    #[test]
+    fn unknown_ref_set_returns_typed_error() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_index(&index_dir);
+
+        let config = Arc::new(multi_ref_app_config(&index_dir));
+        let service = SearchService::open_current(config).unwrap();
+
+        let error = service
+            .search_scopes(None, None, Some("missing"))
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RequestResolutionError::UnknownRefSet { ref_set } if ref_set == "missing"
+        ));
+    }
+
+    #[test]
+    fn configured_but_unserved_ref_returns_typed_error() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_index(&index_dir);
+
+        let config = Arc::new(multi_ref_app_config(&index_dir));
+        let service = SearchService::open_current(config).unwrap();
+
+        let error = service
+            .search_scopes(Some(SOURCE_FIXTURES), Some(REF_STABLE), None)
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RequestResolutionError::UnservedRef { source_id, ref_id }
+                if source_id == SOURCE_FIXTURES && ref_id == REF_STABLE
+        ));
+    }
+
+    #[test]
+    fn default_served_ref_resolves() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_index(&index_dir);
+
+        let config = Arc::new(multi_ref_app_config(&index_dir));
+        let service = SearchService::open_current(config).unwrap();
+
+        let scopes = service
+            .search_scopes(Some(SOURCE_FIXTURES), None, None)
+            .unwrap();
+
+        assert_eq!(scopes.len(), 1);
+        assert_eq!(scopes[0].source, SOURCE_FIXTURES);
+        assert_eq!(scopes[0].ref_id, REF_SMALL);
+    }
+
+    #[test]
+    fn non_default_served_ref_resolves_but_is_not_indexable() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_fixture_options_index_for_refs(&index_dir, &[REF_SMALL, REF_STABLE]);
+
+        let config = Arc::new(multi_ref_app_config(&index_dir));
+        let service = SearchService::open_current(config).unwrap();
+
+        let scopes = service
+            .search_scopes(Some(SOURCE_FIXTURES), Some(REF_STABLE), None)
+            .unwrap();
+
+        assert_eq!(scopes.len(), 1);
+        assert_eq!(scopes[0].source, SOURCE_FIXTURES);
+        assert_eq!(scopes[0].ref_id, REF_STABLE);
+        assert!(!service.is_indexable_ref(SOURCE_FIXTURES, REF_STABLE));
+    }
+
+    #[test]
+    fn single_ref_ref_set_source_resolves_without_explicit_ref() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_index(&index_dir);
+
+        let config = Arc::new(multi_ref_app_config(&index_dir));
+        let service = SearchService::open_current(config).unwrap();
+
+        let scopes = service
+            .search_scopes(Some(SOURCE_FIXTURES), None, Some("single"))
+            .unwrap();
+
+        assert_eq!(scopes.len(), 1);
+        assert_eq!(scopes[0].source, SOURCE_FIXTURES);
+        assert_eq!(scopes[0].ref_id, REF_SMALL);
+    }
+
+    #[test]
+    fn multi_ref_ref_set_source_without_explicit_ref_returns_ambiguous_error() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_index(&index_dir);
+
+        let config = Arc::new(multi_ref_app_config(&index_dir));
+        let service = SearchService::open_current(config).unwrap();
+
+        let error = service
+            .search_scopes(Some(SOURCE_FIXTURES), None, Some("multi"))
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RequestResolutionError::AmbiguousRefSetSource { ref_set, source_id }
+                if ref_set == "multi" && source_id == SOURCE_FIXTURES
+        ));
+    }
+
+    #[test]
+    fn multi_ref_ref_set_source_with_explicit_valid_ref_resolves() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_fixture_options_index_for_refs(&index_dir, &[REF_SMALL, REF_STABLE]);
+
+        let config = Arc::new(multi_ref_app_config(&index_dir));
+        let service = SearchService::open_current(config).unwrap();
+
+        let scopes = service
+            .search_scopes(Some(SOURCE_FIXTURES), Some(REF_STABLE), Some("multi"))
+            .unwrap();
+
+        assert_eq!(scopes.len(), 1);
+        assert_eq!(scopes[0].source, SOURCE_FIXTURES);
+        assert_eq!(scopes[0].ref_id, REF_STABLE);
+    }
+
+    #[test]
+    fn ref_set_source_with_explicit_ref_outside_set_returns_error() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_fixture_options_index_for_refs(&index_dir, &[REF_SMALL, REF_STABLE]);
+
+        let config = Arc::new(multi_ref_app_config(&index_dir));
+        let service = SearchService::open_current(config).unwrap();
+
+        let error = service
+            .search_scopes(Some(SOURCE_FIXTURES), Some(REF_STABLE), Some("single"))
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RequestResolutionError::InvalidRefForRefSet { ref_set, source_id, ref_id }
+                if ref_set == "single" && source_id == SOURCE_FIXTURES && ref_id == REF_STABLE
+        ));
+    }
+
+    #[test]
+    fn all_source_scopes_filter_to_served_refs() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_index(&index_dir);
+
+        let config = Arc::new(app_config_with_extra_fixture_source(&index_dir, "extra"));
+        let service = SearchService::open_current(config).unwrap();
+
+        let scopes = service.search_scopes(None, None, None).unwrap();
+
+        assert_eq!(scopes.len(), 1);
+        assert_eq!(scopes[0].source, SOURCE_FIXTURES);
+        assert_eq!(scopes[0].ref_id, REF_SMALL);
+    }
+
+    #[test]
+    fn all_source_scopes_error_when_none_are_served() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_documents_with_manifest_targets(
+            &index_dir,
+            time::OffsetDateTime::now_utc(),
+            vec![option_doc_for(
+                &ingest_context_for("other", REF_SMALL),
+                "programs.git.enable",
+                "Other source option.",
+            )],
+            vec![options_target("other", REF_SMALL, 1)],
+        );
+
+        let config = Arc::new(app_config(&index_dir));
+        let service = SearchService::open_current(config).unwrap();
+
+        let error = service.search_scopes(None, None, None).unwrap_err();
+
+        assert!(matches!(
+            error,
+            RequestResolutionError::NoServedSearchScopes
+        ));
+    }
+
+    #[test]
+    fn all_source_search_works_when_some_configured_targets_are_missing() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_index(&index_dir);
+
+        let config = Arc::new(app_config_with_extra_fixture_source(&index_dir, "extra"));
+        let service = SearchService::open_current(config).unwrap();
+
+        let result = service
+            .search_current(SearchRequest {
+                query: "git".to_owned(),
+                limit: 10,
+                ..SearchRequest::default()
+            })
+            .unwrap();
+
+        assert!(result.total > 0);
+    }
+
+    #[test]
+    fn entry_lookup_rejects_configured_but_unserved_ref() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_index(&index_dir);
+
+        let config = Arc::new(multi_ref_app_config(&index_dir));
+        let service = SearchService::open_current(config).unwrap();
+
+        let error = service
+            .find_entry_current(EntryRequest {
+                source: SOURCE_FIXTURES.to_owned(),
+                ref_id: Some(REF_STABLE.to_owned()),
+                name: "programs.git.enable".to_owned(),
+                kind: Some(DocumentKind::Option),
+            })
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ServiceError::Resolution(RequestResolutionError::UnservedRef { source_id, ref_id })
+                if source_id == SOURCE_FIXTURES && ref_id == REF_STABLE
+        ));
     }
 
     #[test]

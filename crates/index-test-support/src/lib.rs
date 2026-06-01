@@ -9,7 +9,9 @@ use nixsearch_core::document::SearchDocument;
 use nixsearch_index::manifest::{IndexGenerationManifest, IndexTargetManifest};
 use nixsearch_index::search::SearchIndex;
 use nixsearch_index::store::IndexStore;
-use nixsearch_test_support::{REF_SMALL, SOURCE_FIXTURES, canonical_documents};
+use nixsearch_test_support::{
+    REF_SMALL, SOURCE_FIXTURES, canonical_documents, ingest_context_for, option_doc_for,
+};
 
 pub fn publish_canonical_index(index_root: &Utf8Path) -> Utf8PathBuf {
     publish_canonical_mixed_index(index_root)
@@ -92,7 +94,34 @@ pub fn publish_canonical_mixed_index_with_generated_at(
     )
 }
 
-fn publish_documents_with_manifest_targets(
+pub fn publish_fixture_options_index_for_refs(
+    index_root: &Utf8Path,
+    ref_ids: &[&str],
+) -> Utf8PathBuf {
+    let documents = ref_ids
+        .iter()
+        .map(|ref_id| {
+            option_doc_for(
+                &ingest_context_for(SOURCE_FIXTURES, ref_id),
+                &format!("programs.{ref_id}.git.enable"),
+                &format!("Fixture option for {ref_id}."),
+            )
+        })
+        .collect::<Vec<_>>();
+    let targets = ref_ids
+        .iter()
+        .map(|ref_id| options_target(SOURCE_FIXTURES, ref_id, 1))
+        .collect::<Vec<_>>();
+
+    publish_documents_with_manifest_targets(
+        index_root,
+        time::OffsetDateTime::now_utc(),
+        documents,
+        targets,
+    )
+}
+
+pub fn publish_documents_with_manifest_targets(
     index_root: &Utf8Path,
     generated_at: time::OffsetDateTime,
     documents: Vec<SearchDocument>,
@@ -116,6 +145,26 @@ fn publish_documents_with_manifest_targets(
     store.write_manifest(&generation, &manifest).unwrap();
     store.publish(&generation).unwrap();
     store.current_path().unwrap()
+}
+
+pub fn index_target(
+    source: &str,
+    ref_id: &str,
+    artifact_kind: ArtifactKind,
+    document_count: usize,
+) -> IndexTargetManifest {
+    IndexTargetManifest {
+        source: source.to_owned(),
+        ref_id: ref_id.to_owned(),
+        artifact_kind,
+        document_count,
+        artifact_hash: None,
+        revision: None,
+    }
+}
+
+pub fn options_target(source: &str, ref_id: &str, document_count: usize) -> IndexTargetManifest {
+    index_target(source, ref_id, ArtifactKind::OptionsJson, document_count)
 }
 
 pub fn assert_canonical_options_manifest_targets(manifest: &IndexGenerationManifest) {

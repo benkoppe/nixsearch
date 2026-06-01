@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use camino::{Utf8Path, Utf8PathBuf};
 use tempfile::TempDir;
 
-use nixsearch_config::app::AppConfig;
+use nixsearch_config::app::{AppConfig, RefSetConfig};
 use nixsearch_config::data::DataConfig;
 use nixsearch_config::producer::ProducerConfig;
 use nixsearch_config::server::ServerConfig;
@@ -200,6 +200,60 @@ pub fn app_config(index_dir: impl AsRef<Utf8Path>) -> AppConfig {
         .into(),
         ref_sets: Default::default(),
     }
+}
+
+pub fn existing_file_ref_config(id: &str) -> RefConfig {
+    RefConfig {
+        id: id.to_owned(),
+        producer: ProducerConfig::ExistingFile {
+            path: PathBuf::from("unused.json"),
+            artifact: ArtifactKind::OptionsJson,
+        },
+        source_links: None,
+    }
+}
+
+pub fn multi_ref_app_config(index_dir: impl AsRef<Utf8Path>) -> AppConfig {
+    let mut config = app_config(index_dir);
+
+    config
+        .sources
+        .get_mut(SOURCE_FIXTURES)
+        .expect("fixture source exists")
+        .refs
+        .push(existing_file_ref_config(REF_STABLE));
+
+    config.ref_sets = [
+        (
+            "single".to_owned(),
+            RefSetConfig {
+                refs: [(SOURCE_FIXTURES.to_owned(), vec![REF_SMALL.to_owned()])].into(),
+            },
+        ),
+        (
+            "multi".to_owned(),
+            RefSetConfig {
+                refs: [(
+                    SOURCE_FIXTURES.to_owned(),
+                    vec![REF_SMALL.to_owned(), REF_STABLE.to_owned()],
+                )]
+                .into(),
+            },
+        ),
+    ]
+    .into();
+
+    config
+}
+
+pub fn app_config_with_extra_fixture_source(
+    index_dir: impl AsRef<Utf8Path>,
+    source_id: &str,
+) -> AppConfig {
+    let mut config = app_config(index_dir);
+    let extra_source = config.sources[SOURCE_FIXTURES].clone();
+    config.sources.insert(source_id.to_owned(), extra_source);
+    config
 }
 
 pub fn utf8_path_buf(path: PathBuf) -> Utf8PathBuf {
