@@ -48,6 +48,67 @@
     document.title = titleForUrl(url);
   }
 
+  function metaByAttribute(attribute, value) {
+    return Array.from(
+      document.head.querySelectorAll(`meta[${attribute}]`),
+    ).find((el) => el.getAttribute(attribute) === value);
+  }
+
+  function setMeta(attribute, value, content) {
+    let el = metaByAttribute(attribute, value);
+
+    if (content === null || content === undefined || content === "") {
+      if (el) el.remove();
+      return;
+    }
+
+    if (!el) {
+      el = document.createElement("meta");
+      el.setAttribute(attribute, value);
+      document.head.appendChild(el);
+    }
+
+    el.setAttribute("content", String(content));
+  }
+
+  function setCanonicalUrl(url) {
+    const existing = Array.from(
+      document.head.querySelectorAll('link[rel~="canonical"]'),
+    );
+
+    if (!url) {
+      existing.forEach((el) => el.remove());
+      return;
+    }
+
+    let el = existing[0];
+    existing.slice(1).forEach((extra) => extra.remove());
+
+    if (!el) {
+      el = document.createElement("link");
+      el.setAttribute("rel", "canonical");
+      document.head.appendChild(el);
+    }
+
+    el.setAttribute("href", String(url));
+  }
+
+  function applyHeadMetadata(metadata) {
+    if (!metadata || typeof metadata !== "object") return;
+
+    if (metadata.title) document.title = metadata.title;
+
+    setMeta("name", "description", metadata.description);
+    setMeta("name", "robots", metadata.robots);
+    setMeta("property", "og:url", metadata.url);
+    setMeta("property", "og:title", metadata.title);
+    setMeta("property", "og:description", metadata.description);
+    setMeta("property", "og:image", metadata.imageUrl);
+    setCanonicalUrl(metadata.canonicalUrl);
+  }
+
+  window.nixsearchApplyHeadMetadata = applyHeadMetadata;
+
   function replaceVisiblePageInUrl(page) {
     const nextPage = Math.max(1, page || 1);
     const url = new URL(window.location.href);
@@ -313,7 +374,11 @@
     const params = new URLSearchParams(parsed.search);
     const parts = parsed.pathname.split("/").filter(Boolean);
     const sourceAll = params.get("source") === "__SOURCE_ALL_VALUE__";
-    const sourceId = sourceAll ? "" : parts[0] ? decodeURIComponent(parts[0]) : "";
+    const sourceId = sourceAll
+      ? ""
+      : parts[0]
+        ? decodeURIComponent(parts[0])
+        : "";
     const source = sourceMetadata(sourceId);
     const requestedRefSet = (params.get("ref_set") || "").trim();
 
@@ -334,7 +399,8 @@
         return {
           sourceId,
           refId: requestedRef && requestedRef !== refs[0] ? "" : refs[0],
-          invalidRefId: requestedRef && requestedRef !== refs[0] ? requestedRef : "",
+          invalidRefId:
+            requestedRef && requestedRef !== refs[0] ? requestedRef : "",
           activeRefSet: requestedRefSet,
           activeRefSetExplicit: true,
         };
@@ -474,12 +540,14 @@
 
     const keyboardOpen =
       footerEditableFocused &&
-      stableVisualViewportHeight - viewport.height > VISUAL_VIEWPORT_KEYBOARD_DELTA;
+      stableVisualViewportHeight - viewport.height >
+        VISUAL_VIEWPORT_KEYBOARD_DELTA;
 
     if (
       !footerEditableFocused ||
       (!keyboardOpen &&
-        viewport.height > stableVisualViewportHeight + VISUAL_VIEWPORT_HEIGHT_EPSILON)
+        viewport.height >
+          stableVisualViewportHeight + VISUAL_VIEWPORT_HEIGHT_EPSILON)
     ) {
       stableVisualViewportHeight = viewport.height;
     }
@@ -532,7 +600,9 @@
   }
 
   function refSetForLink(refSetIdValue) {
-    return refSetIdValue && refSetIdValue !== defaultRefSet() ? refSetIdValue : "";
+    return refSetIdValue && refSetIdValue !== defaultRefSet()
+      ? refSetIdValue
+      : "";
   }
 
   function buildSearchUrlFromInputs(context = null) {
@@ -826,7 +896,12 @@
     if (!el.matches || !el.matches('[data-nixsearch-input="ref"]')) return;
     resetQueryHistoryGrouping();
     resetSourceKeyboardHistoryGrouping();
-    navigate(buildSearchUrlFromInputs({ activeRefSet: "", activeRefSetExplicit: false }));
+    navigate(
+      buildSearchUrlFromInputs({
+        activeRefSet: "",
+        activeRefSetExplicit: false,
+      }),
+    );
   });
 
   document.addEventListener("click", (evt) => {
@@ -1431,7 +1506,8 @@
       }
 
       rememberVirtualSlice(cacheKey, data);
-      if (applyVirtualSlice(data, mode, normalizedOffset)) scheduleVisiblePageSync();
+      if (applyVirtualSlice(data, mode, normalizedOffset))
+        scheduleVisiblePageSync();
     } catch (e) {
       if (e.name === "AbortError") return;
       console.error("Failed to load virtual results:", e);
@@ -1479,7 +1555,10 @@
     runVirtualTransaction(spacer, anchor, () => {
       if (mode === "append") {
         if (data.rows) state.tbody.insertAdjacentHTML("beforeend", data.rows);
-        state.endOffset = Math.min(state.total, Math.max(state.endOffset, sliceEnd));
+        state.endOffset = Math.min(
+          state.total,
+          Math.max(state.endOffset, sliceEnd),
+        );
       } else {
         if (data.rows) state.tbody.insertAdjacentHTML("afterbegin", data.rows);
         state.startOffset = Math.min(state.startOffset, sliceOffset);
@@ -1491,7 +1570,9 @@
   }
 
   function finiteNumber(value, fallback) {
-    return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+    return typeof value === "number" && Number.isFinite(value)
+      ? value
+      : fallback;
   }
 
   function firstVisibleResultRow() {

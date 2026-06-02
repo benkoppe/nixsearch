@@ -70,9 +70,8 @@ mod tests {
         assert!(
             script.contains(r#"refId: requestedRef && requestedRef !== refs[0] ? "" : refs[0]"#)
         );
-        assert!(script.contains(
-            "invalidRefId: requestedRef && requestedRef !== refs[0] ? requestedRef : \"\""
-        ));
+        assert!(script.contains("invalidRefId:"));
+        assert!(script.contains("requestedRef && requestedRef !== refs[0] ? requestedRef : \"\""));
         assert!(
             script.contains("const preservedRef = context.refId || context.invalidRefId || \"\";")
         );

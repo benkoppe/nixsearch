@@ -1,6 +1,7 @@
 use std::fmt::Write;
 
 use maud::{DOCTYPE, Escaper, Markup, PreEscaped, html};
+use serde::Serialize;
 
 use nixsearch_config::app::AppConfig;
 use nixsearch_config::server::{AnalyticsScriptConfig, ScriptAttributeValue};
@@ -11,9 +12,10 @@ use nixsearch_service::ServedGenerationSnapshot;
 use crate::AppState;
 use crate::DATASTAR_JS_URL;
 use crate::RECONCILE_EVENTS_URL;
-use crate::request::{PageRequest, SourceFilter, normalized_query};
+use crate::origin::PageUrls;
+use crate::request::{PageRequest, PageState, SourceFilter, non_empty, normalized_query};
 use crate::scripts::navigation_script;
-use crate::urls::source_path;
+use crate::urls::{canonical_entry_path, canonical_home_path, canonical_source_path, source_path};
 
 use super::footer;
 use super::home;
@@ -25,6 +27,7 @@ use super::source_tag;
 
 static CSS: &str = include_str!("../../style.css");
 const DEFAULT_DESCRIPTION: &str = "Search the Nix ecosystem";
+const ROBOTS_NOINDEX_FOLLOW: &str = "noindex,follow";
 
 #[derive(Clone, Copy)]
 pub enum ResultsContent<'a> {
@@ -33,18 +36,21 @@ pub enum ResultsContent<'a> {
     Error { title: &'a str, message: &'a str },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PageUrls {
-    pub current_url: String,
-    pub image_url: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PageMetadata {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PageMetadata {
     title: String,
     description: String,
     url: String,
     image_url: String,
+    canonical_url: Option<String>,
+    robots: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct IndexMetadata {
+    canonical_url: Option<String>,
+    robots: Option<&'static str>,
 }
 
 pub fn render_full_page(
@@ -67,21 +73,17 @@ pub fn render_full_page(
         ResultsContent::Error { title, message } => results::render_error(title, message),
     };
 
-    let search_result_for_metadata = match results_content {
-        ResultsContent::SearchResults(result) => Ok(result),
-        ResultsContent::Error { message, .. } => Err(message),
-        ResultsContent::Home => Err(""),
-    };
-
     let modal_markup = modal::render(&state.config, page_state, entry);
     let source_metadata = source_metadata_json(&state.config);
-    let metadata = page_metadata(
-        &state.config,
+
+    let metadata = page_head_metadata(
+        state,
         request,
-        source_filter,
-        search_result_for_metadata,
-        entry,
+        page_state,
         page_urls,
+        served_generation,
+        results_content,
+        entry,
     );
 
     let form_action = match source_filter {
@@ -110,6 +112,12 @@ pub fn render_full_page(
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { (&metadata.title) }
                 meta name="description" content=(&metadata.description);
+                @if let Some(canonical_url) = &metadata.canonical_url {
+                    link rel="canonical" href=(canonical_url);
+                }
+                @if let Some(robots) = metadata.robots {
+                    meta name="robots" content=(robots);
+                }
                 meta property="og:url" content=(&metadata.url);
                 meta property="og:type" content="website";
                 meta property="og:site_name" content="nixsearch";
@@ -189,6 +197,62 @@ fn append_escaped(output: &mut String, value: &str) {
     write!(Escaper::new(output), "{value}").expect("writing to a String should not fail");
 }
 
+pub(crate) fn page_head_metadata(
+    state: &AppState,
+    request: &PageRequest,
+    page_state: &PageState,
+    page_urls: &PageUrls,
+    served_generation: &ServedGenerationSnapshot,
+    results_content: ResultsContent<'_>,
+    entry: &EntryData,
+) -> PageMetadata {
+    let search_result_for_metadata = match results_content {
+        ResultsContent::SearchResults(result) => Ok(result),
+        ResultsContent::Error { message, .. } => Err(message),
+        ResultsContent::Home => Err(""),
+    };
+
+    let index_metadata = page_index_metadata(
+        state,
+        request,
+        page_state,
+        served_generation,
+        results_content,
+        entry,
+        page_urls,
+    );
+
+    page_metadata(
+        &state.config,
+        request,
+        &page_state.source_filter,
+        search_result_for_metadata,
+        entry,
+        page_urls,
+        index_metadata,
+    )
+}
+
+pub(crate) fn noindex_head_metadata(
+    page_urls: &PageUrls,
+    title: &str,
+    description: &str,
+) -> PageMetadata {
+    PageMetadata {
+        title: title.to_owned(),
+        description: description.to_owned(),
+        url: page_urls.current_url.clone(),
+        image_url: page_urls.image_url.clone(),
+        canonical_url: None,
+        robots: Some(ROBOTS_NOINDEX_FOLLOW),
+    }
+}
+
+pub(crate) fn head_metadata_script(metadata: &PageMetadata) -> String {
+    let json = serde_json::to_string(metadata).expect("page metadata should serialize");
+    format!("if (window.nixsearchApplyHeadMetadata) window.nixsearchApplyHeadMetadata({json});")
+}
+
 fn page_metadata(
     config: &AppConfig,
     request: &PageRequest,
@@ -196,12 +260,142 @@ fn page_metadata(
     search_result: Result<&SearchResult, &str>,
     entry: &EntryData,
     page_urls: &PageUrls,
+    index_metadata: IndexMetadata,
 ) -> PageMetadata {
+    let url = index_metadata
+        .canonical_url
+        .clone()
+        .unwrap_or_else(|| page_urls.current_url.clone());
+
     PageMetadata {
         title: title_for_entry(config, request, source_filter, entry.document()),
         description: description_for(config, request, source_filter, search_result, entry),
-        url: page_urls.current_url.clone(),
+        url,
         image_url: page_urls.image_url.clone(),
+        canonical_url: index_metadata.canonical_url,
+        robots: index_metadata.robots,
+    }
+}
+
+fn page_index_metadata(
+    state: &AppState,
+    request: &PageRequest,
+    page_state: &PageState,
+    served_generation: &ServedGenerationSnapshot,
+    results_content: ResultsContent<'_>,
+    entry: &EntryData,
+    page_urls: &PageUrls,
+) -> IndexMetadata {
+    if matches!(results_content, ResultsContent::Error { .. }) {
+        return noindex_metadata();
+    }
+
+    if request
+        .query
+        .ref_set
+        .as_deref()
+        .and_then(non_empty)
+        .is_some()
+    {
+        return noindex_metadata();
+    }
+
+    match entry {
+        EntryData::Found(document) => {
+            let common = document.common();
+
+            if state.search.is_indexable_ref_in_snapshot(
+                served_generation,
+                &common.source,
+                &common.ref_id,
+            ) {
+                return canonical_metadata(page_urls.absolute_url(&canonical_entry_path(
+                    &state.config,
+                    &common.source,
+                    &common.name,
+                    &common.ref_id,
+                )));
+            }
+
+            return noindex_metadata();
+        }
+        EntryData::NotFound { .. } | EntryData::Ambiguous(_) | EntryData::Error(_) => {
+            return noindex_metadata();
+        }
+        EntryData::Empty => {}
+    }
+
+    if page_state.detail.is_some() {
+        return noindex_metadata();
+    }
+
+    if normalized_query(&request.query).is_some() || request.query.page.unwrap_or(1) > 1 {
+        return noindex_metadata();
+    }
+
+    match &page_state.source_filter {
+        SourceFilter::All => {
+            if request.source.is_none()
+                && request.entry.is_none()
+                && request
+                    .query
+                    .ref_id
+                    .as_deref()
+                    .and_then(non_empty)
+                    .is_none()
+                && request
+                    .query
+                    .ref_set
+                    .as_deref()
+                    .and_then(non_empty)
+                    .is_none()
+                && request.query.kind.as_deref().and_then(non_empty).is_none()
+                && request.query.source.is_none()
+            {
+                canonical_metadata(page_urls.absolute_url(&canonical_home_path()))
+            } else {
+                noindex_metadata()
+            }
+        }
+        SourceFilter::Named(source) => {
+            if request.entry.is_some()
+                || request.query.kind.as_deref().and_then(non_empty).is_some()
+                || request.query.source.is_some()
+            {
+                return noindex_metadata();
+            }
+
+            let Some(ref_id) = page_state.source_ref.as_deref() else {
+                return noindex_metadata();
+            };
+
+            if state
+                .search
+                .is_indexable_ref_in_snapshot(served_generation, source, ref_id)
+            {
+                canonical_metadata(page_urls.absolute_url(&canonical_source_path(
+                    &state.config,
+                    source,
+                    ref_id,
+                )))
+            } else {
+                noindex_metadata()
+            }
+        }
+    }
+}
+
+fn canonical_metadata(canonical_url: String) -> IndexMetadata {
+    IndexMetadata {
+        canonical_url: Some(canonical_url),
+        robots: None,
+    }
+}
+
+fn noindex_metadata() -> IndexMetadata {
+    IndexMetadata {
+        canonical_url: None,
+        robots: Some(ROBOTS_NOINDEX_FOLLOW),
     }
 }
 
@@ -370,10 +564,11 @@ mod tests {
     use nixsearch_test_support::{SOURCE_FIXTURES, app_config, utf8_path_buf};
     use tempfile::tempdir;
 
+    use crate::origin::PageUrls;
     use crate::request::{PageQuery, PageRequest, SourceFilter};
 
     use super::{
-        EntryData, PageUrls, analytics_script, description_for, page_metadata, title_for,
+        EntryData, IndexMetadata, analytics_script, description_for, page_metadata, title_for,
         title_for_entry,
     };
 
@@ -386,6 +581,7 @@ mod tests {
         PageUrls {
             current_url: "https://search.example.com/?q=git".to_owned(),
             image_url: "https://search.example.com/apple-touch-icon.png".to_owned(),
+            origin: "https://search.example.com".to_owned(),
         }
     }
 
@@ -548,6 +744,7 @@ mod tests {
             Ok(&search),
             &EntryData::Empty,
             &page_urls(),
+            IndexMetadata::default(),
         );
 
         assert_eq!(metadata.title, "nixsearch");
@@ -577,6 +774,7 @@ mod tests {
             Ok(&search),
             &EntryData::Empty,
             &page_urls(),
+            IndexMetadata::default(),
         );
 
         assert_eq!(metadata.description, "Search Fixtures options");

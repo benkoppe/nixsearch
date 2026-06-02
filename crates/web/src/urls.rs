@@ -6,6 +6,10 @@ use nixsearch_index::search::SearchHit;
 use crate::request::PageRequest;
 use crate::request::{LinkOrigin, PageQuery, PageState, SourceFilter, non_empty};
 
+pub fn canonical_home_path() -> String {
+    "/".to_owned()
+}
+
 pub fn source_path(source: &str) -> String {
     format!("/{}", encode_path(source))
 }
@@ -27,6 +31,28 @@ pub fn search_url_for(source: Option<&str>, query: &PageQuery) -> String {
     } else {
         format!("{path}?{qs}")
     }
+}
+
+pub fn canonical_source_path(config: &AppConfig, source: &str, ref_id: &str) -> String {
+    search_url_for(
+        Some(source),
+        &PageQuery {
+            ref_id: ref_id_for_link(config, source, ref_id),
+            ..PageQuery::default()
+        },
+    )
+}
+
+pub fn canonical_entry_path(config: &AppConfig, source: &str, entry: &str, ref_id: &str) -> String {
+    entry_url_for(
+        source,
+        entry,
+        None,
+        &PageQuery {
+            ref_id: ref_id_for_link(config, source, ref_id),
+            ..PageQuery::default()
+        },
+    )
 }
 
 #[cfg(test)]
@@ -578,6 +604,46 @@ mod tests {
         assert_eq!(
             close_url_for_state(&config, &state),
             "/nixpkgs?q=git&ref=nixos-25.11&page=3"
+        );
+    }
+
+    #[test]
+    fn canonical_source_path_omits_default_ref() {
+        let config = handoff_config();
+
+        assert_eq!(
+            canonical_source_path(&config, "nixpkgs", "nixos-unstable"),
+            "/nixpkgs"
+        );
+    }
+
+    #[test]
+    fn canonical_source_path_preserves_non_default_ref() {
+        let config = handoff_config();
+
+        assert_eq!(
+            canonical_source_path(&config, "nixpkgs", "nixos-25.11"),
+            "/nixpkgs?ref=nixos-25.11"
+        );
+    }
+
+    #[test]
+    fn canonical_entry_path_omits_default_ref() {
+        let config = handoff_config();
+
+        assert_eq!(
+            canonical_entry_path(&config, "nixpkgs", "rubyPackages.git", "nixos-unstable"),
+            "/nixpkgs/rubyPackages.git"
+        );
+    }
+
+    #[test]
+    fn canonical_entry_path_preserves_non_default_ref() {
+        let config = handoff_config();
+
+        assert_eq!(
+            canonical_entry_path(&config, "nixpkgs", "rubyPackages.git", "nixos-25.11"),
+            "/nixpkgs/rubyPackages.git?ref=nixos-25.11"
         );
     }
 }

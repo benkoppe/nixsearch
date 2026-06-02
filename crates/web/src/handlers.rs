@@ -8,7 +8,6 @@ use axum::response::{Html, IntoResponse, Sse, sse::Event};
 use datastar::prelude::{ExecuteScript, PatchElements};
 use futures_util::stream;
 use serde::Deserialize;
-use url::Url;
 
 use nixsearch_index::search::{EntryLookupResult, SearchResult};
 use nixsearch_service::{
@@ -18,13 +17,15 @@ use nixsearch_service::{
 
 use crate::AppState;
 use crate::DEFAULT_LIMIT;
+use crate::origin::{PageUrls, page_urls, page_urls_for_public_uri};
 use crate::request::{
     PageQuery, PageRequest, PageState, SourceFilter, decode_path_value, non_empty,
-    normalized_query, page_request_from_public_url, page_state, parse_document_kind,
+    normalized_query, page_request_from_public_uri, page_request_from_public_url, page_state,
+    parse_document_kind, public_uri,
 };
 use crate::scripts::{datastar_script, dialog_reconcile_script};
-use crate::templates::layout::ResultsContent;
-use crate::templates::{self, layout::PageUrls, modal::EntryData};
+use crate::templates::layout::{ResultsContent, head_metadata_script};
+use crate::templates::{self, modal::EntryData};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct StateQuery {
@@ -72,7 +73,7 @@ pub async fn root_page(
 ) -> impl IntoResponse {
     render_full_page_response(
         &state,
-        page_urls(&state, &headers, &uri),
+        page_urls(state.config.as_ref(), &headers, &uri),
         PageRequest {
             source: None,
             entry: None,
@@ -90,7 +91,7 @@ pub async fn source_page(
 ) -> impl IntoResponse {
     render_full_page_response(
         &state,
-        page_urls(&state, &headers, &uri),
+        page_urls(state.config.as_ref(), &headers, &uri),
         PageRequest {
             source: Some(source),
             entry: None,
@@ -110,7 +111,7 @@ pub async fn entry_page(
 
     render_full_page_response(
         &state,
-        page_urls(&state, &headers, &uri),
+        page_urls(state.config.as_ref(), &headers, &uri),
         PageRequest {
             source: Some(source),
             entry: Some(entry),
@@ -121,12 +122,22 @@ pub async fn entry_page(
 
 pub async fn state_events(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(query): Query<StateQuery>,
 ) -> Response {
-    let request = match page_request_from_public_url(&query.url) {
+    let target_uri = match public_uri(&query.url) {
+        Ok(uri) => uri,
+        Err(error) => {
+            let page_urls = page_urls(&state.config, &headers, &Uri::from_static("/"));
+            return sse_error_response(&page_urls, &error);
+        }
+    };
+    let page_urls = page_urls_for_public_uri(&state.config, &headers, &target_uri);
+
+    let request = match page_request_from_public_uri(&target_uri) {
         Ok(request) => request,
         Err(error) => {
-            return sse_error_response(&error);
+            return sse_error_response(&page_urls, &error);
         }
     };
 
@@ -134,38 +145,49 @@ pub async fn state_events(
     let page_state = match resolve_page_state(&state, &snapshot, &request) {
         Ok(page_state) => page_state,
         Err(error) => {
-            return sse_error_response(&error.to_string());
+            return sse_error_response(&page_urls, &error.to_string());
         }
     };
 
-    let patch_results =
-        should_patch_results(&state, &snapshot, query.previous_url.as_deref(), &request);
-    let needs_entry = page_state.detail.is_some();
+    let navigation = state_events_navigation(
+        &state,
+        &snapshot,
+        query.previous_url.as_deref(),
+        &page_state,
+    );
+    let has_entry_detail = page_state.detail.is_some();
 
-    let results_html = if patch_results {
-        if page_state.q.is_none() {
-            Some(templates::home::render(&state, &request, &page_state, &snapshot).into_string())
-        } else {
-            let search_result =
-                run_search_with_snapshot(&state, &snapshot, &page_state, 0, DEFAULT_LIMIT);
+    let search_result = if navigation.needs_search_result(&page_state) {
+        Some(run_search_with_snapshot(
+            &state,
+            &snapshot,
+            &page_state,
+            search_offset(&request),
+            DEFAULT_LIMIT,
+        ))
+    } else {
+        None
+    };
 
-            Some(match &search_result {
-                Ok(result) => templates::results::render(
-                    &page_state,
-                    &result.hits,
-                    result.total,
-                    &state.config,
-                )
-                .into_string(),
-                Err(ServiceError::Resolution(error)) => {
-                    return sse_error_response(&error.to_string());
-                }
-                Err(error) => {
-                    templates::results::render_error("Search failed", &format!("{error:#}"))
-                        .into_string()
-                }
-            })
-        }
+    if let Some(Err(ServiceError::Resolution(error))) = &search_result {
+        return sse_error_response(&page_urls, &error.to_string());
+    }
+
+    let search_error = search_error_message(&search_result);
+    let results_content = results_content_for_search(&search_result, search_error.as_deref());
+
+    let results_html = if navigation.patch_results {
+        Some(match &search_result {
+            Some(Ok(result)) => {
+                templates::results::render(&page_state, &result.hits, result.total, &state.config)
+                    .into_string()
+            }
+            Some(Err(error)) => {
+                templates::results::render_error("Search failed", &format!("{error:#}"))
+                    .into_string()
+            }
+            None => templates::home::render(&state, &request, &page_state, &snapshot).into_string(),
+        })
     } else {
         None
     };
@@ -173,11 +195,22 @@ pub async fn state_events(
     let entry = match load_entry_data_from_snapshot(
         &state,
         &page_state,
-        needs_entry.then_some(&snapshot),
+        has_entry_detail.then_some(&snapshot),
     ) {
         Ok(entry) => entry,
         Err(error) => {
-            return sse_entry_error_response(&state, &page_state, results_html, &error);
+            return sse_entry_error_response(
+                SseEntryErrorContext {
+                    state: &state,
+                    request: &request,
+                    page_state: &page_state,
+                    page_urls: &page_urls,
+                    snapshot: &snapshot,
+                    results_html,
+                    results_content,
+                },
+                &error,
+            );
         }
     };
     let modal_html = templates::modal::render(&state.config, &page_state, &entry).into_string();
@@ -195,36 +228,108 @@ pub async fn state_events(
         ExecuteScript::new(dialog_reconcile_script()).write_as_axum_sse_event()
     ));
 
+    let metadata = templates::layout::page_head_metadata(
+        &state,
+        &request,
+        &page_state,
+        &page_urls,
+        &snapshot,
+        results_content,
+        &entry,
+    );
+
+    events.push(Ok(
+        ExecuteScript::new(head_metadata_script(&metadata)).write_as_axum_sse_event()
+    ));
+
     Sse::new(stream::iter(events)).into_response()
 }
 
-fn should_patch_results(
+struct StateEventsNavigation {
+    patch_results: bool,
+    previous_state: Option<PageState>,
+}
+
+impl StateEventsNavigation {
+    fn is_modal_close(&self, next_state: &PageState) -> bool {
+        self.previous_state
+            .as_ref()
+            .is_some_and(|state| state.detail.is_some())
+            && next_state.detail.is_none()
+    }
+
+    fn needs_search_result(&self, next_state: &PageState) -> bool {
+        next_state.q.is_some()
+            && (self.patch_results
+                || (next_state.detail.is_none() && !self.is_modal_close(next_state)))
+    }
+}
+
+fn state_events_navigation(
     state: &AppState,
     snapshot: &ServedGenerationSnapshot,
     previous_url: Option<&str>,
-    request: &PageRequest,
-) -> bool {
+    next_state: &PageState,
+) -> StateEventsNavigation {
     let Some(previous_url) = previous_url.and_then(non_empty) else {
-        return true;
+        return StateEventsNavigation {
+            patch_results: true,
+            previous_state: None,
+        };
     };
 
     match page_request_from_public_url(previous_url) {
         Ok(previous_request) => {
             let previous_state = match resolve_page_state(state, snapshot, &previous_request) {
                 Ok(previous_state) => previous_state,
-                Err(_) => return true,
-            };
-            let next_state = match resolve_page_state(state, snapshot, request) {
-                Ok(next_state) => next_state,
-                Err(_) => return true,
+                Err(_) => {
+                    return StateEventsNavigation {
+                        patch_results: true,
+                        previous_state: None,
+                    };
+                }
             };
 
-            previous_state.q != next_state.q
+            let patch_results = previous_state.q != next_state.q
                 || previous_state.source_filter != next_state.source_filter
                 || previous_state.source_ref != next_state.source_ref
-                || previous_state.active_ref_set() != next_state.active_ref_set()
+                || previous_state.active_ref_set() != next_state.active_ref_set();
+
+            StateEventsNavigation {
+                patch_results,
+                previous_state: Some(previous_state),
+            }
         }
-        Err(_) => true,
+        Err(_) => StateEventsNavigation {
+            patch_results: true,
+            previous_state: None,
+        },
+    }
+}
+
+fn search_offset(request: &PageRequest) -> usize {
+    let page = request.query.page.unwrap_or(1).max(1);
+    (page - 1) * DEFAULT_LIMIT
+}
+
+fn search_error_message(search_result: &Option<ServiceResult<SearchResult>>) -> Option<String> {
+    match search_result {
+        Some(Err(error)) => Some(format!("{error:#}")),
+        _ => None,
+    }
+}
+
+fn results_content_for_search<'a>(
+    search_result: &'a Option<ServiceResult<SearchResult>>,
+    search_error: Option<&'a str>,
+) -> ResultsContent<'a> {
+    match search_result {
+        Some(Ok(result)) => ResultsContent::SearchResults(result),
+        Some(Err(_)) => ResultsContent::Error {
+            title: "Search failed",
+            message: search_error.unwrap_or("search failed"),
+        },
+        None => ResultsContent::Home,
     }
 }
 
@@ -282,8 +387,6 @@ fn render_full_page_response(
         }
     };
 
-    let page = request.query.page.unwrap_or(1).max(1);
-    let offset = (page - 1) * DEFAULT_LIMIT;
     let needs_search = normalized_query(&request.query).is_some();
     let needs_entry = page_state.detail.is_some();
 
@@ -292,26 +395,15 @@ fn render_full_page_response(
             state,
             &snapshot,
             &page_state,
-            offset,
+            search_offset(&request),
             DEFAULT_LIMIT,
         ))
     } else {
         None
     };
 
-    let search_error = match &search_result {
-        Some(Err(error)) => Some(format!("{error:#}")),
-        _ => None,
-    };
-
-    let results_content = match &search_result {
-        Some(Ok(result)) => ResultsContent::SearchResults(result),
-        Some(Err(_)) => ResultsContent::Error {
-            title: "Search failed",
-            message: search_error.as_deref().unwrap_or("search failed"),
-        },
-        None => ResultsContent::Home,
-    };
+    let search_error = search_error_message(&search_result);
+    let results_content = results_content_for_search(&search_result, search_error.as_deref());
 
     let entry =
         match load_entry_data_from_snapshot(state, &page_state, needs_entry.then_some(&snapshot)) {
@@ -409,18 +501,8 @@ fn render_full_page_with_entry_error_response(
     search_result: &Option<ServiceResult<SearchResult>>,
     error: &EntryLoadError,
 ) -> Response {
-    let search_error = match search_result {
-        Some(Err(error)) => Some(format!("{error:#}")),
-        _ => None,
-    };
-    let results_content = match search_result {
-        Some(Ok(result)) => ResultsContent::SearchResults(result),
-        Some(Err(_)) => ResultsContent::Error {
-            title: "Search failed",
-            message: search_error.as_deref().unwrap_or("search failed"),
-        },
-        None => ResultsContent::Home,
-    };
+    let search_error = search_error_message(search_result);
+    let results_content = results_content_for_search(search_result, search_error.as_deref());
     let entry = entry_data_for_load_error(error);
 
     let markup = templates::layout::render_full_page(
@@ -526,26 +608,45 @@ fn status_for_resolution_error(error: &RequestResolutionError) -> StatusCode {
     }
 }
 
-fn sse_error_response(error: &str) -> Response {
+fn sse_error_response(page_urls: &PageUrls, error: &str) -> Response {
     let html = templates::results::render_error("Request failed", error).into_string();
-    let event = PatchElements::new(html).write_as_axum_sse_event();
-    let events: Vec<std::result::Result<Event, Infallible>> = vec![Ok(event)];
+    let metadata = templates::layout::noindex_head_metadata(page_urls, "Request failed", error);
+
+    let events: Vec<std::result::Result<Event, Infallible>> = vec![
+        Ok(PatchElements::new(html).write_as_axum_sse_event()),
+        Ok(ExecuteScript::new(head_metadata_script(&metadata)).write_as_axum_sse_event()),
+    ];
 
     Sse::new(stream::iter(events)).into_response()
 }
 
-fn sse_entry_error_response(
-    state: &AppState,
-    page_state: &PageState,
+struct SseEntryErrorContext<'a> {
+    state: &'a AppState,
+    request: &'a PageRequest,
+    page_state: &'a PageState,
+    page_urls: &'a PageUrls,
+    snapshot: &'a ServedGenerationSnapshot,
     results_html: Option<String>,
-    error: &EntryLoadError,
-) -> Response {
+    results_content: ResultsContent<'a>,
+}
+
+fn sse_entry_error_response(context: SseEntryErrorContext<'_>, error: &EntryLoadError) -> Response {
     let entry = entry_data_for_load_error(error);
-    let modal_html = templates::modal::render(&state.config, page_state, &entry).into_string();
+    let modal_html =
+        templates::modal::render(&context.state.config, context.page_state, &entry).into_string();
+    let metadata = templates::layout::page_head_metadata(
+        context.state,
+        context.request,
+        context.page_state,
+        context.page_urls,
+        context.snapshot,
+        context.results_content,
+        &entry,
+    );
 
     let mut events: Vec<std::result::Result<Event, Infallible>> = Vec::new();
 
-    if let Some(results_html) = results_html {
+    if let Some(results_html) = context.results_html {
         events.push(Ok(
             PatchElements::new(results_html).write_as_axum_sse_event()
         ));
@@ -554,6 +655,9 @@ fn sse_entry_error_response(
     events.push(Ok(PatchElements::new(modal_html).write_as_axum_sse_event()));
     events.push(Ok(
         ExecuteScript::new(dialog_reconcile_script()).write_as_axum_sse_event()
+    ));
+    events.push(Ok(
+        ExecuteScript::new(head_metadata_script(&metadata)).write_as_axum_sse_event()
     ));
 
     (error.status(), Sse::new(stream::iter(events))).into_response()
@@ -610,102 +714,6 @@ fn load_entry_data_from_snapshot(
         Ok(EntryLookupResult::Ambiguous(documents)) => Ok(EntryData::Ambiguous(documents)),
         Err(error) => Err(EntryLoadError::Lookup(error)),
     }
-}
-
-fn page_urls(state: &AppState, headers: &HeaderMap, uri: &Uri) -> PageUrls {
-    let path = uri.path();
-    let query = uri.query();
-
-    if let Some(public_url) = state.config.server.public_url.as_deref()
-        && let Ok(base) = Url::parse(public_url)
-    {
-        return page_urls_from_base(base, path, query);
-    }
-
-    page_urls_from_headers(headers, path, query)
-}
-
-fn page_urls_from_base(mut base: Url, path: &str, query: Option<&str>) -> PageUrls {
-    let base_path = base.path().trim_end_matches('/').to_owned();
-    let path = if path == "/" {
-        if base_path.is_empty() {
-            "/".to_owned()
-        } else {
-            format!("{base_path}/")
-        }
-    } else {
-        format!("{base_path}{path}")
-    };
-
-    base.set_path(&path);
-    base.set_query(query);
-    base.set_fragment(None);
-
-    let current_url = base.to_string();
-
-    base.set_path(&format!("{base_path}/apple-touch-icon.png"));
-    base.set_query(None);
-
-    PageUrls {
-        current_url,
-        image_url: base.to_string(),
-    }
-}
-
-fn page_urls_from_headers(headers: &HeaderMap, path: &str, query: Option<&str>) -> PageUrls {
-    let forwarded = forwarded_proto_host(headers);
-    let proto = forwarded
-        .as_ref()
-        .and_then(|(proto, _)| proto.as_deref())
-        .or_else(|| first_header_value(headers, "x-forwarded-proto"))
-        .unwrap_or("http");
-    let host = forwarded
-        .as_ref()
-        .and_then(|(_, host)| host.as_deref())
-        .or_else(|| first_header_value(headers, header::HOST.as_str()))
-        .unwrap_or("localhost");
-    let origin = format!("{proto}://{host}");
-    let path_and_query = match query {
-        Some(query) => format!("{path}?{query}"),
-        None => path.to_owned(),
-    };
-
-    PageUrls {
-        current_url: format!("{origin}{path_and_query}"),
-        image_url: format!("{origin}/apple-touch-icon.png"),
-    }
-}
-
-fn forwarded_proto_host(headers: &HeaderMap) -> Option<(Option<String>, Option<String>)> {
-    let header = first_header_value(headers, "forwarded")?;
-    let first = header.split(',').next().unwrap_or(header);
-    let mut proto = None;
-    let mut host = None;
-
-    for part in first.split(';') {
-        let Some((key, value)) = part.trim().split_once('=') else {
-            continue;
-        };
-        let value = value.trim().trim_matches('"');
-        match key.trim().to_ascii_lowercase().as_str() {
-            "proto" => proto = Some(value.to_owned()),
-            "host" => host = Some(value.to_owned()),
-            _ => {}
-        }
-    }
-
-    (proto.is_some() || host.is_some()).then_some((proto, host))
-}
-
-fn first_header_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
-    headers
-        .get(name)?
-        .to_str()
-        .ok()?
-        .split(',')
-        .next()
-        .map(str::trim)
-        .and_then(non_empty)
 }
 
 fn run_search(
@@ -775,56 +783,71 @@ fn search_request_for_page_state(
 
 #[cfg(test)]
 mod tests {
-    use axum::http::{HeaderMap, HeaderValue};
-    use url::Url;
+    use super::*;
+    use crate::request::{DetailState, RefScope};
 
-    use super::{page_urls_from_base, page_urls_from_headers};
+    fn page_state(q: Option<&str>, has_entry_detail: bool) -> PageState {
+        PageState {
+            q: q.map(ToOwned::to_owned),
+            page: None,
+            source_filter: SourceFilter::All,
+            ref_scope: RefScope::Ref,
+            source_ref: None,
+            detail: has_entry_detail.then(|| DetailState {
+                source: "fixtures".to_owned(),
+                entry: "programs.git.enable".to_owned(),
+                ref_id: None,
+                kind: None,
+            }),
+        }
+    }
+
+    fn navigation(patch_results: bool, previous_state: Option<PageState>) -> StateEventsNavigation {
+        StateEventsNavigation {
+            patch_results,
+            previous_state,
+        }
+    }
 
     #[test]
-    fn page_urls_use_public_url_origin() {
-        let urls = page_urls_from_base(
-            Url::parse("https://search.example.com/").unwrap(),
-            "/nixpkgs/git",
-            Some("q=git"),
-        );
+    fn state_events_search_needed_when_results_are_patched() {
+        let navigation = navigation(true, Some(page_state(Some("git"), false)));
 
-        assert_eq!(
-            urls.current_url,
-            "https://search.example.com/nixpkgs/git?q=git"
-        );
-        assert_eq!(
-            urls.image_url,
-            "https://search.example.com/apple-touch-icon.png"
+        assert!(navigation.needs_search_result(&page_state(Some("git"), true)));
+        assert!(navigation.needs_search_result(&page_state(Some("git"), false)));
+    }
+
+    #[test]
+    fn state_events_search_needed_for_query_metadata_without_entry() {
+        assert!(navigation(false, None).needs_search_result(&page_state(Some("git"), false)));
+        assert!(
+            navigation(false, Some(page_state(Some("git"), false)))
+                .needs_search_result(&page_state(Some("git"), false))
         );
     }
 
     #[test]
-    fn page_urls_fall_back_to_forwarded_headers() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "forwarded",
-            HeaderValue::from_static("for=127.0.0.1;proto=https;host=nixsearch.example.com"),
-        );
-        let urls = page_urls_from_headers(&headers, "/", None);
-
-        assert_eq!(urls.current_url, "https://nixsearch.example.com/");
-        assert_eq!(
-            urls.image_url,
-            "https://nixsearch.example.com/apple-touch-icon.png"
+    fn state_events_search_skipped_for_modal_only_entry_navigation() {
+        assert!(
+            !navigation(false, Some(page_state(Some("git"), false)))
+                .needs_search_result(&page_state(Some("git"), true))
         );
     }
 
     #[test]
-    fn page_urls_fall_back_to_host_and_proto_headers() {
-        let mut headers = HeaderMap::new();
-        headers.insert("host", HeaderValue::from_static("localhost:3000"));
-        headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
-        let urls = page_urls_from_headers(&headers, "/nixpkgs", Some("q=git"));
+    fn state_events_search_skipped_for_modal_close_navigation() {
+        assert!(
+            !navigation(false, Some(page_state(Some("git"), true)))
+                .needs_search_result(&page_state(Some("git"), false))
+        );
+    }
 
-        assert_eq!(urls.current_url, "https://localhost:3000/nixpkgs?q=git");
-        assert_eq!(
-            urls.image_url,
-            "https://localhost:3000/apple-touch-icon.png"
+    #[test]
+    fn state_events_search_skipped_without_query() {
+        assert!(!navigation(true, None).needs_search_result(&page_state(None, false)));
+        assert!(
+            !navigation(false, Some(page_state(None, true)))
+                .needs_search_result(&page_state(None, true))
         );
     }
 }

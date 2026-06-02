@@ -1,3 +1,4 @@
+use axum::http::Uri;
 use serde::Deserialize;
 
 use nixsearch_config::app::AppConfig;
@@ -268,10 +269,33 @@ pub fn decode_path_value(value: &str) -> Option<String> {
         .map(|value| value.into_owned())
 }
 
+pub(crate) fn public_uri(raw_url: &str) -> std::result::Result<Uri, String> {
+    let raw_url = raw_url
+        .split_once('#')
+        .map_or(raw_url, |(before_fragment, _)| before_fragment);
+    let raw_url = if raw_url.is_empty() { "/" } else { raw_url };
+
+    let normalized;
+    let raw_url = if raw_url.starts_with('/') || raw_url.contains("://") {
+        raw_url
+    } else {
+        normalized = format!("/{raw_url}");
+        &normalized
+    };
+
+    raw_url
+        .parse::<Uri>()
+        .map_err(|error| format!("invalid public URL: {error}"))
+}
+
 pub fn page_request_from_public_url(raw_url: &str) -> std::result::Result<PageRequest, String> {
-    let (raw_path, raw_query) = raw_url
-        .split_once('?')
-        .map_or((raw_url, ""), |(path, query)| (path, query));
+    let uri = public_uri(raw_url)?;
+    page_request_from_public_uri(&uri)
+}
+
+pub(crate) fn page_request_from_public_uri(uri: &Uri) -> std::result::Result<PageRequest, String> {
+    let raw_path = uri.path();
+    let raw_query = uri.query().unwrap_or("");
 
     let path_parts = raw_path
         .trim_start_matches('/')
@@ -433,8 +457,45 @@ mod tests {
     }
 
     #[test]
+    fn public_uri_normalizes_path_query_urls() {
+        let uri = public_uri("fixtures?q=git#ignored").unwrap();
+
+        assert_eq!(uri.path(), "/fixtures");
+        assert_eq!(uri.query(), Some("q=git"));
+    }
+
+    #[test]
+    fn public_uri_normalizes_query_only_urls() {
+        let uri = public_uri("?q=git").unwrap();
+
+        assert_eq!(uri.path(), "/");
+        assert_eq!(uri.query(), Some("q=git"));
+    }
+
+    #[test]
+    fn public_uri_accepts_absolute_urls() {
+        let uri = public_uri("https://search.example.com/fixtures?q=git#ignored").unwrap();
+
+        assert_eq!(uri.path(), "/fixtures");
+        assert_eq!(uri.query(), Some("q=git"));
+    }
+
+    #[test]
     fn parses_source_search_public_url() {
         let request = page_request_from_public_url("/fixtures?q=git&ref=small").unwrap();
+        assert_eq!(request.source.as_deref(), Some("fixtures"));
+        assert_eq!(request.entry, None);
+        assert_eq!(request.query.q.as_deref(), Some("git"));
+        assert_eq!(request.query.ref_id.as_deref(), Some("small"));
+    }
+
+    #[test]
+    fn parses_absolute_public_url() {
+        let request = page_request_from_public_url(
+            "https://search.example.com/fixtures?q=git&ref=small#ignored",
+        )
+        .unwrap();
+
         assert_eq!(request.source.as_deref(), Some("fixtures"));
         assert_eq!(request.entry, None);
         assert_eq!(request.query.q.as_deref(), Some("git"));
