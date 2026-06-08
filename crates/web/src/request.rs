@@ -288,6 +288,7 @@ pub(crate) fn public_uri(raw_url: &str) -> std::result::Result<Uri, String> {
         .map_err(|error| format!("invalid public URL: {error}"))
 }
 
+#[cfg(test)]
 pub fn page_request_from_public_url(raw_url: &str) -> std::result::Result<PageRequest, String> {
     let uri = public_uri(raw_url)?;
     page_request_from_public_uri(&uri)

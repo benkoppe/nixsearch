@@ -1,8 +1,7 @@
 (() => {
   const RECONCILE_EVENT = "nixsearch-reconcile";
-  const metadata = JSON.parse(
-    document.getElementById("source-metadata").textContent,
-  );
+  const metadata = parseJsonScript("source-metadata");
+  const initialHistoryMetadata = parseJsonScript("initial-history-metadata");
   const PAGE_SIZE = __DEFAULT_LIMIT__;
   const VIRTUAL_REPLACE_LIMIT = PAGE_SIZE * 3;
   const VIRTUAL_JUMP_GAP = PAGE_SIZE * 4;
@@ -18,34 +17,133 @@
     return window.location.pathname + window.location.search;
   }
 
-  function titleForUrl(url) {
-    const parsed = new URL(url, window.location.href);
-    const params = new URLSearchParams(parsed.search);
-    const parts = parsed.pathname.split("/").filter(Boolean);
-    const sourceId =
-      params.get("source") === "__SOURCE_ALL_VALUE__"
-        ? ""
-        : parts[0]
-          ? decodeURIComponent(parts[0])
-          : "";
-    const q = (params.get("q") || "").trim();
-    const titleParts = [];
+  function parseJsonScript(id) {
+    const el = document.getElementById(id);
+    if (!el) return {};
 
-    if (q) titleParts.push(q);
-
-    const source = sourceMetadata(sourceId);
-    if (source) {
-      titleParts.push(source.name || source.id);
-    } else if (sourceId) {
-      titleParts.push(sourceId);
+    try {
+      const parsed = JSON.parse(el.textContent || "{}");
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
     }
-
-    titleParts.push("nixsearch");
-    return titleParts.join(" · ");
   }
 
-  function syncTitle(url = currentPublicUrl()) {
-    document.title = titleForUrl(url);
+  function normalizePublicUrl(url = currentPublicUrl()) {
+    const parsed = new URL(url || currentPublicUrl(), window.location.href);
+    return parsed.pathname + parsed.search;
+  }
+
+  function headMetaContent(attribute, value) {
+    const el = metaByAttribute(attribute, value);
+    return el ? el.getAttribute("content") || "" : null;
+  }
+
+  function currentHeadMetadata() {
+    const canonical = document.head.querySelector('link[rel~="canonical"]');
+
+    return {
+      title: document.title,
+      description: headMetaContent("name", "description"),
+      robots: headMetaContent("name", "robots"),
+      url: headMetaContent("property", "og:url"),
+      imageUrl: headMetaContent("property", "og:image"),
+      canonicalUrl: canonical ? canonical.getAttribute("href") || "" : null,
+    };
+  }
+
+  function currentHistoryState() {
+    return history.state && typeof history.state === "object" ? history.state : {};
+  }
+
+  function applyReturnMetadataState(state, extra = {}) {
+    const next = { ...state };
+
+    if (extra.returnHeadMetadata) {
+      next.nixsearchReturnHeadMetadata = extra.returnHeadMetadata;
+    } else if (extra.clearReturnHeadMetadata) {
+      delete next.nixsearchReturnHeadMetadata;
+    }
+
+    return next;
+  }
+
+  function historyStateWithExactMetadata(
+    metadata,
+    extra = {},
+    url = currentPublicUrl(),
+  ) {
+    const state =
+      extra.baseState && typeof extra.baseState === "object"
+        ? extra.baseState
+        : currentHistoryState();
+    const next = applyReturnMetadataState(state, extra);
+
+    next.nixsearchHeadMetadata = metadata;
+    next.nixsearchHeadMetadataUrl = normalizePublicUrl(url);
+    delete next.nixsearchHeadMetadataPendingUrl;
+
+    return next;
+  }
+
+  function pendingHistoryState(url, extra = {}) {
+    const state =
+      extra.baseState && typeof extra.baseState === "object"
+        ? extra.baseState
+        : {};
+    const next = applyReturnMetadataState(state, extra);
+
+    next.nixsearchHeadMetadataPendingUrl = normalizePublicUrl(url);
+    delete next.nixsearchHeadMetadata;
+    delete next.nixsearchHeadMetadataUrl;
+
+    return next;
+  }
+
+  function exactHeadMetadataFromState(
+    state = currentHistoryState(),
+    url = currentPublicUrl(),
+  ) {
+    if (!state || typeof state !== "object") return null;
+    if (!state.nixsearchHeadMetadata) return null;
+    if (state.nixsearchHeadMetadataUrl !== normalizePublicUrl(url)) return null;
+
+    return state.nixsearchHeadMetadata;
+  }
+
+  function storeExactHistoryHeadMetadata(
+    metadata = currentHeadMetadata(),
+    extra = {},
+  ) {
+    history.replaceState(
+      historyStateWithExactMetadata(metadata, extra),
+      "",
+      window.location.href,
+    );
+    return metadata;
+  }
+
+  function writeHeadMetadata(metadata) {
+    if (!metadata || typeof metadata !== "object") return false;
+
+    if (metadata.title) document.title = metadata.title;
+
+    setMeta("name", "description", metadata.description);
+    setMeta("name", "robots", metadata.robots);
+    setMeta("property", "og:url", metadata.url);
+    setMeta("property", "og:title", metadata.title);
+    setMeta("property", "og:description", metadata.description);
+    setMeta("property", "og:image", metadata.imageUrl);
+    setCanonicalUrl(metadata.canonicalUrl);
+    return true;
+  }
+
+  function restoreHeadMetadata(metadata) {
+    if (!metadata) return false;
+
+    if (!writeHeadMetadata(metadata)) return false;
+    storeExactHistoryHeadMetadata(currentHeadMetadata());
+    return true;
   }
 
   function metaByAttribute(attribute, value) {
@@ -93,21 +191,20 @@
     el.setAttribute("href", String(url));
   }
 
-  function applyHeadMetadata(metadata) {
+  function applyHeadMetadata(metadata, url = currentPublicUrl()) {
     if (!metadata || typeof metadata !== "object") return;
+    const target = url ? normalizePublicUrl(url) : currentPublicUrl();
+    if (url && target !== currentPublicUrl()) return false;
 
-    if (metadata.title) document.title = metadata.title;
-
-    setMeta("name", "description", metadata.description);
-    setMeta("name", "robots", metadata.robots);
-    setMeta("property", "og:url", metadata.url);
-    setMeta("property", "og:title", metadata.title);
-    setMeta("property", "og:description", metadata.description);
-    setMeta("property", "og:image", metadata.imageUrl);
-    setCanonicalUrl(metadata.canonicalUrl);
+    if (!writeHeadMetadata(metadata)) return false;
+    storeExactHistoryHeadMetadata(currentHeadMetadata());
+    return true;
   }
 
   window.nixsearchApplyHeadMetadata = applyHeadMetadata;
+  storeExactHistoryHeadMetadata(currentHeadMetadata(), {
+    returnHeadMetadata: initialHistoryMetadata.returnHeadMetadata,
+  });
 
   function replaceVisiblePageInUrl(page) {
     const nextPage = Math.max(1, page || 1);
@@ -123,8 +220,7 @@
     const target = url.pathname + url.search;
     if (target === previous) return;
 
-    history.replaceState(null, "", target);
-    currentUrl = currentPublicUrl();
+    navigate(target, { push: false });
   }
 
   function currentPageFromUrl() {
@@ -251,6 +347,22 @@
 
   function shouldLoadResults(previousUrl, nextUrl) {
     return resultsContextForUrl(previousUrl) !== resultsContextForUrl(nextUrl);
+  }
+
+  function urlHasEntryDetail(url) {
+    const parsed = new URL(url, window.location.href);
+    return parsed.pathname.split("/").filter(Boolean).length >= 2;
+  }
+
+  function returnHeadMetadataForNavigation(current, target, currentMetadata) {
+    if (!urlHasEntryDetail(target)) return null;
+
+    const state = currentHistoryState();
+    if (urlHasEntryDetail(current) && state.nixsearchReturnHeadMetadata) {
+      return state.nixsearchReturnHeadMetadata;
+    }
+
+    return currentMetadata;
   }
 
   function getActiveSourceTab() {
@@ -769,36 +881,51 @@
     return true;
   }
 
-  function navigate(url, { push = true, syncInputs = false } = {}) {
+  function navigate(
+    url,
+    { push = true, syncInputs = false, restoreMetadata = null } = {},
+  ) {
     const next = new URL(url, window.location.href);
     const target = next.pathname + next.search;
     const current = currentPublicUrl();
+    const currentMetadata = exactHeadMetadataFromState(currentHistoryState(), current);
+    const returnHeadMetadata = returnHeadMetadataForNavigation(
+      current,
+      target,
+      currentMetadata,
+    );
 
     if (target === current) {
       if (syncInputs) {
         syncInputsFromUrl();
       }
-      syncTitle(target);
+      if (restoreMetadata) {
+        restoreHeadMetadata(restoreMetadata);
+      }
       return false;
     }
 
     const loadsResults = shouldLoadResults(current, target);
+    const nextState = pendingHistoryState(target, { returnHeadMetadata });
 
     if (push) {
-      history.pushState(null, "", target);
+      history.pushState(nextState, "", target);
     } else {
-      history.replaceState(null, "", target);
+      history.replaceState(nextState, "", target);
     }
 
     if (syncInputs) {
       syncInputsFromUrl();
     }
 
+    if (restoreMetadata) {
+      restoreHeadMetadata(restoreMetadata);
+    }
+
     setLoading(loadsResults);
     if (loadsResults) {
       window.scrollTo(0, 0);
     }
-    syncTitle(target);
     reconcile(current);
     return true;
   }
@@ -806,10 +933,11 @@
   function closeEntryModal(dialog) {
     const url = dialog.getAttribute("data-close-url");
     if (!url) return false;
+    const returnMetadata = currentHistoryState().nixsearchReturnHeadMetadata;
 
     resetQueryHistoryGrouping();
     resetSourceKeyboardHistoryGrouping();
-    navigate(url);
+    navigate(url, { restoreMetadata: returnMetadata, syncInputs: true });
     return true;
   }
 
@@ -935,6 +1063,12 @@
     if (!link) return;
     if (link.target === "_blank") return;
     if (link.hasAttribute("download")) return;
+
+    if (link.matches(".modal-backdrop, [data-role='entry-close']")) {
+      const dialog = document.getElementById("entry-modal");
+      if (dialog && closeEntryModal(dialog)) evt.preventDefault();
+      return;
+    }
 
     const url = new URL(link.href, window.location.href);
     if (url.origin !== window.location.origin) return;
@@ -1112,13 +1246,13 @@
     navigate(buildSearchUrlFromInputs());
   });
 
-  window.addEventListener("popstate", () => {
+  window.addEventListener("popstate", (evt) => {
     const previous = currentUrl;
     resetQueryHistoryGrouping();
     resetSourceKeyboardHistoryGrouping();
     syncInputsFromUrl();
+    restoreHeadMetadata(exactHeadMetadataFromState(evt.state, currentPublicUrl()));
     setLoading(shouldLoadResults(previous, currentPublicUrl()));
-    syncTitle();
     reconcile(previous);
   });
 
@@ -1127,8 +1261,10 @@
 
     syncInputsFromUrl();
     setLoading(false);
-    syncTitle();
     currentUrl = currentPublicUrl();
+    if (!restoreHeadMetadata(exactHeadMetadataFromState())) {
+      reconcile("");
+    }
   });
 
   window.nixsearchNavigate = navigate;

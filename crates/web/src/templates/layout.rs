@@ -61,6 +61,7 @@ pub fn render_full_page(
     served_generation: &ServedGenerationSnapshot,
     results_content: ResultsContent<'_>,
     entry: &EntryData,
+    initial_return_metadata: Option<&PageMetadata>,
 ) -> Markup {
     let q = request.query.q.as_deref().unwrap_or("");
     let source_filter = &page_state.source_filter;
@@ -75,6 +76,7 @@ pub fn render_full_page(
 
     let modal_markup = modal::render(&state.config, page_state, entry);
     let source_metadata = source_metadata_json(&state.config);
+    let initial_history_metadata = initial_return_metadata.map(initial_history_metadata_json);
 
     let metadata = page_head_metadata(
         state,
@@ -156,6 +158,11 @@ pub fn render_full_page(
 
                 script #source-metadata type="application/json" {
                     (PreEscaped(&source_metadata))
+                }
+                @if let Some(initial_history_metadata) = &initial_history_metadata {
+                    script #initial-history-metadata type="application/json" {
+                        (PreEscaped(initial_history_metadata))
+                    }
                 }
                 script { (PreEscaped(navigation_script())) }
             }
@@ -248,9 +255,16 @@ pub(crate) fn noindex_head_metadata(
     }
 }
 
-pub(crate) fn head_metadata_script(metadata: &PageMetadata) -> String {
+pub(crate) fn head_metadata_script(
+    metadata: &PageMetadata,
+    target_public_url: Option<&str>,
+) -> String {
     let json = serde_json::to_string(metadata).expect("page metadata should serialize");
-    format!("if (window.nixsearchApplyHeadMetadata) window.nixsearchApplyHeadMetadata({json});")
+    let target_json =
+        serde_json::to_string(&target_public_url).expect("target URL should serialize");
+    format!(
+        "if (window.nixsearchApplyHeadMetadata) window.nixsearchApplyHeadMetadata({json}, {target_json});"
+    )
 }
 
 fn page_metadata(
@@ -547,12 +561,33 @@ fn source_metadata_json(config: &AppConfig) -> String {
         })
         .collect::<Vec<_>>();
 
-    serde_json::json!({
+    json_script_content(&serde_json::json!({
         "sources": sources,
         "refSets": ref_sets,
         "defaultRefSet": config.default_ref_set().unwrap_or(""),
+    }))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InitialHistoryMetadata<'a> {
+    return_head_metadata: Option<&'a PageMetadata>,
+}
+
+fn initial_history_metadata_json(return_head_metadata: &PageMetadata) -> String {
+    json_script_content(&InitialHistoryMetadata {
+        return_head_metadata: Some(return_head_metadata),
     })
-    .to_string()
+}
+
+fn json_script_content<T: Serialize>(value: &T) -> String {
+    serde_json::to_string(value)
+        .expect("JSON script payload should serialize")
+        .replace('&', "\\u0026")
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029")
 }
 
 #[cfg(test)]
@@ -568,8 +603,8 @@ mod tests {
     use crate::request::{PageQuery, PageRequest, SourceFilter};
 
     use super::{
-        EntryData, IndexMetadata, analytics_script, description_for, page_metadata, title_for,
-        title_for_entry,
+        EntryData, IndexMetadata, analytics_script, description_for, json_script_content,
+        page_metadata, title_for, title_for_entry,
     };
 
     fn config() -> nixsearch_config::app::AppConfig {
@@ -644,6 +679,16 @@ mod tests {
             analytics_script(&config.server.analytics_script).into_string(),
             r#"<script src="https://example.com/script.js?x=1&amp;y=2" data-site-id="&lt;site&gt;&amp;&quot;id&quot;"></script>"#
         );
+    }
+
+    #[test]
+    fn json_script_content_escapes_script_breakout_sequences() {
+        let json = json_script_content(&serde_json::json!({
+            "value": "</script><b>&"
+        }));
+
+        assert!(!json.contains("</script>"));
+        assert!(json.contains(r#"\u003c/script\u003e\u003cb\u003e\u0026"#));
     }
 
     #[test]

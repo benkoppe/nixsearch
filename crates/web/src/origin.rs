@@ -3,7 +3,7 @@ use url::Url;
 
 use nixsearch_config::app::AppConfig;
 
-use crate::request::non_empty;
+use crate::request::{non_empty, public_uri};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageUrls {
@@ -26,6 +26,32 @@ pub fn page_urls(config: &AppConfig, headers: &HeaderMap, uri: &Uri) -> PageUrls
     page_urls_for_uri(config, headers, uri)
 }
 
+pub(crate) fn public_uri_for_request(
+    config: &AppConfig,
+    headers: &HeaderMap,
+    raw_url: &str,
+) -> std::result::Result<Uri, String> {
+    let uri = public_uri(raw_url)?;
+
+    if let Some(url_origin) = absolute_url_origin(raw_url) {
+        let trusted_origin = origin_for_request(config, headers);
+        if url_origin != trusted_origin {
+            return Err(format!(
+                "public URL origin {url_origin:?} does not match expected origin {trusted_origin:?}"
+            ));
+        }
+    }
+
+    Ok(uri)
+}
+
+pub(crate) fn public_path_and_query(uri: &Uri) -> String {
+    match uri.query() {
+        Some(query) => format!("{}?{query}", uri.path()),
+        None => uri.path().to_owned(),
+    }
+}
+
 pub(crate) fn page_urls_for_public_uri(
     config: &AppConfig,
     headers: &HeaderMap,
@@ -38,21 +64,31 @@ fn page_urls_for_uri(config: &AppConfig, headers: &HeaderMap, uri: &Uri) -> Page
     let path = uri.path();
     let query = uri.query();
 
-    if let Some(public_url) = config.server.public_url.as_deref()
-        && let Ok(base) = Url::parse(public_url)
-    {
-        return page_urls_from_base(base, path, query);
-    }
-
-    page_urls_from_headers(headers, path, query)
+    page_urls_from_origin(origin_for_request(config, headers), path, query)
 }
 
+#[cfg(test)]
 fn page_urls_from_base(base: Url, path: &str, query: Option<&str>) -> PageUrls {
     let origin = origin_from_url(base);
     page_urls_from_origin(origin, path, query)
 }
 
+fn origin_for_request(config: &AppConfig, headers: &HeaderMap) -> String {
+    if let Some(public_url) = config.server.public_url.as_deref()
+        && let Ok(base) = Url::parse(public_url)
+    {
+        return origin_from_url(base);
+    }
+
+    origin_from_headers(headers)
+}
+
+#[cfg(test)]
 fn page_urls_from_headers(headers: &HeaderMap, path: &str, query: Option<&str>) -> PageUrls {
+    page_urls_from_origin(origin_from_headers(headers), path, query)
+}
+
+fn origin_from_headers(headers: &HeaderMap) -> String {
     let forwarded = forwarded_proto_host(headers);
     let proto = forwarded
         .as_ref()
@@ -66,7 +102,8 @@ fn page_urls_from_headers(headers: &HeaderMap, path: &str, query: Option<&str>) 
         .or_else(|| first_header_value(headers, header::HOST.as_str()))
         .unwrap_or("localhost");
 
-    page_urls_from_origin(format!("{proto}://{host}"), path, query)
+    let origin = format!("{proto}://{host}");
+    Url::parse(&origin).map(origin_from_url).unwrap_or(origin)
 }
 
 fn page_urls_from_origin(origin: String, path: &str, query: Option<&str>) -> PageUrls {
@@ -87,6 +124,15 @@ fn origin_from_url(mut url: Url) -> String {
     url.set_query(None);
     url.set_fragment(None);
     url.to_string().trim_end_matches('/').to_owned()
+}
+
+fn absolute_url_origin(raw_url: &str) -> Option<String> {
+    let raw_url = raw_url
+        .split_once('#')
+        .map_or(raw_url, |(before_fragment, _)| before_fragment);
+    let url = Url::parse(raw_url).ok()?;
+
+    url.host_str().is_some().then(|| origin_from_url(url))
 }
 
 fn forwarded_proto_host(headers: &HeaderMap) -> Option<(Option<String>, Option<String>)> {
@@ -127,7 +173,10 @@ mod tests {
     use nixsearch_config::app::AppConfig;
     use url::Url;
 
-    use super::{page_urls, page_urls_for_public_uri, page_urls_from_base, page_urls_from_headers};
+    use super::{
+        page_urls, page_urls_for_public_uri, page_urls_from_base, page_urls_from_headers,
+        public_uri_for_request,
+    };
 
     #[test]
     fn page_urls_use_public_url_origin() {
@@ -263,5 +312,50 @@ mod tests {
             urls.current_url,
             "https://search.example.com/fixtures?q=git"
         );
+    }
+
+    #[test]
+    fn public_uri_for_request_accepts_matching_public_url_origin() {
+        let mut config = AppConfig::default();
+        config.server.public_url = Some("https://search.example.com/".to_owned());
+
+        let headers = HeaderMap::new();
+        let uri = public_uri_for_request(
+            &config,
+            &headers,
+            "https://search.example.com/fixtures?q=git#ignored",
+        )
+        .unwrap();
+
+        assert_eq!(uri.path(), "/fixtures");
+        assert_eq!(uri.query(), Some("q=git"));
+    }
+
+    #[test]
+    fn public_uri_for_request_rejects_foreign_public_url_origin() {
+        let mut config = AppConfig::default();
+        config.server.public_url = Some("https://search.example.com/".to_owned());
+
+        let headers = HeaderMap::new();
+        let error =
+            public_uri_for_request(&config, &headers, "https://evil.example/fixtures").unwrap_err();
+
+        assert!(error.contains("does not match expected origin"));
+    }
+
+    #[test]
+    fn public_uri_for_request_uses_forwarded_origin_without_public_url() {
+        let config = AppConfig::default();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+        headers.insert(
+            "x-forwarded-host",
+            HeaderValue::from_static("search.example.com"),
+        );
+
+        let uri = public_uri_for_request(&config, &headers, "https://search.example.com/fixtures")
+            .unwrap();
+
+        assert_eq!(uri.path(), "/fixtures");
     }
 }

@@ -124,6 +124,42 @@ mod tests {
     }
 
     #[test]
+    fn navigation_script_stores_head_metadata_in_history_state() {
+        let script = navigation_script();
+
+        assert!(!script.contains("headMetadataCache"));
+        assert!(!script.contains("syncTitle"));
+        assert!(script.contains("nixsearchHeadMetadata"));
+        assert!(script.contains("nixsearchHeadMetadataUrl"));
+        assert!(script.contains("nixsearchHeadMetadataPendingUrl"));
+        assert!(script.contains("nixsearchReturnHeadMetadata"));
+        assert!(script.contains("initial-history-metadata"));
+        assert!(script.contains("returnHeadMetadata"));
+        assert!(script.contains("exactHeadMetadataFromState"));
+        assert!(script.contains("pendingHistoryState"));
+        assert!(script.contains("history.replaceState("));
+        assert!(script.contains("history.pushState(nextState"));
+        assert!(script.contains("target !== currentPublicUrl()"));
+    }
+
+    #[test]
+    fn navigation_script_routes_close_links_through_modal_close() {
+        let script = navigation_script();
+
+        assert!(script.contains(r#"link.matches(".modal-backdrop, [data-role='entry-close']")"#));
+        assert!(script.contains("closeEntryModal(dialog)"));
+        assert!(script.contains("restoreMetadata: returnMetadata, syncInputs: true"));
+    }
+
+    #[test]
+    fn navigation_script_routes_page_replacements_through_navigation() {
+        let script = navigation_script();
+
+        assert!(script.contains("navigate(target, { push: false });"));
+        assert!(!script.contains("history.replaceState(historyStateWithMetadata"));
+    }
+
+    #[test]
     fn dialog_reconcile_script_loads_asset() {
         assert!(dialog_reconcile_script().contains("entry-modal"));
         assert!(dialog_reconcile_script().contains("showModal"));

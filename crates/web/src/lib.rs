@@ -759,6 +759,34 @@ mod tests {
         assert_has_canonical(&body, "https://search.example.com/");
         assert_no_robots(&body);
         assert_og_url(&body, "https://search.example.com/");
+        assert!(!body.contains(r#"<script id="initial-history-metadata""#));
+    }
+
+    #[tokio::test]
+    async fn direct_entry_page_seeds_return_head_metadata_for_modal_close() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+        let (status, body) =
+            request_body(app, "/fixtures/programs.git.enable?q=git&source=all").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_has_canonical(
+            &body,
+            "https://search.example.com/fixtures/programs.git.enable",
+        );
+        assert_og_url(
+            &body,
+            "https://search.example.com/fixtures/programs.git.enable",
+        );
+        assert!(body.contains(r#"<script id="initial-history-metadata" type="application/json">"#));
+        assert!(body.contains(r#""returnHeadMetadata":{"#));
+        assert!(body.contains(r#""url":"https://search.example.com/?q=git""#));
+        assert!(body.contains(" results for git"));
+        assert!(body.contains(r#""canonicalUrl":null"#));
+        assert!(body.contains(r#""robots":"noindex,follow""#));
     }
 
     #[tokio::test]
@@ -1189,6 +1217,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn state_events_rejects_foreign_absolute_public_url() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+        let (status, body) = request_body(
+            app,
+            "/-/state/events?url=https%3A%2F%2Fevil.example%2Ffixtures",
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("does not match expected origin"));
+        assert!(!body.contains("nixsearchApplyHeadMetadata"));
+    }
+
+    #[tokio::test]
+    async fn results_slice_rejects_foreign_absolute_public_url() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+
+        assert_eq!(
+            request_status(
+                app,
+                "/-/results/slice?url=https%3A%2F%2Fevil.example%2F%3Fq%3Dgit&offset=0",
+            )
+            .await,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[tokio::test]
     async fn state_events_modal_navigation_updates_entry_head_metadata() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
@@ -1211,7 +1275,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn state_events_modal_close_skips_search_head_description() {
+    async fn state_events_modal_close_emits_complete_head_metadata() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_options_index(&index_dir);
@@ -1226,9 +1290,9 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("entry-modal-container"));
         assert!(body.contains("nixsearchApplyHeadMetadata"));
+        assert!(body.contains(" results for git"));
         assert!(body.contains(r#""canonicalUrl":null"#));
         assert!(body.contains(r#""robots":"noindex,follow""#));
-        assert!(!body.contains(" results for git"));
     }
 
     #[tokio::test]
