@@ -239,14 +239,6 @@ fn classify_bootstrap_produce_error(
     target: &TargetRef,
     error: &anyhow::Error,
 ) -> ProduceFailureDisposition {
-    if error.chain().any(|cause| cause.is::<StoreError>()) {
-        return ProduceFailureDisposition::Fatal;
-    }
-
-    if error.chain().any(|cause| cause.is::<std::io::Error>()) {
-        return ProduceFailureDisposition::Fatal;
-    }
-
     let Some(source_ref) = tolerable_nix_source_ref(target) else {
         return ProduceFailureDisposition::Fatal;
     };
@@ -255,10 +247,18 @@ fn classify_bootstrap_produce_error(
         return ProduceFailureDisposition::Fatal;
     }
 
+    if error.chain().any(|cause| cause.is::<StoreError>()) {
+        return ProduceFailureDisposition::Fatal;
+    }
+
     let Some(failure) = error
         .chain()
         .find_map(|cause| cause.downcast_ref::<NixCommandFailure>())
     else {
+        if error.chain().any(|cause| cause.is::<std::io::Error>()) {
+            return ProduceFailureDisposition::Fatal;
+        }
+
         return ProduceFailureDisposition::Fatal;
     };
 

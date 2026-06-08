@@ -159,33 +159,29 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<maintenance::Pu
 
     match maintenance::read_current_generation(&index_store) {
         Ok(maintenance::CurrentGeneration::Found(generation)) => {
-            if !maintenance::current_generation_missing_configured_targets(config, &generation) {
-                match SearchService::validate_generation(&generation.path) {
-                    Ok(()) => {
-                        let missing =
-                            maintenance::missing_configured_targets(config, &generation.manifest);
+            match SearchService::validate_generation(&generation.path) {
+                Ok(()) => {
+                    let missing =
+                        maintenance::missing_configured_targets(config, &generation.manifest);
 
-                        if missing.is_empty()
-                            || generation_serves_default_scope(config, &generation)?
-                        {
-                            tracing::info!(
-                                "current index was created by another process while waiting for lock"
-                            );
-                            return Ok(generation);
-                        }
+                    if missing.is_empty() || generation_serves_default_scope(config, &generation)? {
+                        tracing::info!(
+                            "current index was created by another process while waiting for lock"
+                        );
+                        return Ok(generation);
+                    }
 
-                        tracing::warn!(
-                            generation = %generation.path,
-                            missing = %format_target_keys(&missing),
-                            "current index still does not serve a default search scope after acquiring lock; rebuilding"
-                        );
-                    }
-                    Err(error) => {
-                        tracing::warn!(
-                            generation = %generation.path,
-                            "current index generation is still unopenable after acquiring lock; rebuilding it: {error:#}"
-                        );
-                    }
+                    tracing::warn!(
+                        generation = %generation.path,
+                        missing = %format_target_keys(&missing),
+                        "current index still does not serve a default search scope after acquiring lock; rebuilding"
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        generation = %generation.path,
+                        "current index generation is still unopenable after acquiring lock; rebuilding it: {error:#}"
+                    );
                 }
             }
         }
