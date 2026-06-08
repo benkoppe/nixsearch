@@ -51,7 +51,7 @@ pub async fn cleanup_under_lock(config: &AppConfig, _update_lock: &UpdateLock) -
     prune_index_generations(config, &mut report);
 
     let runtime_roots_prepared =
-        !config.maintenance.nix_store.gc || protect_runtime_gc_roots(&mut report);
+        !config.maintenance.nix_store.gc || protect_runtime_gc_roots(&mut report).await;
 
     if config.maintenance.nix_store.optimise {
         report.nix_optimise =
@@ -359,7 +359,7 @@ fn sync_dir_best_effort(path: &Utf8Path, report: &mut CleanupReport) {
     }
 }
 
-fn protect_runtime_gc_roots(report: &mut CleanupReport) -> bool {
+async fn protect_runtime_gc_roots(report: &mut CleanupReport) -> bool {
     let roots = runtime_store_roots(report);
 
     if roots.is_empty() {
@@ -389,7 +389,7 @@ fn protect_runtime_gc_roots(report: &mut CleanupReport) -> bool {
         };
 
         let link = roots_dir.join(format!("{index}-{name}"));
-        if let Err(error) = replace_symlink(root, &link) {
+        if let Err(error) = add_runtime_gc_root(root, &link).await {
             report.warnings.push(format!(
                 "failed to create runtime GC root {} -> {}: {error}",
                 link.display(),
@@ -422,10 +422,14 @@ fn runtime_store_roots(report: &mut CleanupReport) -> Vec<PathBuf> {
             .push(format!("failed to resolve current executable: {error}")),
     }
 
-    for command in ["nix", "nix-store"] {
+    for command in ["nixsearch", "nix", "nix-store"] {
         if let Some(path) = command_path(command) {
             candidates.push(path);
         }
+    }
+
+    if let Some(paths) = std::env::var_os("PATH") {
+        candidates.extend(std::env::split_paths(&paths));
     }
 
     for variable in ["SSL_CERT_FILE", "NIX_SSL_CERT_FILE"] {
@@ -438,18 +442,7 @@ fn runtime_store_roots(report: &mut CleanupReport) -> Vec<PathBuf> {
         candidates.extend(nix_path_store_candidates(&value));
     }
 
-    let mut roots = Vec::new();
-    for candidate in candidates {
-        let Some(root) = store_root_for_path(&candidate) else {
-            continue;
-        };
-
-        if !roots.iter().any(|existing| existing == &root) {
-            roots.push(root);
-        }
-    }
-
-    roots
+    store_roots_for_candidates(candidates)
 }
 
 fn command_path(command: &str) -> Option<PathBuf> {
@@ -476,12 +469,35 @@ fn nix_path_store_candidates(value: &std::ffi::OsStr) -> Vec<PathBuf> {
         .collect()
 }
 
-fn store_root_for_path(path: &Path) -> Option<PathBuf> {
-    let canonical = path.canonicalize().ok()?;
-    store_root_from_canonical_path(&canonical)
+fn store_roots_for_candidates(candidates: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+
+    for candidate in candidates {
+        push_store_roots_for_path(&candidate, &mut roots);
+    }
+
+    roots
 }
 
-fn store_root_from_canonical_path(path: &Path) -> Option<PathBuf> {
+fn push_store_roots_for_path(path: &Path, roots: &mut Vec<PathBuf>) {
+    if let Some(root) = store_root_from_path(path) {
+        push_unique_root(roots, root);
+    }
+
+    if let Ok(canonical) = path.canonicalize()
+        && let Some(root) = store_root_from_path(&canonical)
+    {
+        push_unique_root(roots, root);
+    }
+}
+
+fn push_unique_root(roots: &mut Vec<PathBuf>, root: PathBuf) {
+    if !roots.iter().any(|existing| existing == &root) {
+        roots.push(root);
+    }
+}
+
+fn store_root_from_path(path: &Path) -> Option<PathBuf> {
     let mut components = path.components();
 
     match (components.next(), components.next(), components.next()) {
@@ -501,14 +517,27 @@ fn store_root_from_canonical_path(path: &Path) -> Option<PathBuf> {
     Some(PathBuf::from("/nix/store").join(store_entry))
 }
 
-fn replace_symlink(target: &Path, link: &Path) -> io::Result<()> {
+async fn add_runtime_gc_root(root: &Path, link: &Path) -> std::result::Result<(), String> {
     match fs::remove_file(link) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
+        Err(error) => return Err(error.to_string()),
     }
 
-    std::os::unix::fs::symlink(target, link)
+    let output = Command::new("nix-store")
+        .arg("--add-root")
+        .arg(link)
+        .arg("--realise")
+        .arg(root)
+        .output()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_owned())
+    }
 }
 
 fn sync_std_dir_best_effort(path: &Path, report: &mut CleanupReport) {
@@ -625,9 +654,11 @@ pub(crate) fn should_try_legacy_nix_store(stderr: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
-    use crate::cleanup::{should_try_legacy_nix_store, store_root_from_canonical_path};
+    use crate::cleanup::{
+        push_store_roots_for_path, should_try_legacy_nix_store, store_root_from_path,
+    };
 
     #[test]
     fn legacy_fallback_detects_unsupported_new_nix_cli() {
@@ -639,15 +670,34 @@ mod tests {
     }
 
     #[test]
-    fn store_root_from_canonical_path_extracts_top_level_store_path() {
+    fn store_root_from_path_extracts_top_level_store_path() {
         assert_eq!(
-            store_root_from_canonical_path(Path::new("/nix/store/abc123-nix/bin/nix")).unwrap(),
+            store_root_from_path(Path::new("/nix/store/abc123-nix/bin/nix")).unwrap(),
             Path::new("/nix/store/abc123-nix")
         );
     }
 
     #[test]
-    fn store_root_from_canonical_path_rejects_non_store_paths() {
-        assert!(store_root_from_canonical_path(Path::new("/usr/bin/nix")).is_none());
+    fn store_root_from_path_rejects_non_store_paths() {
+        assert!(store_root_from_path(Path::new("/usr/bin/nix")).is_none());
+    }
+
+    #[test]
+    fn push_store_roots_for_path_keeps_lexical_store_path() {
+        let mut roots = Vec::new();
+
+        push_store_roots_for_path(Path::new("/nix/store/env-path/bin/nixsearch"), &mut roots);
+
+        assert_eq!(roots, vec![PathBuf::from("/nix/store/env-path")]);
+    }
+
+    #[test]
+    fn push_store_roots_for_path_deduplicates_store_roots() {
+        let mut roots = Vec::new();
+
+        push_store_roots_for_path(Path::new("/nix/store/env-path/bin/nixsearch"), &mut roots);
+        push_store_roots_for_path(Path::new("/nix/store/env-path/bin/nix"), &mut roots);
+
+        assert_eq!(roots, vec![PathBuf::from("/nix/store/env-path")]);
     }
 }
