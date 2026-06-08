@@ -11,6 +11,8 @@
       flake = false;
     };
 
+    process-compose-flake.url = "github:Platonic-Systems/process-compose-flake";
+
     datastar = {
       url = "github:starfederation/datastar";
       flake = false;
@@ -21,6 +23,7 @@
     inputs@{ flake-parts, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
       imports = [
+        ./nix/process-compose.nix
         ./nix/cargo.nix
         ./nix/container.nix
       ];

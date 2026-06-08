@@ -5,6 +5,7 @@
       pkgs,
       lib,
       self',
+      config,
       ...
     }:
     let
@@ -144,9 +145,12 @@
         {
           NIXSEARCH_CONFIG = "./nixsearch.example.toml";
 
-          packages = with pkgs; [ watchexec ];
+          packages = [
+            self'.packages.dev
+          ];
         }
         // datastarBuildEnv
+        // config.process-compose.dev.environmentVariables
       );
     };
 }
