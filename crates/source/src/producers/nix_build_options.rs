@@ -9,6 +9,7 @@ use nixsearch_core::artifact::ArtifactKind;
 use nixsearch_store::{ArtifactMetadataInput, ArtifactStore};
 
 use crate::artifact::{ProduceRequest, ProducedArtifact};
+use crate::error::NixCommandFailure;
 
 use super::Producer;
 use super::nix::{normalize_nix_path_source, resolve_flake_revision};
@@ -70,12 +71,13 @@ impl Producer for NixBuildOptionsJsonProducer {
             })?;
 
         if !output.status.success() {
-            anyhow::bail!(
-                "nix-build failed with status {}\nstdout:\n{}\nstderr:\n{}",
-                output.status,
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr),
-            );
+            return Err(NixCommandFailure {
+                command: "nix-build",
+                status: output.status,
+                stdout: output.stdout,
+                stderr: output.stderr,
+            }
+            .into());
         }
 
         let result_path = String::from_utf8(output.stdout)

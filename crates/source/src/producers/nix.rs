@@ -4,6 +4,8 @@ use anyhow::{Context, Result};
 use tempfile::{TempDir, tempdir};
 use tokio::process::Command;
 
+use crate::error::NixCommandFailure;
+
 pub(crate) fn create_tempdir(label: &str) -> Result<TempDir> {
     let temp_parent = std::env::temp_dir();
 
@@ -30,12 +32,13 @@ pub(crate) async fn run_nix_build_installable(installable: &str) -> Result<PathB
         .with_context(|| format!("failed to run nix build for installable {installable:?}"))?;
 
     if !output.status.success() {
-        anyhow::bail!(
-            "nix build failed with status {}\nstdout:\n{}\nstderr:\n{}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
+        return Err(NixCommandFailure {
+            command: "nix build",
+            status: output.status,
+            stdout: output.stdout,
+            stderr: output.stderr,
+        }
+        .into());
     }
 
     let stdout = String::from_utf8(output.stdout).context("nix stdout was not valid UTF-8")?;
@@ -69,12 +72,13 @@ pub(crate) async fn run_nix_build_expression(expression_path: &Path) -> Result<P
         })?;
 
     if !output.status.success() {
-        anyhow::bail!(
-            "nix build failed with status {}\nstdout:\n{}\nstderr:\n{}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
+        return Err(NixCommandFailure {
+            command: "nix build",
+            status: output.status,
+            stdout: output.stdout,
+            stderr: output.stderr,
+        }
+        .into());
     }
 
     let stdout = String::from_utf8(output.stdout).context("nix stdout was not valid UTF-8")?;

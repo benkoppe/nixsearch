@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result, bail};
 
@@ -76,6 +76,14 @@ pub fn select_targets(
     }
 
     Ok(targets)
+}
+
+pub fn default_search_target_keys(config: &AppConfig) -> Result<BTreeSet<TargetKey>> {
+    Ok(config
+        .resolve_search_scopes(None, None, None)?
+        .into_iter()
+        .map(|scope| TargetKey::new(scope.source, scope.ref_id))
+        .collect())
 }
 
 fn collect_source_targets(

@@ -10,6 +10,7 @@ use nixsearch_config::app::AppConfig;
 use nixsearch_index::store::IndexStore;
 use nixsearch_ops::generate;
 use nixsearch_ops::lock;
+use nixsearch_ops::targets::{TargetKey, default_search_target_keys};
 use nixsearch_service::SearchService;
 
 mod handlers;
@@ -102,19 +103,22 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<maintenance::Pu
                     return Ok(generation);
                 }
 
+                if generation_serves_default_scope(config, &generation)? {
+                    tracing::warn!(
+                        missing = %format_target_keys(&missing),
+                        "current index is missing configured targets but still serves a default search scope; startup will continue"
+                    );
+
+                    return Ok(generation);
+                }
+
                 if !config.server.bootstrap {
                     return Ok(generation);
                 }
 
-                let missing = missing
-                    .iter()
-                    .map(|target| format!("{}/{}", target.source, target.ref_id))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-
                 tracing::info!(
-                    missing = %missing,
-                    "current index is missing configured targets; bootstrap enabled, rebuilding index"
+                    missing = %format_target_keys(&missing),
+                    "current index is missing configured targets needed for default search; bootstrap enabled, rebuilding index"
                 );
             }
         }
@@ -158,10 +162,23 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<maintenance::Pu
             if !maintenance::current_generation_missing_configured_targets(config, &generation) {
                 match SearchService::validate_generation(&generation.path) {
                     Ok(()) => {
-                        tracing::info!(
-                            "current index was created by another process while waiting for lock"
+                        let missing =
+                            maintenance::missing_configured_targets(config, &generation.manifest);
+
+                        if missing.is_empty()
+                            || generation_serves_default_scope(config, &generation)?
+                        {
+                            tracing::info!(
+                                "current index was created by another process while waiting for lock"
+                            );
+                            return Ok(generation);
+                        }
+
+                        tracing::warn!(
+                            generation = %generation.path,
+                            missing = %format_target_keys(&missing),
+                            "current index still does not serve a default search scope after acquiring lock; rebuilding"
                         );
-                        return Ok(generation);
                     }
                     Err(error) => {
                         tracing::warn!(
@@ -180,9 +197,17 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<maintenance::Pu
         }
     }
 
-    generate::regenerate_all(config)
+    let bootstrap = generate::bootstrap_all_tolerant(config)
         .await
         .context("failed to bootstrap current index")?;
+
+    if bootstrap.is_degraded() {
+        tracing::warn!(
+            failed = %format_target_keys(&bootstrap.failed_refresh_targets),
+            skipped = %format_target_keys(&bootstrap.skipped_targets),
+            "bootstrap published a degraded index generation"
+        );
+    }
 
     match maintenance::read_current_generation(&index_store)? {
         maintenance::CurrentGeneration::Found(generation) => {
@@ -199,6 +224,32 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<maintenance::Pu
             bail!("bootstrap completed without publishing a current index")
         }
     }
+}
+
+fn generation_serves_default_scope(
+    config: &AppConfig,
+    generation: &maintenance::PublishedGeneration,
+) -> Result<bool> {
+    let default_targets = default_search_target_keys(config)?;
+
+    if default_targets.is_empty() {
+        return Ok(false);
+    }
+
+    Ok(generation
+        .manifest
+        .targets
+        .iter()
+        .map(TargetKey::from)
+        .any(|target| default_targets.contains(&target)))
+}
+
+fn format_target_keys<'a>(targets: impl IntoIterator<Item = &'a TargetKey>) -> String {
+    targets
+        .into_iter()
+        .map(|target| format!("{}/{}", target.source, target.ref_id))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn log_startup_maintenance_state(
