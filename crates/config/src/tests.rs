@@ -23,6 +23,7 @@ const UNSTABLE_REF: &str = "unstable";
 const NIXOS_UNSTABLE_REF: &str = "nixos-unstable";
 const NIXOS_STABLE_REF: &str = "nixos-25.11";
 const FIXTURE_OPTIONS_PATH: &str = "fixtures/search-small/options.json";
+const DEFAULT_FLAKE_FILE_FALLBACK_NIXPKGS: &str = "github:NixOS/nixpkgs/nixpkgs-unstable";
 
 fn load_toml(toml: &str) -> AppConfig {
     let dir = tempdir().unwrap();
@@ -632,6 +633,7 @@ fn loads_flake_file_producer() {
             attribute,
             output_path,
             artifact,
+            fallback_inputs,
         } => {
             assert_eq!(source_ref, "github:example/project/main");
             assert_eq!(attribute, "docs-json");
@@ -640,6 +642,40 @@ fn loads_flake_file_producer() {
                 &PathBuf::from("share/doc/example/options.json")
             );
             assert_eq!(*artifact, ArtifactKind::OptionsJson);
+            assert_eq!(
+                fallback_inputs["nixpkgs"],
+                DEFAULT_FLAKE_FILE_FALLBACK_NIXPKGS
+            );
+        }
+        other => panic!("unexpected producer: {other:?}"),
+    }
+}
+
+#[test]
+fn loads_flake_file_producer_with_empty_fallback_inputs() {
+    let config = load_toml(
+        r#"
+        [sources.fixtures]
+        name = "Fixtures"
+        kind = "options"
+
+        [sources.fixtures.refs.main.producer]
+        type = "flake-file"
+        ref = "github:example/project/main"
+        attribute = "docs-json"
+        output_path = "share/doc/example/options.json"
+        artifact = "options-json"
+        fallback_inputs = {}
+        "#,
+    );
+
+    let producer = &config.sources[FIXTURES_SOURCE].refs[0].producer;
+
+    match producer {
+        ProducerConfig::FlakeFile {
+            fallback_inputs, ..
+        } => {
+            assert!(fallback_inputs.is_empty());
         }
         other => panic!("unexpected producer: {other:?}"),
     }
@@ -882,6 +918,7 @@ fn loads_home_manager_options_preset() {
             attribute,
             output_path,
             artifact,
+            fallback_inputs,
         } => {
             assert_eq!(source_ref, "github:nix-community/home-manager/master");
             assert_eq!(attribute, "docs-json");
@@ -890,6 +927,10 @@ fn loads_home_manager_options_preset() {
                 &PathBuf::from("share/doc/home-manager/options.json")
             );
             assert_eq!(*artifact, ArtifactKind::OptionsJson);
+            assert_eq!(
+                fallback_inputs["nixpkgs"],
+                DEFAULT_FLAKE_FILE_FALLBACK_NIXPKGS
+            );
         }
         other => panic!("unexpected producer: {other:?}"),
     }
@@ -968,11 +1009,16 @@ fn loads_nix_darwin_options_preset() {
             attribute,
             output_path,
             artifact,
+            fallback_inputs,
         } => {
             assert_eq!(source_ref, "github:nix-darwin/nix-darwin/master");
             assert_eq!(attribute, "optionsJSON");
             assert_eq!(output_path, &PathBuf::from("share/doc/darwin/options.json"));
             assert_eq!(*artifact, ArtifactKind::OptionsJson);
+            assert_eq!(
+                fallback_inputs["nixpkgs"],
+                DEFAULT_FLAKE_FILE_FALLBACK_NIXPKGS
+            );
         }
         other => panic!("unexpected producer: {other:?}"),
     }
@@ -1045,11 +1091,16 @@ fn loads_hjem_options_preset() {
             attribute,
             output_path,
             artifact,
+            fallback_inputs,
         } => {
             assert_eq!(source_ref, "github:feel-co/hjem/main");
             assert_eq!(attribute, "docs-json");
             assert_eq!(output_path, &PathBuf::from("share/doc/hjem/options.json"));
             assert_eq!(*artifact, ArtifactKind::OptionsJson);
+            assert_eq!(
+                fallback_inputs["nixpkgs"],
+                DEFAULT_FLAKE_FILE_FALLBACK_NIXPKGS
+            );
         }
         other => panic!("unexpected producer: {other:?}"),
     }

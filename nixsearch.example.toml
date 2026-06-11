@@ -67,6 +67,10 @@ preset = "nixos-options"
 default_ref = "nixos-unstable"
 preset_refs = ["nixos-unstable", "nixos-26.05", "nixos-25.11"]
 
+# Flake-backed sources retry failed pure builds with:
+# fallback_inputs = { nixpkgs = "github:NixOS/nixpkgs/nixpkgs-unstable" }
+# Set fallback_inputs = {} on a flake-file producer to disable this.
+
 [sources.home-manager]
 preset = "home-manager-options"
 default_ref = "master"

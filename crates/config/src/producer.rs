@@ -71,6 +71,8 @@ pub enum ProducerConfig {
         attribute: String,
         output_path: PathBuf,
         artifact: ArtifactKind,
+        #[serde(default = "default_flake_file_fallback_inputs")]
+        fallback_inputs: BTreeMap<String, String>,
     },
 
     FlakeInfo {
@@ -119,6 +121,13 @@ fn default_nix_build_nix_path_name() -> String {
 
 fn default_eval_modules_options() -> String {
     "evaluatedModules.options".to_owned()
+}
+
+pub(crate) fn default_flake_file_fallback_inputs() -> BTreeMap<String, String> {
+    BTreeMap::from([(
+        "nixpkgs".to_owned(),
+        "github:NixOS/nixpkgs/nixpkgs-unstable".to_owned(),
+    )])
 }
 
 impl ProducerConfig {
@@ -207,11 +216,22 @@ impl ProducerConfig {
                 source_ref,
                 attribute,
                 output_path,
+                fallback_inputs,
                 ..
             } => {
                 validate_producer_non_empty(source_id, ref_id, "ref", source_ref)?;
                 validate_producer_non_empty(source_id, ref_id, "attribute", attribute)?;
                 validate_relative_output_path(source_id, ref_id, "output_path", output_path)?;
+
+                for (name, source_ref) in fallback_inputs {
+                    validate_producer_non_empty(source_id, ref_id, "fallback input name", name)?;
+                    validate_producer_non_empty(
+                        source_id,
+                        ref_id,
+                        "fallback input ref",
+                        source_ref,
+                    )?;
+                }
             }
 
             Self::FlakeInfo { source_ref } => {

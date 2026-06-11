@@ -105,8 +105,15 @@ pub async fn produce_target(store: &ArtifactStore, target: &TargetRef) -> Result
             attribute,
             output_path,
             artifact,
+            fallback_inputs,
         } => {
-            let producer = FlakeFileProducer::new(source_ref, attribute, output_path, *artifact);
+            let producer = FlakeFileProducer::new(
+                source_ref,
+                attribute,
+                output_path,
+                *artifact,
+                fallback_inputs.clone(),
+            );
 
             producer.produce(store, &request).await.with_context(|| {
                 format!(

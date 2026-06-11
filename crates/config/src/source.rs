@@ -7,7 +7,9 @@ use nixsearch_core::artifact::ArtifactKind;
 use nixsearch_core::source_link::SourceLinkConfig;
 
 use crate::error::{ConfigError, Result};
-use crate::producer::{EvalModuleConfig, EvalModuleRefConfig, ProducerConfig};
+use crate::producer::{
+    EvalModuleConfig, EvalModuleRefConfig, ProducerConfig, default_flake_file_fallback_inputs,
+};
 use crate::validation::{validate_hex_color, validate_id, validate_source_id};
 
 pub(crate) const NIXPKGS_COLOR: &str = "#4ade80";
@@ -194,6 +196,7 @@ impl RawSourceConfig {
                     attribute: "docs-json".to_owned(),
                     output_path: PathBuf::from("share/doc/home-manager/options.json"),
                     artifact: ArtifactKind::OptionsJson,
+                    fallback_inputs: default_flake_file_fallback_inputs(),
                 },
             })
             .collect::<Vec<_>>();
@@ -231,6 +234,7 @@ impl RawSourceConfig {
                     attribute: "optionsJSON".to_owned(),
                     output_path: PathBuf::from("share/doc/darwin/options.json"),
                     artifact: ArtifactKind::OptionsJson,
+                    fallback_inputs: default_flake_file_fallback_inputs(),
                 },
             })
             .collect::<Vec<_>>();
@@ -260,6 +264,7 @@ impl RawSourceConfig {
                     attribute: "docs-json".to_owned(),
                     output_path: PathBuf::from("share/doc/hjem/options.json"),
                     artifact: ArtifactKind::OptionsJson,
+                    fallback_inputs: default_flake_file_fallback_inputs(),
                 },
             })
             .collect::<Vec<_>>();

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -20,13 +21,17 @@ pub(crate) fn create_tempdir(label: &str) -> Result<TempDir> {
 }
 
 pub(crate) async fn run_nix_build_installable(installable: &str) -> Result<PathBuf> {
-    let output = Command::new("nix")
-        .arg("build")
-        .arg("--extra-experimental-features")
-        .arg("nix-command flakes")
-        .arg("--no-link")
-        .arg("--print-out-paths")
-        .arg(installable)
+    run_nix_build_installable_with_overrides(installable, &BTreeMap::new()).await
+}
+
+pub(crate) async fn run_nix_build_installable_with_overrides(
+    installable: &str,
+    input_overrides: &BTreeMap<String, String>,
+) -> Result<PathBuf> {
+    let mut command = Command::new("nix");
+    command.args(nix_build_installable_args(installable, input_overrides));
+
+    let output = command
         .output()
         .await
         .with_context(|| format!("failed to run nix build for installable {installable:?}"))?;
@@ -50,6 +55,28 @@ pub(crate) async fn run_nix_build_installable(installable: &str) -> Result<PathB
         .context("nix build succeeded but did not print an output path")?;
 
     Ok(PathBuf::from(output_path))
+}
+
+fn nix_build_installable_args(
+    installable: &str,
+    input_overrides: &BTreeMap<String, String>,
+) -> Vec<String> {
+    let mut args = vec![
+        "build".to_owned(),
+        "--extra-experimental-features".to_owned(),
+        "nix-command flakes".to_owned(),
+        "--no-link".to_owned(),
+        "--print-out-paths".to_owned(),
+    ];
+
+    for (name, source_ref) in input_overrides {
+        args.push("--override-input".to_owned());
+        args.push(name.clone());
+        args.push(source_ref.clone());
+    }
+
+    args.push(installable.to_owned());
+    args
 }
 
 pub(crate) async fn run_nix_build_expression(expression_path: &Path) -> Result<PathBuf> {
@@ -166,6 +193,7 @@ fn parse_flake_metadata_revision(bytes: &[u8]) -> Result<Option<String>> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::fs;
 
     use tempfile::tempdir;
@@ -213,6 +241,44 @@ mod tests {
         let normalized = super::normalize_flake_ref(source_ref).unwrap();
 
         assert_eq!(normalized, source_ref);
+    }
+
+    #[test]
+    fn nix_build_installable_args_without_overrides() {
+        assert_eq!(
+            super::nix_build_installable_args("github:example/project#docs", &BTreeMap::new()),
+            [
+                "build",
+                "--extra-experimental-features",
+                "nix-command flakes",
+                "--no-link",
+                "--print-out-paths",
+                "github:example/project#docs",
+            ]
+        );
+    }
+
+    #[test]
+    fn nix_build_installable_args_with_overrides() {
+        let input_overrides = BTreeMap::from([(
+            "nixpkgs".to_owned(),
+            "github:NixOS/nixpkgs/nixpkgs-unstable".to_owned(),
+        )]);
+
+        assert_eq!(
+            super::nix_build_installable_args("github:example/project#docs", &input_overrides),
+            [
+                "build",
+                "--extra-experimental-features",
+                "nix-command flakes",
+                "--no-link",
+                "--print-out-paths",
+                "--override-input",
+                "nixpkgs",
+                "github:NixOS/nixpkgs/nixpkgs-unstable",
+                "github:example/project#docs",
+            ]
+        );
     }
 
     #[test]
