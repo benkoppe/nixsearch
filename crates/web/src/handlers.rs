@@ -228,7 +228,7 @@ pub async fn state_events(State(state): State<AppState>, headers: HeaderMap, uri
     let empty_entry = EntryData::Empty;
     let modal_entry = if direct_entry { &empty_entry } else { &entry };
     let modal_html =
-        templates::modal::render(&state.config, &page_state, &modal_entry).into_string();
+        templates::modal::render(&state.config, &page_state, modal_entry).into_string();
 
     let mut events: Vec<std::result::Result<Event, Infallible>> = Vec::new();
 
@@ -777,7 +777,7 @@ fn sse_entry_error_response(context: SseEntryErrorContext<'_>, error: &EntryLoad
     let empty_entry = EntryData::Empty;
     let modal_entry = if direct_entry { &empty_entry } else { &entry };
     let modal_html =
-        templates::modal::render(&context.state.config, context.page_state, &modal_entry)
+        templates::modal::render(&context.state.config, context.page_state, modal_entry)
             .into_string();
     let metadata = templates::layout::page_head_metadata(
         context.state,
