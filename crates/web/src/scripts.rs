@@ -209,6 +209,47 @@ mod tests {
     }
 
     #[test]
+    fn navigation_script_has_target_guarded_results_patch() {
+        let script = navigation_script();
+
+        assert!(script.contains("function applyResultsPatch(html, targetUrl)"));
+        assert!(script.contains("publicUrlKey(targetUrl) !== publicUrlKey()"));
+        assert!(script.contains("window.nixsearchApplyResultsPatch = applyResultsPatch;"));
+    }
+
+    #[test]
+    fn navigation_script_applies_generation_change_atomically_after_target_check() {
+        let script = navigation_script();
+
+        let apply = script
+            .find("function applyGenerationChange(payload)")
+            .unwrap();
+        let target_type_guard = script[apply..]
+            .find(r#"typeof payload.targetUrl !== "string""#)
+            .unwrap();
+        let target_guard = script[apply..]
+            .find("publicUrlKey(payload.targetUrl) !== publicUrlKey()")
+            .unwrap();
+        let begin = script[apply..].find("beginGenerationChange();").unwrap();
+        let finally = script[apply..].find("finally").unwrap();
+        let finish = script[apply..].find("finishGenerationChange();").unwrap();
+
+        assert!(target_type_guard < target_guard);
+        assert!(target_guard < begin);
+        assert!(begin < finally);
+        assert!(finally < finish);
+        assert!(script.contains("window.nixsearchApplyGenerationChange = applyGenerationChange;"));
+    }
+
+    #[test]
+    fn navigation_script_directly_updates_generation_id_from_payload() {
+        let script = navigation_script();
+
+        assert!(script.contains(r#"typeof payload.generationId === "string""#));
+        assert!(script.contains("generationId = payload.generationId;"));
+    }
+
+    #[test]
     fn navigation_script_handles_stale_generation_before_applying_slice() {
         let script = navigation_script();
 
@@ -233,6 +274,8 @@ mod tests {
         assert!(script.contains("let generationChanging = false;"));
         assert!(script.contains("function beginGenerationChange()"));
         assert!(script.contains("function finishGenerationChange()"));
+        assert!(script.contains("let generationChangeWatchdog = null;"));
+        assert!(script.contains("clearGenerationChangeWatchdog();"));
         assert!(script.contains("virtualSliceCache.clear();"));
         assert!(script.contains("virtualRequestEpoch += 1;"));
         assert!(script.contains(

@@ -401,17 +401,6 @@ mod tests {
         )
     }
 
-    fn assert_occurs_in_order(body: &str, needles: &[&str]) {
-        let mut offset = 0;
-
-        for needle in needles {
-            let index = body[offset..]
-                .find(needle)
-                .unwrap_or_else(|| panic!("missing {needle:?} after offset {offset}"));
-            offset += index + needle.len();
-        }
-    }
-
     fn app_config_with_public_url(index_dir: impl AsRef<camino::Utf8Path>) -> AppConfig {
         let mut config = app_config(index_dir);
         config.server.public_url = Some("https://search.example.com/".to_owned());
@@ -1825,18 +1814,50 @@ mod tests {
         let (status, body) = request_body(app, "/-/state/events?url=%2F%3Fq%3Dgit").await;
 
         assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("nixsearchApplyGenerationChange"));
         assert!(body.contains(&generation_id));
-        assert_occurs_in_order(
-            &body,
-            &[
-                "nixsearchBeginGenerationChange",
-                "generation-state",
-                "results",
-                "nixsearchApplyModalPatch",
-                "nixsearchApplyHeadMetadata",
-                "nixsearchFinishGenerationChange",
-            ],
+        assert!(body.contains(r#""targetUrl":"/?q=git""#));
+        assert!(body.contains(r#""generationId":"#));
+        assert!(body.contains(r#""generationStateHtml":"#));
+        assert!(body.contains(r#""resultsHtml":"#));
+        assert!(body.contains(r#""modalHtml":"#));
+        assert!(body.contains(r#""metadata":"#));
+        assert!(!body.contains("nixsearchBeginGenerationChange"));
+        assert!(!body.contains("nixsearchFinishGenerationChange"));
+    }
+
+    #[tokio::test]
+    async fn state_events_generation_change_does_not_emit_unguarded_result_patch() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+        let (status, body) = request_body(app, "/-/state/events?url=%2F%3Fq%3Dgit").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("nixsearchApplyGenerationChange"));
+        assert!(!body.contains("nixsearchApplyResultsPatch"));
+    }
+
+    #[tokio::test]
+    async fn state_events_matching_generation_uses_target_guarded_results_patch() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+        let generation_id = current_generation_id(&index_dir);
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+        let uri = with_generation(
+            "/-/state/events?url=%2F%3Fq%3Dgit&previous_url=%2F",
+            &generation_id,
         );
+        let (status, body) = request_body(app, &uri).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("nixsearchApplyResultsPatch"));
+        assert!(body.contains(r#""/?q=git""#));
+        assert!(!body.contains("nixsearchApplyGenerationChange"));
     }
 
     #[tokio::test]
@@ -1861,13 +1882,14 @@ mod tests {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_options_index(&index_dir);
+        let generation_id = current_generation_id(&index_dir);
 
         let app = test_app(app_config_with_public_url(&index_dir));
-        let (status, body) = request_body(
-            app,
+        let uri = with_generation(
             "/-/state/events?url=https%3A%2F%2Fsearch.example.com%2Ffixtures",
-        )
-        .await;
+            &generation_id,
+        );
+        let (status, body) = request_body(app, &uri).await;
 
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("nixsearchApplyHeadMetadata"));
@@ -1914,13 +1936,14 @@ mod tests {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_options_index(&index_dir);
+        let generation_id = current_generation_id(&index_dir);
 
         let app = test_app(app_config_with_public_url(&index_dir));
-        let (status, body) = request_body(
-            app,
+        let uri = with_generation(
             "/-/state/events?url=%2Ffixtures%2Fprograms.git.enable%3Fq%3Dgit%26source%3Dall&previous_url=%2F%3Fq%3Dgit",
-        )
-        .await;
+            &generation_id,
+        );
+        let (status, body) = request_body(app, &uri).await;
 
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("entry-modal"));
@@ -1937,13 +1960,14 @@ mod tests {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_options_index(&index_dir);
+        let generation_id = current_generation_id(&index_dir);
 
         let app = test_app(app_config_with_public_url(&index_dir));
-        let (status, body) = request_body(
-            app,
+        let uri = with_generation(
             "/-/state/events?url=%2Ffixtures%2Fprograms.git.enable&previous_url=%2F%3Fq%3Dgit",
-        )
-        .await;
+            &generation_id,
+        );
+        let (status, body) = request_body(app, &uri).await;
 
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("entry-page"));
@@ -1961,13 +1985,14 @@ mod tests {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_options_index(&index_dir);
+        let generation_id = current_generation_id(&index_dir);
 
         let app = test_app(app_config_with_public_url(&index_dir));
-        let (status, body) = request_body(
-            app,
+        let uri = with_generation(
             "/-/state/events?url=%2F%3Fq%3Dgit&previous_url=%2Ffixtures%2Fprograms.git.enable%3Fq%3Dgit%26source%3Dall",
-        )
-        .await;
+            &generation_id,
+        );
+        let (status, body) = request_body(app, &uri).await;
 
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("entry-modal-container"));
@@ -1983,9 +2008,11 @@ mod tests {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_options_index(&index_dir);
+        let generation_id = current_generation_id(&index_dir);
 
         let app = test_app(app_config_with_public_url(&index_dir));
-        let (status, body) = request_body(app, "/-/state/events?url=%2F%3Fq%3Dgit").await;
+        let uri = with_generation("/-/state/events?url=%2F%3Fq%3Dgit", &generation_id);
+        let (status, body) = request_body(app, &uri).await;
 
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("nixsearchApplyHeadMetadata"));
@@ -1998,13 +2025,14 @@ mod tests {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_options_index(&index_dir);
+        let generation_id = current_generation_id(&index_dir);
 
         let app = test_app(app_config_with_public_url(&index_dir));
-        let (status, body) = request_body(
-            app,
+        let uri = with_generation(
             "/-/state/events?url=%2F%3Fq%3Dgit%26page%3D2&previous_url=%2F%3Fq%3Dgit",
-        )
-        .await;
+            &generation_id,
+        );
+        let (status, body) = request_body(app, &uri).await;
 
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("nixsearchApplyHeadMetadata"));
@@ -2018,10 +2046,14 @@ mod tests {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_fixture_options_index_for_refs(&index_dir, &[REF_SMALL, REF_STABLE]);
+        let generation_id = current_generation_id(&index_dir);
 
         let app = test_app(multi_ref_app_config_with_public_url(&index_dir));
-        let (status, body) =
-            request_body(app, "/-/state/events?url=%2Ffixtures%3Fref_set%3Dsingle").await;
+        let uri = with_generation(
+            "/-/state/events?url=%2Ffixtures%3Fref_set%3Dsingle",
+            &generation_id,
+        );
+        let (status, body) = request_body(app, &uri).await;
 
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("nixsearchApplyHeadMetadata"));

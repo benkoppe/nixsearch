@@ -8,6 +8,7 @@
   const VIRTUAL_JUMP_DELTA = PAGE_SIZE * 3;
   let generationId = readGenerationId();
   let generationChanging = false;
+  let generationChangeWatchdog = null;
   let currentUrl = currentPublicUrl();
   let lastFocusedResultHref = "";
 
@@ -351,6 +352,44 @@
       }
     }
   }
+
+  function elementFromHtml(html, selector) {
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = html || "";
+    return wrapper.querySelector(selector);
+  }
+
+  function replaceElementFromHtml(html, selector, parent = document.body) {
+    const next = elementFromHtml(html, selector);
+    if (!next) return false;
+
+    const existing = document.querySelector(selector);
+    if (existing) {
+      existing.replaceWith(next);
+    } else {
+      parent.appendChild(next);
+    }
+
+    return true;
+  }
+
+  function applyResultsPatch(html, targetUrl) {
+    if (targetUrl && publicUrlKey(targetUrl) !== publicUrlKey()) return false;
+
+    resetVirtualStateForPatch();
+
+    const parent = document.querySelector("main.main") || document.body;
+    const replaced = replaceElementFromHtml(html, "#results", parent);
+    if (!replaced) return false;
+
+    initializeVirtualResults();
+    scheduleVisiblePageSync();
+    scheduleVirtualLoad();
+    setLoading(false);
+    return true;
+  }
+
+  window.nixsearchApplyResultsPatch = applyResultsPatch;
 
   // Clear loading state when results are patched by Datastar.
   (() => {
@@ -1839,10 +1878,8 @@
     virtualActiveRequest = null;
   }
 
-  function beginGenerationChange() {
-    generationChanging = true;
+  function resetVirtualStateForPatch() {
     cancelVirtualRequest();
-    setVirtualSpacerLoading("replace", false);
     virtualRequestEpoch += 1;
     virtualSliceCache.clear();
     virtualLoadScheduled = false;
@@ -1850,7 +1887,35 @@
     virtualResults = null;
   }
 
+  function clearGenerationChangeWatchdog() {
+    if (!generationChangeWatchdog) return;
+    clearTimeout(generationChangeWatchdog);
+    generationChangeWatchdog = null;
+  }
+
+  function beginGenerationChange() {
+    generationChanging = true;
+    clearGenerationChangeWatchdog();
+    cancelVirtualRequest();
+    setVirtualSpacerLoading("replace", false);
+    virtualRequestEpoch += 1;
+    virtualSliceCache.clear();
+    virtualLoadScheduled = false;
+    virtualLastTargetOffset = null;
+    virtualResults = null;
+
+    generationChangeWatchdog = setTimeout(() => {
+      generationChanging = false;
+      generationChangeWatchdog = null;
+      initializeVirtualResults();
+      scheduleVisiblePageSync();
+      scheduleVirtualLoad();
+      setLoading(false);
+    }, 10000);
+  }
+
   function finishGenerationChange() {
+    clearGenerationChangeWatchdog();
     generationId = readGenerationId();
     generationChanging = false;
     initializeVirtualResults();
@@ -1859,8 +1924,49 @@
     setLoading(false);
   }
 
+  function applyGenerationChange(payload) {
+    if (!payload || typeof payload !== "object") return false;
+    if (typeof payload.targetUrl !== "string") return false;
+    if (publicUrlKey(payload.targetUrl) !== publicUrlKey()) return false;
+
+    beginGenerationChange();
+
+    try {
+      if (typeof payload.generationId === "string") {
+        generationId = payload.generationId;
+      }
+
+      if (
+        typeof payload.generationStateHtml !== "string" ||
+        !replaceElementFromHtml(payload.generationStateHtml, "#generation-state")
+      ) {
+        return false;
+      }
+
+      if (
+        typeof payload.resultsHtml !== "string" ||
+        !applyResultsPatch(payload.resultsHtml, payload.targetUrl)
+      ) {
+        return false;
+      }
+
+      if (typeof payload.modalHtml === "string") {
+        applyModalPatch(payload.modalHtml, payload.targetUrl);
+      }
+
+      if (payload.metadata && typeof payload.metadata === "object") {
+        applyHeadMetadata(payload.metadata, payload.targetUrl);
+      }
+
+      return true;
+    } finally {
+      finishGenerationChange();
+    }
+  }
+
   window.nixsearchBeginGenerationChange = beginGenerationChange;
   window.nixsearchFinishGenerationChange = finishGenerationChange;
+  window.nixsearchApplyGenerationChange = applyGenerationChange;
 
   async function loadVirtualSlice(offset, mode, options = {}) {
     if (generationChanging || !virtualResults) return;

@@ -27,15 +27,10 @@ use crate::request::{
 use crate::scripts::datastar_script;
 use crate::templates;
 use crate::templates::layout::{
-    InitialReturnMetadata, ResultsContent, generation_state_script_html, head_metadata_script,
-    modal_patch_script,
+    InitialReturnMetadata, PageMetadata, ResultsContent, generation_change_script,
+    head_metadata_script, modal_patch_script, results_patch_script,
 };
 use crate::urls::close_url_for_state;
-
-const BEGIN_GENERATION_CHANGE_SCRIPT: &str =
-    "if (window.nixsearchBeginGenerationChange) window.nixsearchBeginGenerationChange();";
-const FINISH_GENERATION_CHANGE_SCRIPT: &str =
-    "if (window.nixsearchFinishGenerationChange) window.nixsearchFinishGenerationChange();";
 
 pub async fn health() -> &'static str {
     "ok"
@@ -249,9 +244,11 @@ pub async fn state_events(State(state): State<AppState>, headers: HeaderMap, uri
     let mut events: Vec<std::result::Result<Event, Infallible>> = Vec::new();
 
     if let Some(results_html) = results_html {
-        events.push(Ok(
-            PatchElements::new(results_html).write_as_axum_sse_event()
-        ));
+        events.push(Ok(ExecuteScript::new(results_patch_script(
+            &results_html,
+            &target_public_url,
+        ))
+        .write_as_axum_sse_event()));
     }
 
     events.push(Ok(ExecuteScript::new(modal_patch_script(
@@ -291,7 +288,7 @@ fn client_generation_matches(
 struct GenerationChangeContent {
     results_html: String,
     modal_html: String,
-    metadata_script: String,
+    metadata: PageMetadata,
 }
 
 struct GenerationChangeError {
@@ -313,15 +310,9 @@ fn generation_change_response(
     page_urls: &PageUrls,
     snapshot: &ServedGenerationSnapshot,
 ) -> Response {
-    let content = match generation_change_content(
-        state,
-        target_uri,
-        target_public_url,
-        page_urls,
-        snapshot,
-    ) {
+    let content = match generation_change_content(state, target_uri, page_urls, snapshot) {
         Ok(content) => content,
-        Err(error) => generation_change_error_content(page_urls, target_public_url, error),
+        Err(error) => generation_change_error_content(page_urls, error),
     };
 
     generation_change_events_response(snapshot, content, target_public_url)
@@ -330,7 +321,6 @@ fn generation_change_response(
 fn generation_change_content(
     state: &AppState,
     target_uri: &Uri,
-    target_public_url: &str,
     page_urls: &PageUrls,
     snapshot: &ServedGenerationSnapshot,
 ) -> Result<GenerationChangeContent, GenerationChangeError> {
@@ -395,7 +385,7 @@ fn generation_change_content(
     Ok(GenerationChangeContent {
         results_html,
         modal_html,
-        metadata_script: head_metadata_script(&metadata, Some(target_public_url)),
+        metadata,
     })
 }
 
@@ -421,7 +411,6 @@ fn render_navigation_results_html(
 
 fn generation_change_error_content(
     page_urls: &PageUrls,
-    target_public_url: &str,
     error: GenerationChangeError,
 ) -> GenerationChangeContent {
     let message = error.message;
@@ -433,7 +422,7 @@ fn generation_change_error_content(
     GenerationChangeContent {
         results_html,
         modal_html,
-        metadata_script: head_metadata_script(&metadata, Some(target_public_url)),
+        metadata,
     }
 }
 
@@ -442,32 +431,16 @@ fn generation_change_events_response(
     content: GenerationChangeContent,
     target_public_url: &str,
 ) -> Response {
-    let mut events: Vec<std::result::Result<Event, Infallible>> = Vec::new();
-
-    events.push(Ok(
-        ExecuteScript::new(BEGIN_GENERATION_CHANGE_SCRIPT).write_as_axum_sse_event()
-    ));
-    events.push(Ok(PatchElements::new(generation_state_script_html(
+    let event = ExecuteScript::new(generation_change_script(
         &snapshot.manifest.generation_id,
-    ))
-    .write_as_axum_sse_event()));
-    events.push(Ok(
-        PatchElements::new(content.results_html).write_as_axum_sse_event()
-    ));
-    events.push(Ok(ExecuteScript::new(modal_patch_script(
+        &content.results_html,
         &content.modal_html,
+        &content.metadata,
         target_public_url,
     ))
-    .write_as_axum_sse_event()));
-    events.push(Ok(
-        ExecuteScript::new(content.metadata_script).write_as_axum_sse_event()
-    ));
+    .write_as_axum_sse_event();
 
-    events.push(Ok(
-        ExecuteScript::new(FINISH_GENERATION_CHANGE_SCRIPT).write_as_axum_sse_event()
-    ));
-
-    Sse::new(stream::iter(events)).into_response()
+    Sse::new(stream::iter([Ok::<Event, Infallible>(event)])).into_response()
 }
 
 struct StateEventsNavigation {
@@ -978,14 +951,20 @@ fn sse_error_response(
     let metadata = templates::layout::noindex_head_metadata(page_urls, "Request failed", error);
 
     let mut events: Vec<std::result::Result<Event, Infallible>> = Vec::new();
-    events.push(Ok(PatchElements::new(html).write_as_axum_sse_event()));
 
     if let Some(target_public_url) = target_public_url {
+        events.push(Ok(ExecuteScript::new(results_patch_script(
+            &html,
+            target_public_url,
+        ))
+        .write_as_axum_sse_event()));
         events.push(Ok(ExecuteScript::new(head_metadata_script(
             &metadata,
             Some(target_public_url),
         ))
         .write_as_axum_sse_event()));
+    } else {
+        events.push(Ok(PatchElements::new(html).write_as_axum_sse_event()));
     }
 
     Sse::new(stream::iter(events)).into_response()
@@ -1023,15 +1002,20 @@ fn sse_entry_error_response(context: SseEntryErrorContext<'_>, error: &EntryLoad
     let mut events: Vec<std::result::Result<Event, Infallible>> = Vec::new();
 
     if direct_entry {
-        events.push(Ok(PatchElements::new(
+        let results_html =
             templates::results::render_entry(&context.state.config, context.page_state, &entry)
-                .into_string(),
-        )
+                .into_string();
+        events.push(Ok(ExecuteScript::new(results_patch_script(
+            &results_html,
+            context.target_public_url,
+        ))
         .write_as_axum_sse_event()));
     } else if let Some(results_html) = context.results_html {
-        events.push(Ok(
-            PatchElements::new(results_html).write_as_axum_sse_event()
-        ));
+        events.push(Ok(ExecuteScript::new(results_patch_script(
+            &results_html,
+            context.target_public_url,
+        ))
+        .write_as_axum_sse_event()));
     }
 
     events.push(Ok(ExecuteScript::new(modal_patch_script(

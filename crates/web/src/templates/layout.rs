@@ -298,6 +298,38 @@ pub(crate) fn modal_patch_script(modal_html: &str, target_public_url: &str) -> S
     )
 }
 
+pub(crate) fn results_patch_script(results_html: &str, target_public_url: &str) -> String {
+    let html_json = serde_json::to_string(results_html).expect("results HTML should serialize");
+    let target_json =
+        serde_json::to_string(target_public_url).expect("target URL should serialize");
+    format!(
+        "if (window.nixsearchApplyResultsPatch) window.nixsearchApplyResultsPatch({html_json}, {target_json});"
+    )
+}
+
+pub(crate) fn generation_change_script(
+    generation_id: &str,
+    results_html: &str,
+    modal_html: &str,
+    metadata: &PageMetadata,
+    target_public_url: &str,
+) -> String {
+    let payload = serde_json::json!({
+        "generationId": generation_id,
+        "generationStateHtml": generation_state_script_html(generation_id),
+        "resultsHtml": results_html,
+        "modalHtml": modal_html,
+        "metadata": metadata,
+        "targetUrl": target_public_url,
+    });
+    let payload_json =
+        serde_json::to_string(&payload).expect("generation change payload should serialize");
+
+    format!(
+        "if (window.nixsearchApplyGenerationChange) window.nixsearchApplyGenerationChange({payload_json});"
+    )
+}
+
 fn page_metadata(
     config: &AppConfig,
     request: &PageRequest,
