@@ -353,14 +353,13 @@
     }
   }
 
-  function elementFromHtml(html, selector) {
+  function parsedElementFromHtml(html, selector) {
     const wrapper = document.createElement("div");
     wrapper.innerHTML = html || "";
     return wrapper.querySelector(selector);
   }
 
-  function replaceElementFromHtml(html, selector, parent = document.body) {
-    const next = elementFromHtml(html, selector);
+  function replaceParsedElement(next, selector, parent = document.body) {
     if (!next) return false;
 
     const existing = document.querySelector(selector);
@@ -373,19 +372,30 @@
     return true;
   }
 
-  function applyResultsPatch(html, targetUrl) {
-    if (targetUrl && publicUrlKey(targetUrl) !== publicUrlKey()) return false;
+  function replaceResultsElement(results) {
+    return replaceParsedElement(
+      results,
+      "#results",
+      document.querySelector("main.main") || document.body,
+    );
+  }
 
-    resetVirtualStateForPatch();
-
-    const parent = document.querySelector("main.main") || document.body;
-    const replaced = replaceElementFromHtml(html, "#results", parent);
-    if (!replaced) return false;
-
+  function finishResultsPatch() {
     initializeVirtualResults();
     scheduleVisiblePageSync();
     scheduleVirtualLoad();
     setLoading(false);
+  }
+
+  function applyResultsPatch(html, targetUrl) {
+    if (targetUrl && publicUrlKey(targetUrl) !== publicUrlKey()) return false;
+
+    const results = parsedElementFromHtml(html, "#results");
+    if (!results) return false;
+
+    resetVirtualStateForPatch();
+    replaceResultsElement(results);
+    finishResultsPatch();
     return true;
   }
 
@@ -1896,21 +1906,13 @@
   function beginGenerationChange() {
     generationChanging = true;
     clearGenerationChangeWatchdog();
-    cancelVirtualRequest();
     setVirtualSpacerLoading("replace", false);
-    virtualRequestEpoch += 1;
-    virtualSliceCache.clear();
-    virtualLoadScheduled = false;
-    virtualLastTargetOffset = null;
-    virtualResults = null;
+    resetVirtualStateForPatch();
 
     generationChangeWatchdog = setTimeout(() => {
       generationChanging = false;
       generationChangeWatchdog = null;
-      initializeVirtualResults();
-      scheduleVisiblePageSync();
-      scheduleVirtualLoad();
-      setLoading(false);
+      finishResultsPatch();
     }, 10000);
   }
 
@@ -1918,16 +1920,22 @@
     clearGenerationChangeWatchdog();
     generationId = readGenerationId();
     generationChanging = false;
-    initializeVirtualResults();
-    scheduleVisiblePageSync();
-    scheduleVirtualLoad();
-    setLoading(false);
+    finishResultsPatch();
   }
 
   function applyGenerationChange(payload) {
     if (!payload || typeof payload !== "object") return false;
     if (typeof payload.targetUrl !== "string") return false;
     if (publicUrlKey(payload.targetUrl) !== publicUrlKey()) return false;
+    if (typeof payload.generationStateHtml !== "string") return false;
+    if (typeof payload.resultsHtml !== "string") return false;
+
+    const generationState = parsedElementFromHtml(
+      payload.generationStateHtml,
+      "#generation-state",
+    );
+    const results = parsedElementFromHtml(payload.resultsHtml, "#results");
+    if (!generationState || !results) return false;
 
     beginGenerationChange();
 
@@ -1936,17 +1944,11 @@
         generationId = payload.generationId;
       }
 
-      if (
-        typeof payload.generationStateHtml !== "string" ||
-        !replaceElementFromHtml(payload.generationStateHtml, "#generation-state")
-      ) {
+      if (!replaceParsedElement(generationState, "#generation-state")) {
         return false;
       }
 
-      if (
-        typeof payload.resultsHtml !== "string" ||
-        !applyResultsPatch(payload.resultsHtml, payload.targetUrl)
-      ) {
+      if (!replaceResultsElement(results)) {
         return false;
       }
 

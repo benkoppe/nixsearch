@@ -230,15 +230,74 @@ mod tests {
         let target_guard = script[apply..]
             .find("publicUrlKey(payload.targetUrl) !== publicUrlKey()")
             .unwrap();
+        let generation_html_guard = script[apply..]
+            .find(r#"typeof payload.generationStateHtml !== "string""#)
+            .unwrap();
+        let results_html_guard = script[apply..]
+            .find(r#"typeof payload.resultsHtml !== "string""#)
+            .unwrap();
+        let parse_generation = script[apply..]
+            .find("const generationState = parsedElementFromHtml(")
+            .unwrap();
+        let parse_results = script[apply..]
+            .find("const results = parsedElementFromHtml(payload.resultsHtml, \"#results\");")
+            .unwrap();
         let begin = script[apply..].find("beginGenerationChange();").unwrap();
+        let replace_generation = script[apply..]
+            .find("replaceParsedElement(generationState, \"#generation-state\")")
+            .unwrap();
+        let replace_results = script[apply..]
+            .find("replaceResultsElement(results)")
+            .unwrap();
         let finally = script[apply..].find("finally").unwrap();
         let finish = script[apply..].find("finishGenerationChange();").unwrap();
 
         assert!(target_type_guard < target_guard);
+        assert!(target_guard < generation_html_guard);
+        assert!(generation_html_guard < results_html_guard);
+        assert!(results_html_guard < parse_generation);
+        assert!(parse_generation < parse_results);
+        assert!(parse_results < begin);
         assert!(target_guard < begin);
-        assert!(begin < finally);
+        assert!(begin < replace_generation);
+        assert!(replace_generation < replace_results);
+        assert!(replace_results < finally);
         assert!(finally < finish);
         assert!(script.contains("window.nixsearchApplyGenerationChange = applyGenerationChange;"));
+    }
+
+    #[test]
+    fn navigation_script_does_not_route_generation_change_through_normal_results_patch() {
+        let script = navigation_script();
+
+        let apply = script
+            .find("function applyGenerationChange(payload)")
+            .unwrap();
+        let end = script[apply..]
+            .find("window.nixsearchBeginGenerationChange")
+            .map(|offset| apply + offset)
+            .unwrap_or(script.len());
+        let apply_generation_change = &script[apply..end];
+
+        assert!(!apply_generation_change.contains("applyResultsPatch("));
+        assert!(apply_generation_change.contains("replaceResultsElement(results)"));
+    }
+
+    #[test]
+    fn navigation_script_parses_results_before_resetting_virtual_state() {
+        let script = navigation_script();
+
+        let apply = script
+            .find("function applyResultsPatch(html, targetUrl)")
+            .unwrap();
+        let parse = script[apply..]
+            .find("const results = parsedElementFromHtml(html, \"#results\");")
+            .unwrap();
+        let reset = script[apply..]
+            .find("resetVirtualStateForPatch();")
+            .unwrap();
+
+        assert!(parse < reset);
     }
 
     #[test]
@@ -276,6 +335,7 @@ mod tests {
         assert!(script.contains("function finishGenerationChange()"));
         assert!(script.contains("let generationChangeWatchdog = null;"));
         assert!(script.contains("clearGenerationChangeWatchdog();"));
+        assert!(script.contains("resetVirtualStateForPatch();"));
         assert!(script.contains("virtualSliceCache.clear();"));
         assert!(script.contains("virtualRequestEpoch += 1;"));
         assert!(script.contains(
