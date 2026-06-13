@@ -9,6 +9,7 @@ use nixsearch_config::producer::ProducerConfig;
 use nixsearch_index::annotation::EntryAnnotationIndex;
 use nixsearch_index::manifest::{IndexGenerationManifest, IndexTargetManifest};
 use nixsearch_index::search::SearchIndex;
+use nixsearch_index::seo::SeoSidecarAccumulator;
 use nixsearch_index::store::IndexStore;
 use nixsearch_source::artifact::ProducedArtifact;
 use nixsearch_source::error::NixCommandFailure;
@@ -110,6 +111,7 @@ async fn build_and_publish_generation_with_policy(
         let spool = DocumentSpool::create()?;
         let mut spool_writer = spool.writer()?;
         let mut annotations = EntryAnnotationIndex::new();
+        let mut seo_facts = SeoSidecarAccumulator::new();
 
         let mut total_documents = 0usize;
         let mut manifest_targets = Vec::new();
@@ -141,6 +143,7 @@ async fn build_and_publish_generation_with_policy(
 
             for document in &documents {
                 annotations.observe(document);
+                seo_facts.observe(document);
                 spool_writer.push(document)?;
             }
 
@@ -193,6 +196,9 @@ async fn build_and_publish_generation_with_policy(
         writer.commit()?;
 
         let manifest = IndexGenerationManifest::new(total_documents, manifest_targets)?;
+        let sidecar = seo_facts.into_sidecar(manifest.generation_id.clone());
+
+        index_store.write_seo_sidecar(&generation_path, &manifest, &sidecar)?;
         index_store.write_manifest(&generation_path, &manifest)?;
 
         publish_started = true;

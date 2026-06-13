@@ -12,6 +12,7 @@ use nixsearch_index::search::{
     EntryFacts, EntryLookup, EntryLookupResult, SearchIndex, SearchOptions, SearchResult,
     SearchScope,
 };
+use nixsearch_index::seo::SeoSidecar;
 use nixsearch_index::store::IndexStore;
 
 #[derive(Debug)]
@@ -34,6 +35,7 @@ struct ServedGeneration {
     path: Utf8PathBuf,
     manifest: IndexGenerationManifest,
     index: Arc<SearchIndex>,
+    seo_facts: SeoFactsState,
 }
 
 impl fmt::Debug for ServedGeneration {
@@ -50,6 +52,7 @@ pub struct ServedGenerationSnapshot {
     pub path: Utf8PathBuf,
     pub manifest: IndexGenerationManifest,
     pub index: Arc<SearchIndex>,
+    pub seo_facts: SeoFactsState,
 }
 
 impl fmt::Debug for ServedGenerationSnapshot {
@@ -58,6 +61,18 @@ impl fmt::Debug for ServedGenerationSnapshot {
             .field("path", &self.path)
             .field("manifest", &self.manifest)
             .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum SeoFactsState {
+    Loaded(Arc<SeoSidecar>),
+    Unavailable(String),
+}
+
+impl SeoFactsState {
+    pub fn is_loaded(&self) -> bool {
+        matches!(self, Self::Loaded(_))
     }
 }
 
@@ -160,6 +175,7 @@ impl SearchService {
             .context("failed to validate supplied index generation manifest")?;
 
         let index = open_index(&path)?;
+        let seo_facts = load_seo_facts_state(&config, &path, &manifest);
 
         Ok(Self {
             config,
@@ -167,6 +183,7 @@ impl SearchService {
                 path,
                 manifest,
                 index: Arc::new(index),
+                seo_facts,
             })),
         })
     }
@@ -199,6 +216,7 @@ impl SearchService {
             path: current.path.clone(),
             manifest: current.manifest.clone(),
             index: Arc::clone(&current.index),
+            seo_facts: current.seo_facts.clone(),
         }
     }
 
@@ -210,13 +228,30 @@ impl SearchService {
         validate_generation_id(&manifest)
             .context("failed to validate supplied index generation manifest")?;
 
-        {
+        let should_retry_seo_facts = {
             let current = self
                 .current
                 .read()
                 .expect("served generation lock poisoned");
 
+            if current.path != path || current.manifest != manifest {
+                false
+            } else if current.seo_facts.is_loaded() {
+                return Ok(ReconcileOutcome::Unchanged);
+            } else {
+                true
+            }
+        };
+
+        if should_retry_seo_facts {
+            let seo_facts = load_seo_facts_state(&self.config, &path, &manifest);
+            let mut current = self
+                .current
+                .write()
+                .expect("served generation lock poisoned");
+
             if current.path == path && current.manifest == manifest {
+                current.seo_facts = seo_facts;
                 return Ok(ReconcileOutcome::Unchanged);
             }
         }
@@ -231,12 +266,14 @@ impl SearchService {
     ) -> Result<ReconcileOutcome> {
         let index = open_index(&path)
             .with_context(|| format!("failed to open published index generation {path}"))?;
+        let seo_facts = load_seo_facts_state(&self.config, &path, &manifest);
+
         let mut current = self
             .current
             .write()
             .expect("served generation lock poisoned");
 
-        if current.path == path && current.manifest == manifest {
+        if current.path == path && current.manifest == manifest && current.seo_facts.is_loaded() {
             return Ok(ReconcileOutcome::Unchanged);
         }
 
@@ -244,6 +281,7 @@ impl SearchService {
             path,
             manifest,
             index: Arc::new(index),
+            seo_facts,
         };
 
         Ok(ReconcileOutcome::Reloaded)
@@ -683,6 +721,19 @@ fn open_index(path: impl AsRef<Utf8Path>) -> Result<SearchIndex> {
 
     SearchIndex::open(path)
         .with_context(|| format!("failed to open search index {}", path.as_str()))
+}
+
+fn load_seo_facts_state(
+    config: &AppConfig,
+    path: &Utf8Path,
+    manifest: &IndexGenerationManifest,
+) -> SeoFactsState {
+    let index_store = IndexStore::new(&config.data.index_dir);
+
+    match index_store.read_seo_sidecar(path, manifest) {
+        Ok(sidecar) => SeoFactsState::Loaded(Arc::new(sidecar)),
+        Err(error) => SeoFactsState::Unavailable(format!("{error:#}")),
+    }
 }
 
 fn non_empty(value: &str) -> Option<&str> {

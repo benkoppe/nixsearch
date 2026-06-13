@@ -6,6 +6,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use time::OffsetDateTime;
 
 use crate::manifest::{IndexGenerationManifest, refresh_generation_id, validate_generation_id};
+use crate::seo::SeoSidecar;
 
 #[derive(Debug, Clone)]
 pub struct IndexStore {
@@ -275,6 +276,59 @@ impl IndexStore {
         };
 
         self.read_manifest(&current).map(Some)
+    }
+
+    pub fn seo_sidecar_path(&self, generation_path: &Utf8Path) -> Utf8PathBuf {
+        generation_path.join("seo-facts.json")
+    }
+
+    pub fn write_seo_sidecar(
+        &self,
+        generation_path: &Utf8Path,
+        manifest: &IndexGenerationManifest,
+        sidecar: &SeoSidecar,
+    ) -> Result<()> {
+        let generation_path = self.validate_generation_path(generation_path)?;
+        let path = self.seo_sidecar_path(&generation_path);
+
+        sidecar
+            .validate_for_manifest(manifest)
+            .with_context(|| format!("failed to validate SEO sidecar {}", path.as_str()))?;
+
+        let bytes =
+            serde_json::to_vec_pretty(sidecar).context("failed to serialize SEO sidecar")?;
+
+        let temp_path = self.create_temp_file(&generation_path, "seo-facts.json.tmp", &bytes)?;
+
+        if let Err(error) = fs::rename(&temp_path, &path) {
+            let _ = fs::remove_file(&temp_path);
+
+            return Err(error)
+                .with_context(|| format!("failed to write SEO sidecar {}", path.as_str()));
+        }
+
+        Self::sync_dir(&generation_path)?;
+
+        Ok(())
+    }
+
+    pub fn read_seo_sidecar(
+        &self,
+        generation_path: &Utf8Path,
+        manifest: &IndexGenerationManifest,
+    ) -> Result<SeoSidecar> {
+        let path = self.seo_sidecar_path(generation_path);
+        let bytes = fs::read(&path)
+            .with_context(|| format!("failed to read SEO sidecar {}", path.as_str()))?;
+
+        let sidecar: SeoSidecar = serde_json::from_slice(&bytes)
+            .with_context(|| format!("failed to parse SEO sidecar {}", path.as_str()))?;
+
+        sidecar
+            .validate_for_manifest(manifest)
+            .with_context(|| format!("failed to validate SEO sidecar {}", path.as_str()))?;
+
+        Ok(sidecar)
     }
 }
 
