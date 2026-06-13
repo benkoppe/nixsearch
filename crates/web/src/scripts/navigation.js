@@ -394,7 +394,7 @@
     if (!results) return false;
 
     resetVirtualStateForPatch();
-    replaceResultsElement(results);
+    if (!replaceResultsElement(results)) return false;
     finishResultsPatch();
     return true;
   }
@@ -1966,8 +1966,6 @@
     }
   }
 
-  window.nixsearchBeginGenerationChange = beginGenerationChange;
-  window.nixsearchFinishGenerationChange = finishGenerationChange;
   window.nixsearchApplyGenerationChange = applyGenerationChange;
 
   async function loadVirtualSlice(offset, mode, options = {}) {
@@ -2027,7 +2025,7 @@
       );
 
       if (data && data.error === "stale_generation") {
-        handleStaleGenerationSlice();
+        beginStaleGenerationReconcile();
         return;
       }
 
@@ -2077,7 +2075,7 @@
     );
   }
 
-  function handleStaleGenerationSlice() {
+  function beginStaleGenerationReconcile() {
     beginGenerationChange();
     reconcile(currentPublicUrl());
   }

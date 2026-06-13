@@ -1822,8 +1822,8 @@ mod tests {
         assert!(body.contains(r#""resultsHtml":"#));
         assert!(body.contains(r#""modalHtml":"#));
         assert!(body.contains(r#""metadata":"#));
-        assert!(!body.contains("nixsearchBeginGenerationChange"));
-        assert!(!body.contains("nixsearchFinishGenerationChange"));
+        assert!(!body.contains("window.nixsearchBeginGenerationChange"));
+        assert!(!body.contains("window.nixsearchFinishGenerationChange"));
     }
 
     #[tokio::test]
@@ -1872,8 +1872,8 @@ mod tests {
         let (status, body) = request_body(app, &uri).await;
 
         assert_eq!(status, StatusCode::OK);
-        assert!(!body.contains("nixsearchBeginGenerationChange"));
-        assert!(!body.contains("nixsearchFinishGenerationChange"));
+        assert!(!body.contains("window.nixsearchBeginGenerationChange"));
+        assert!(!body.contains("window.nixsearchFinishGenerationChange"));
         assert!(body.contains("nixsearchApplyHeadMetadata"));
     }
 

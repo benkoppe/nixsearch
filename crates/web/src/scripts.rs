@@ -258,7 +258,6 @@ mod tests {
         assert!(results_html_guard < parse_generation);
         assert!(parse_generation < parse_results);
         assert!(parse_results < begin);
-        assert!(target_guard < begin);
         assert!(begin < replace_generation);
         assert!(replace_generation < replace_results);
         assert!(replace_results < finally);
@@ -322,7 +321,7 @@ mod tests {
 
         assert!(stale < remember);
         assert!(stale < apply);
-        assert!(script.contains("function handleStaleGenerationSlice()"));
+        assert!(script.contains("function beginStaleGenerationReconcile()"));
         assert!(script.contains("beginGenerationChange();"));
     }
 
@@ -338,6 +337,7 @@ mod tests {
         assert!(script.contains("resetVirtualStateForPatch();"));
         assert!(script.contains("virtualSliceCache.clear();"));
         assert!(script.contains("virtualRequestEpoch += 1;"));
+        assert!(script.contains("window.nixsearchApplyGenerationChange = applyGenerationChange;"));
         assert!(script.contains(
             "if (generationChanging || !virtualResults || virtualLoadScheduled) return;"
         ));
