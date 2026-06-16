@@ -83,18 +83,6 @@ async fn run_loop(config: Arc<AppConfig>, search: SearchService, interval: Durat
             }
         };
 
-        if should_validate_reconciled_generation(reconcile_outcome)
-            && let Err(error) = SearchService::validate_published_generation(&config, &generation)
-        {
-            tracing::error!(
-                generation = %generation.path,
-                "published index generation became invalid; continuing to serve previous generation: {error:#}"
-            );
-
-            handle_invalid_current_generation(&config, modes, interval).await;
-            continue;
-        }
-
         if reconcile_outcome == ReconcileOutcome::Reloaded {
             run_cleanup_after_reload(&config).await;
         }
@@ -135,10 +123,6 @@ async fn run_loop(config: Arc<AppConfig>, search: SearchService, interval: Durat
         let outcome = run_scheduled_regeneration(&config, interval).await;
         sleep_after_regeneration_outcome(outcome, interval).await;
     }
-}
-
-fn should_validate_reconciled_generation(outcome: ReconcileOutcome) -> bool {
-    matches!(outcome, ReconcileOutcome::Unchanged)
 }
 
 fn regeneration_modes(config: &AppConfig) -> RegenerationModes {
@@ -420,7 +404,6 @@ mod tests {
     use nixsearch_index_test_support::{
         publish_canonical_index, publish_canonical_index_with_generated_at,
     };
-    use nixsearch_service::ReconcileOutcome;
     use nixsearch_test_support::{REF_SMALL, SOURCE_FIXTURES, app_config, utf8_path_buf};
     use tempfile::tempdir;
     use time::Duration as TimeDuration;
@@ -428,7 +411,7 @@ mod tests {
     use super::{
         InvalidCurrentAction, MaintenanceOutcome, RegenerationModes, clamp_duration,
         current_generation_needs_regeneration, duration_until, invalid_current_action, next_due,
-        regeneration_modes, run_recovery_regeneration, should_validate_reconciled_generation,
+        regeneration_modes, run_recovery_regeneration,
     };
 
     #[test]
@@ -491,20 +474,6 @@ mod tests {
         };
 
         assert_eq!(invalid_current_action(modes), InvalidCurrentAction::Retry);
-    }
-
-    #[test]
-    fn unchanged_reconciled_generation_still_gets_disk_validation() {
-        assert!(should_validate_reconciled_generation(
-            ReconcileOutcome::Unchanged
-        ));
-    }
-
-    #[test]
-    fn reloaded_generation_skips_redundant_disk_validation() {
-        assert!(!should_validate_reconciled_generation(
-            ReconcileOutcome::Reloaded
-        ));
     }
 
     #[test]
