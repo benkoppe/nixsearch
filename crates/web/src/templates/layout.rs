@@ -390,10 +390,11 @@ fn page_index_metadata(
                 return noindex_metadata();
             }
 
-            if state.search.is_indexable_ref_in_snapshot(
+            if state.search.is_indexable_entry_in_snapshot(
                 served_generation,
                 &common.source,
                 &common.ref_id,
+                &common.name,
             ) {
                 return canonical_metadata(page_urls.absolute_url(
                     &canonical_entry_path_for_document(&state.config, document, &entry.annotation),

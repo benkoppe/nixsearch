@@ -44,10 +44,23 @@ struct CompleteGeneration {
 
 pub async fn cleanup_locked(config: &AppConfig) -> Result<CleanupReport> {
     let update_lock = lock::acquire_update_lock(&config.data.index_dir)?;
-    Ok(cleanup_under_lock(config, &update_lock).await)
+    cleanup_under_lock(config, &update_lock).await
 }
 
-pub async fn cleanup_under_lock(config: &AppConfig, _update_lock: &UpdateLock) -> CleanupReport {
+pub async fn cleanup_under_lock(
+    config: &AppConfig,
+    update_lock: &UpdateLock,
+) -> Result<CleanupReport> {
+    let expected_lock_path = lock::update_lock_path(&config.data.index_dir);
+    if update_lock.path() != expected_lock_path {
+        anyhow::bail!(
+            "maintenance lock {} does not protect configured index dir {}; expected {}",
+            update_lock.path(),
+            config.data.index_dir,
+            expected_lock_path
+        );
+    }
+
     let mut report = CleanupReport::default();
 
     prune_index_generations(config, &mut report);
@@ -68,7 +81,7 @@ pub async fn cleanup_under_lock(config: &AppConfig, _update_lock: &UpdateLock) -
         });
     }
 
-    report
+    Ok(report)
 }
 
 pub fn log_report(report: &CleanupReport) {
@@ -412,12 +425,30 @@ fn prune_orphaned_generation_locks(index_store: &IndexStore, report: &mut Cleanu
             continue;
         }
 
+        let lease =
+            match index_store.try_acquire_existing_exclusive_generation_lock(generation_name) {
+                Ok(Some(lease)) => lease,
+                Ok(None) => continue,
+                Err(error) => {
+                    report.warnings.push(format!(
+                        "failed to check orphaned index generation lock {path}: {error:#}"
+                    ));
+                    continue;
+                }
+            };
+
+        if index_store.generations_dir().join(generation_name).exists() {
+            continue;
+        }
+
         match fs::remove_file(&path) {
             Ok(()) => report.deleted_generation_locks.push(path),
             Err(error) => report.warnings.push(format!(
                 "failed to delete orphaned index generation lock {path}: {error}"
             )),
         }
+
+        drop(lease);
     }
 }
 
@@ -766,6 +797,7 @@ pub(crate) fn should_try_legacy_nix_store(stderr: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::path::{Path, PathBuf};
 
     use camino::Utf8PathBuf;
@@ -813,7 +845,7 @@ mod tests {
         config.maintenance.index_generations.keep = 2;
 
         let update_lock = crate::lock::acquire_update_lock(&index_dir).unwrap();
-        let report = cleanup_under_lock(&config, &update_lock).await;
+        let report = cleanup_under_lock(&config, &update_lock).await.unwrap();
 
         assert!(current.exists());
         assert!(retained.exists());
@@ -846,7 +878,7 @@ mod tests {
         config.maintenance.index_generations.keep = 2;
 
         let update_lock = crate::lock::acquire_update_lock(&index_dir).unwrap();
-        let report = cleanup_under_lock(&config, &update_lock).await;
+        let report = cleanup_under_lock(&config, &update_lock).await.unwrap();
 
         assert!(current.exists());
         assert!(retained.exists());
@@ -855,7 +887,7 @@ mod tests {
 
         drop(lease);
 
-        let report = cleanup_under_lock(&config, &update_lock).await;
+        let report = cleanup_under_lock(&config, &update_lock).await.unwrap();
 
         assert!(current.exists());
         assert!(retained.exists());
@@ -895,7 +927,7 @@ mod tests {
         config.maintenance.index_generations.keep = 2;
 
         let update_lock = crate::lock::acquire_update_lock(&index_dir).unwrap();
-        let report = cleanup_under_lock(&config, &update_lock).await;
+        let report = cleanup_under_lock(&config, &update_lock).await.unwrap();
 
         assert!(!oldest.exists());
         assert!(retained.exists());
@@ -905,6 +937,48 @@ mod tests {
         assert!(current_lock.exists());
         assert_eq!(report.deleted_generations, vec![oldest]);
         assert_eq!(report.deleted_generation_locks, vec![oldest_lock]);
+    }
+
+    #[tokio::test]
+    async fn cleanup_preserves_active_orphaned_generation_locks() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = Utf8PathBuf::from_path_buf(tempdir.path().join("indexes")).unwrap();
+
+        let generation =
+            publish_canonical_index_with_generated_at(&index_dir, time::OffsetDateTime::UNIX_EPOCH);
+        let store = IndexStore::new(&index_dir);
+        let lease = store.acquire_shared_generation_lease(&generation).unwrap();
+        let lock_path = generation_lock_path(&store, &generation);
+
+        fs::remove_dir_all(&generation).unwrap();
+
+        let config = nixsearch_test_support::app_config(&index_dir);
+        let update_lock = crate::lock::acquire_update_lock(&index_dir).unwrap();
+        let report = cleanup_under_lock(&config, &update_lock).await.unwrap();
+
+        assert!(lock_path.exists());
+        assert!(report.deleted_generation_locks.is_empty());
+
+        drop(lease);
+
+        let report = cleanup_under_lock(&config, &update_lock).await.unwrap();
+
+        assert!(!lock_path.exists());
+        assert_eq!(report.deleted_generation_locks, vec![lock_path]);
+    }
+
+    #[tokio::test]
+    async fn cleanup_under_lock_rejects_mismatched_update_lock() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = Utf8PathBuf::from_path_buf(tempdir.path().join("indexes")).unwrap();
+        let other_index_dir =
+            Utf8PathBuf::from_path_buf(tempdir.path().join("other-indexes")).unwrap();
+        let config = nixsearch_test_support::app_config(&index_dir);
+        let update_lock = crate::lock::acquire_update_lock(&other_index_dir).unwrap();
+
+        let error = cleanup_under_lock(&config, &update_lock).await.unwrap_err();
+
+        assert!(format!("{error:#}").contains("does not protect configured index dir"));
     }
 
     #[test]

@@ -25,6 +25,10 @@ fn print_report(report: &CleanupReport) {
         report.deleted_incomplete_generations.len()
     );
     println!(
+        "  deleted_generation_locks = {}",
+        report.deleted_generation_locks.len()
+    );
+    println!(
         "  preserved_active_generations = {}",
         report.preserved_active_generations.len()
     );
@@ -35,6 +39,10 @@ fn print_report(report: &CleanupReport) {
 
     for path in &report.deleted_incomplete_generations {
         println!("    deleted_incomplete = {path}");
+    }
+
+    for path in &report.deleted_generation_locks {
+        println!("    deleted_generation_lock = {path}");
     }
 
     for path in &report.preserved_active_generations {

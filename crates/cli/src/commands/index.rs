@@ -30,7 +30,7 @@ pub(super) async fn rebuild(args: SelectionArgs) -> Result<()> {
 
     build_and_publish_generation(&index_store, &store, targets, &refresh_keys).await?;
 
-    let report = cleanup::cleanup_under_lock(&config, &update_lock).await;
+    let report = cleanup::cleanup_under_lock(&config, &update_lock).await?;
     cleanup::log_report(&report);
 
     Ok(())

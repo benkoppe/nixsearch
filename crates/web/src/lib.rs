@@ -220,7 +220,7 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<PublishedGenera
                 )
             })?;
 
-            let report = cleanup::cleanup_under_lock(config, &update_lock).await;
+            let report = cleanup::cleanup_under_lock(config, &update_lock).await?;
             cleanup::log_report(&report);
 
             Ok(generation)

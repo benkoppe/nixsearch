@@ -120,6 +120,28 @@ impl SeoSidecarAccumulator {
 }
 
 impl SeoSidecar {
+    pub fn ref_facts(&self, source: &str, ref_id: &str) -> Option<&SeoRefFacts> {
+        self.refs
+            .iter()
+            .find(|facts| facts.source == source && facts.ref_id == ref_id)
+    }
+
+    pub fn entry_facts(&self, source: &str, ref_id: &str, name: &str) -> Option<&SeoEntryFacts> {
+        self.entries
+            .iter()
+            .find(|facts| facts.source == source && facts.ref_id == ref_id && facts.name == name)
+    }
+
+    pub fn ref_has_indexable_entries(&self, source: &str, ref_id: &str) -> bool {
+        self.ref_facts(source, ref_id)
+            .is_some_and(SeoRefFacts::has_indexable_entries)
+    }
+
+    pub fn entry_is_indexable(&self, source: &str, ref_id: &str, name: &str) -> bool {
+        self.entry_facts(source, ref_id, name)
+            .is_some_and(SeoEntryFacts::is_indexable)
+    }
+
     pub fn validate_for_manifest(&self, manifest: &IndexGenerationManifest) -> Result<()> {
         if self.schema_version != SEO_SIDECAR_SCHEMA_VERSION {
             bail!(
@@ -281,6 +303,10 @@ impl SeoSidecar {
 }
 
 impl SeoEntryFacts {
+    pub fn is_indexable(&self) -> bool {
+        self.package_eligible_count + self.option_eligible_count > 0
+    }
+
     fn counts(&self) -> SeoCounts {
         SeoCounts {
             total_supported_indexed_count: self.total_supported_indexed_count,
@@ -304,6 +330,10 @@ impl SeoEntryFacts {
 }
 
 impl SeoRefFacts {
+    pub fn has_indexable_entries(&self) -> bool {
+        self.package_eligible_count + self.option_eligible_count > 0
+    }
+
     fn counts(&self) -> SeoCounts {
         SeoCounts {
             total_supported_indexed_count: self.total_supported_indexed_count,

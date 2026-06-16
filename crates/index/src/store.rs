@@ -72,6 +72,28 @@ impl IndexStore {
             .join(format!("{generation_name}.lock"))
     }
 
+    pub fn try_acquire_existing_exclusive_generation_lock(
+        &self,
+        generation_name: &str,
+    ) -> Result<Option<GenerationLease>> {
+        validate_generation_name(generation_name)?;
+
+        let lock_path = self.generation_lock_path(generation_name);
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .with_context(|| format!("failed to open generation lease {}", lock_path.as_str()))?;
+
+        match file.try_lock() {
+            Ok(()) => Ok(Some(GenerationLease { _file: file })),
+            Err(TryLockError::WouldBlock) => Ok(None),
+            Err(TryLockError::Error(error)) => Err(error).with_context(|| {
+                format!("failed to acquire exclusive generation lease {lock_path}")
+            }),
+        }
+    }
+
     pub fn current_file(&self) -> Utf8PathBuf {
         self.root.join("CURRENT")
     }
@@ -515,6 +537,17 @@ impl IndexStore {
 
         anyhow::bail!("failed to acquire a stable current generation lease")
     }
+}
+
+fn validate_generation_name(generation_name: &str) -> Result<()> {
+    if generation_name.starts_with("generation-")
+        && !generation_name.contains('/')
+        && !generation_name.contains('\\')
+    {
+        return Ok(());
+    }
+
+    anyhow::bail!("invalid generation name {generation_name:?}")
 }
 
 #[cfg(test)]

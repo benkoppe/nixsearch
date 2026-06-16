@@ -53,7 +53,7 @@ pub(super) async fn update(args: SelectionArgs) -> Result<()> {
     )
     .await?;
 
-    let report = cleanup::cleanup_under_lock(&config, &update_lock).await;
+    let report = cleanup::cleanup_under_lock(&config, &update_lock).await?;
     cleanup::log_report(&report);
 
     Ok(())

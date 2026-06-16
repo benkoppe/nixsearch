@@ -297,8 +297,10 @@ async fn run_cleanup_after_reload(config: &AppConfig) {
         }
     };
 
-    let report = cleanup::cleanup_under_lock(config, &update_lock).await;
-    cleanup::log_report(&report);
+    match cleanup::cleanup_under_lock(config, &update_lock).await {
+        Ok(report) => cleanup::log_report(&report),
+        Err(error) => tracing::warn!("index cleanup failed: {error:#}"),
+    }
 
     drop(update_lock);
 }

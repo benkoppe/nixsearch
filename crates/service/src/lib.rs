@@ -101,6 +101,13 @@ impl SeoFactsState {
         matches!(self, Self::Loaded(_))
     }
 
+    pub fn loaded(&self) -> Option<&SeoSidecar> {
+        match self {
+            Self::Loaded(sidecar) => Some(sidecar),
+            Self::Unavailable(_) => None,
+        }
+    }
+
     fn should_replace_with(&self, next: &Self) -> bool {
         !self.is_loaded() || next.is_loaded()
     }
@@ -634,6 +641,24 @@ impl SearchService {
 
         self.ref_allowed_to_be_indexed(source, ref_id)
             && Self::served_ref_exists_in_snapshot(snapshot, source_id, ref_id)
+            && snapshot
+                .seo_facts
+                .loaded()
+                .is_some_and(|facts| facts.ref_has_indexable_entries(source_id, ref_id))
+    }
+
+    pub fn is_indexable_entry_in_snapshot(
+        &self,
+        snapshot: &ServedGenerationSnapshot,
+        source_id: &str,
+        ref_id: &str,
+        name: &str,
+    ) -> bool {
+        self.is_indexable_ref_in_snapshot(snapshot, source_id, ref_id)
+            && snapshot
+                .seo_facts
+                .loaded()
+                .is_some_and(|facts| facts.entry_is_indexable(source_id, ref_id, name))
     }
 
     fn ref_allowed_to_be_indexed(&self, source: &SourceConfig, ref_id: &str) -> bool {
@@ -861,7 +886,7 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use nixsearch_core::document::DocumentKind;
+    use nixsearch_core::document::{DocumentKind, SearchDocument};
     use nixsearch_index::manifest::canonical_generation_id;
     use nixsearch_index::search::{EntryFactsStatus, EntryLookupResult};
     use nixsearch_index::store::{IndexStore, LeasedPublishedGeneration, PublishedGeneration};
@@ -1013,6 +1038,58 @@ mod tests {
         let service = SearchService::open_current(config).unwrap();
 
         assert!(service.is_indexable_ref(SOURCE_FIXTURES, REF_SMALL));
+    }
+
+    #[test]
+    fn default_served_ref_without_eligible_sidecar_facts_is_not_indexable() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        let mut hidden = match option_doc_for(
+            &ingest_context_for(SOURCE_FIXTURES, REF_SMALL),
+            "programs.hidden.enable",
+            "Hidden option.",
+        ) {
+            SearchDocument::Option(doc) => doc,
+            SearchDocument::Package(_) => unreachable!(),
+        };
+        hidden.visible = Some(false);
+
+        publish_documents_with_manifest_targets(
+            &index_dir,
+            time::OffsetDateTime::now_utc(),
+            vec![SearchDocument::Option(hidden)],
+            vec![options_target(SOURCE_FIXTURES, REF_SMALL, 1)],
+        );
+
+        let config = Arc::new(multi_ref_app_config(&index_dir));
+        let service = SearchService::open_current(config).unwrap();
+
+        assert!(service.served_ref_exists(SOURCE_FIXTURES, REF_SMALL));
+        assert!(!service.is_indexable_ref(SOURCE_FIXTURES, REF_SMALL));
+    }
+
+    #[test]
+    fn indexable_entry_requires_loaded_sidecar_entry_facts() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_index(&index_dir);
+
+        let config = Arc::new(multi_ref_app_config(&index_dir));
+        let service = SearchService::open_current(config).unwrap();
+        let snapshot = service.snapshot();
+
+        assert!(service.is_indexable_entry_in_snapshot(
+            &snapshot,
+            SOURCE_FIXTURES,
+            REF_SMALL,
+            "programs.git.enable"
+        ));
+        assert!(!service.is_indexable_entry_in_snapshot(
+            &snapshot,
+            SOURCE_FIXTURES,
+            REF_SMALL,
+            "missing"
+        ));
     }
 
     #[test]
@@ -1417,6 +1494,7 @@ mod tests {
             service.snapshot().seo_facts,
             SeoFactsState::Unavailable(_)
         ));
+        assert!(!service.is_indexable_ref(SOURCE_FIXTURES, REF_SMALL));
 
         let before = service.current_index();
 
