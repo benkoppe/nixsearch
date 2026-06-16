@@ -710,16 +710,16 @@ fn render_full_page_response(
         initial_return_metadata(state, &page_urls, &snapshot, &page_state, results_content)
     };
 
-    let markup = templates::layout::render_full_page(
+    let markup = templates::layout::render_full_page(templates::layout::FullPageRender {
         state,
-        &request,
-        &page_state,
-        &page_urls,
-        &snapshot,
+        request: &request,
+        page_state: &page_state,
+        page_urls: &page_urls,
+        served_generation: &snapshot,
         results_content,
-        &entry,
-        initial_return_metadata.as_ref(),
-    );
+        entry: &entry,
+        initial_return_metadata: initial_return_metadata.as_ref(),
+    });
 
     Html(markup.into_string()).into_response()
 }
@@ -734,19 +734,19 @@ fn render_full_page_error_response(
     let page_state = page_state(&state.config, request);
     let message = error.to_string();
 
-    let markup = templates::layout::render_full_page(
+    let markup = templates::layout::render_full_page(templates::layout::FullPageRender {
         state,
         request,
-        &page_state,
-        &page_urls,
-        snapshot,
-        ResultsContent::Error {
+        page_state: &page_state,
+        page_urls: &page_urls,
+        served_generation: snapshot,
+        results_content: ResultsContent::Error {
             title: "Page unavailable",
             message: &message,
         },
-        &EntryData::Empty,
-        None,
-    );
+        entry: &EntryData::Empty,
+        initial_return_metadata: None,
+    });
 
     (
         status_for_resolution_error(error),
@@ -760,19 +760,19 @@ fn render_parse_error_response(state: &AppState, page_urls: PageUrls, message: &
     let request = PageRequest::default();
     let page_state = page_state(&state.config, &request);
 
-    let markup = templates::layout::render_full_page(
+    let markup = templates::layout::render_full_page(templates::layout::FullPageRender {
         state,
-        &request,
-        &page_state,
-        &page_urls,
-        &snapshot,
-        ResultsContent::Error {
+        request: &request,
+        page_state: &page_state,
+        page_urls: &page_urls,
+        served_generation: &snapshot,
+        results_content: ResultsContent::Error {
             title: "Bad request",
             message,
         },
-        &EntryData::Empty,
-        None,
-    );
+        entry: &EntryData::Empty,
+        initial_return_metadata: None,
+    });
 
     (StatusCode::BAD_REQUEST, Html(markup.into_string())).into_response()
 }
@@ -831,16 +831,16 @@ fn render_full_page_with_entry_error_response(
         initial_return_metadata(state, &page_urls, snapshot, page_state, results_content)
     };
 
-    let markup = templates::layout::render_full_page(
+    let markup = templates::layout::render_full_page(templates::layout::FullPageRender {
         state,
         request,
         page_state,
-        &page_urls,
-        snapshot,
+        page_urls: &page_urls,
+        served_generation: snapshot,
         results_content,
-        &entry,
-        initial_return_metadata.as_ref(),
-    );
+        entry: &entry,
+        initial_return_metadata: initial_return_metadata.as_ref(),
+    });
 
     (error.status(), Html(markup.into_string())).into_response()
 }

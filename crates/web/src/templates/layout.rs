@@ -56,22 +56,34 @@ pub(crate) struct InitialReturnMetadata {
     pub url: String,
 }
 
+pub(crate) struct FullPageRender<'a> {
+    pub state: &'a AppState,
+    pub request: &'a PageRequest,
+    pub page_state: &'a PageState,
+    pub page_urls: &'a PageUrls,
+    pub served_generation: &'a ServedGenerationSnapshot,
+    pub results_content: ResultsContent<'a>,
+    pub entry: &'a EntryData,
+    pub initial_return_metadata: Option<&'a InitialReturnMetadata>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct IndexMetadata {
     canonical_url: Option<String>,
     robots: Option<&'static str>,
 }
 
-pub fn render_full_page(
-    state: &AppState,
-    request: &PageRequest,
-    page_state: &crate::request::PageState,
-    page_urls: &PageUrls,
-    served_generation: &ServedGenerationSnapshot,
-    results_content: ResultsContent<'_>,
-    entry: &EntryData,
-    initial_return_metadata: Option<&InitialReturnMetadata>,
-) -> Markup {
+pub fn render_full_page(page: FullPageRender<'_>) -> Markup {
+    let FullPageRender {
+        state,
+        request,
+        page_state,
+        page_urls,
+        served_generation,
+        results_content,
+        entry,
+        initial_return_metadata,
+    } = page;
     let q = request.query.q.as_deref().unwrap_or("");
     let source_filter = &page_state.source_filter;
 
