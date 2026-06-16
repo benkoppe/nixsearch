@@ -120,21 +120,21 @@ impl SeoSidecarAccumulator {
 }
 
 impl SeoSidecar {
-    pub fn ref_facts(&self, source: &str, ref_id: &str) -> Option<&SeoRefFacts> {
+    fn ref_facts(&self, source: &str, ref_id: &str) -> Option<&SeoRefFacts> {
         self.refs
             .iter()
             .find(|facts| facts.source == source && facts.ref_id == ref_id)
     }
 
-    pub fn entry_facts(&self, source: &str, ref_id: &str, name: &str) -> Option<&SeoEntryFacts> {
+    fn entry_facts(&self, source: &str, ref_id: &str, name: &str) -> Option<&SeoEntryFacts> {
         self.entries
             .iter()
             .find(|facts| facts.source == source && facts.ref_id == ref_id && facts.name == name)
     }
 
-    pub fn ref_has_indexable_entries(&self, source: &str, ref_id: &str) -> bool {
+    pub fn ref_is_indexable(&self, source: &str, ref_id: &str) -> bool {
         self.ref_facts(source, ref_id)
-            .is_some_and(SeoRefFacts::has_indexable_entries)
+            .is_some_and(SeoRefFacts::is_indexable)
     }
 
     pub fn entry_is_indexable(&self, source: &str, ref_id: &str, name: &str) -> bool {
@@ -330,7 +330,7 @@ impl SeoEntryFacts {
 }
 
 impl SeoRefFacts {
-    pub fn has_indexable_entries(&self) -> bool {
+    pub fn is_indexable(&self) -> bool {
         self.package_eligible_count + self.option_eligible_count > 0
     }
 

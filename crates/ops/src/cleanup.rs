@@ -51,15 +51,7 @@ pub async fn cleanup_under_lock(
     config: &AppConfig,
     update_lock: &UpdateLock,
 ) -> Result<CleanupReport> {
-    let expected_lock_path = lock::update_lock_path(&config.data.index_dir);
-    if update_lock.path() != expected_lock_path {
-        anyhow::bail!(
-            "maintenance lock {} does not protect configured index dir {}; expected {}",
-            update_lock.path(),
-            config.data.index_dir,
-            expected_lock_path
-        );
-    }
+    ensure_update_lock_matches_config(config, update_lock)?;
 
     let mut report = CleanupReport::default();
 
@@ -82,6 +74,20 @@ pub async fn cleanup_under_lock(
     }
 
     Ok(report)
+}
+
+fn ensure_update_lock_matches_config(config: &AppConfig, update_lock: &UpdateLock) -> Result<()> {
+    let expected_lock_path = lock::update_lock_path(&config.data.index_dir);
+    if update_lock.path() == expected_lock_path {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "maintenance lock {} does not protect configured index dir {}; expected {}",
+        update_lock.path(),
+        config.data.index_dir,
+        expected_lock_path
+    )
 }
 
 pub fn log_report(report: &CleanupReport) {
@@ -425,7 +431,7 @@ fn prune_orphaned_generation_locks(index_store: &IndexStore, report: &mut Cleanu
             continue;
         }
 
-        let lease =
+        let _lease =
             match index_store.try_acquire_existing_exclusive_generation_lock(generation_name) {
                 Ok(Some(lease)) => lease,
                 Ok(None) => continue,
@@ -447,8 +453,6 @@ fn prune_orphaned_generation_locks(index_store: &IndexStore, report: &mut Cleanu
                 "failed to delete orphaned index generation lock {path}: {error}"
             )),
         }
-
-        drop(lease);
     }
 }
 

@@ -639,12 +639,13 @@ impl SearchService {
             return false;
         };
 
+        let Some(seo_facts) = snapshot.seo_facts.loaded() else {
+            return false;
+        };
+
         self.ref_allowed_to_be_indexed(source, ref_id)
             && Self::served_ref_exists_in_snapshot(snapshot, source_id, ref_id)
-            && snapshot
-                .seo_facts
-                .loaded()
-                .is_some_and(|facts| facts.ref_has_indexable_entries(source_id, ref_id))
+            && seo_facts.ref_is_indexable(source_id, ref_id)
     }
 
     pub fn is_indexable_entry_in_snapshot(
@@ -654,11 +655,17 @@ impl SearchService {
         ref_id: &str,
         name: &str,
     ) -> bool {
-        self.is_indexable_ref_in_snapshot(snapshot, source_id, ref_id)
-            && snapshot
-                .seo_facts
-                .loaded()
-                .is_some_and(|facts| facts.entry_is_indexable(source_id, ref_id, name))
+        let Some(source) = self.config.sources.get(source_id) else {
+            return false;
+        };
+        let Some(seo_facts) = snapshot.seo_facts.loaded() else {
+            return false;
+        };
+
+        self.ref_allowed_to_be_indexed(source, ref_id)
+            && Self::served_ref_exists_in_snapshot(snapshot, source_id, ref_id)
+            && seo_facts.ref_is_indexable(source_id, ref_id)
+            && seo_facts.entry_is_indexable(source_id, ref_id, name)
     }
 
     fn ref_allowed_to_be_indexed(&self, source: &SourceConfig, ref_id: &str) -> bool {

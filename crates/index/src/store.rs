@@ -717,6 +717,56 @@ mod tests {
     }
 
     #[test]
+    fn existing_generation_lock_exclusive_try_acquire_respects_shared_lock() {
+        let tempdir = tempdir().unwrap();
+        let store = store_for(&tempdir);
+        let generation = store.create_generation_path().unwrap();
+        let generation_name = generation.file_name().unwrap();
+        let lease = store.acquire_shared_generation_lease(&generation).unwrap();
+
+        assert!(
+            store
+                .try_acquire_existing_exclusive_generation_lock(generation_name)
+                .unwrap()
+                .is_none()
+        );
+
+        drop(lease);
+
+        assert!(
+            store
+                .try_acquire_existing_exclusive_generation_lock(generation_name)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn existing_generation_lock_exclusive_try_acquire_does_not_create_lock() {
+        let tempdir = tempdir().unwrap();
+        let store = store_for(&tempdir);
+
+        let error = store
+            .try_acquire_existing_exclusive_generation_lock("generation-missing")
+            .unwrap_err();
+
+        assert!(format!("{error:#}").contains("failed to open generation lease"));
+        assert!(!store.generation_lock_path("generation-missing").exists());
+    }
+
+    #[test]
+    fn existing_generation_lock_exclusive_try_acquire_rejects_invalid_names() {
+        let tempdir = tempdir().unwrap();
+        let store = store_for(&tempdir);
+
+        let error = store
+            .try_acquire_existing_exclusive_generation_lock("../generation-bad")
+            .unwrap_err();
+
+        assert!(format!("{error:#}").contains("invalid generation name"));
+    }
+
+    #[test]
     fn shared_generation_lease_rejects_paths_outside_generations_dir() {
         let tempdir = tempdir().unwrap();
         let store = IndexStore::new(utf8_path(tempdir.path().join("indexes")));
