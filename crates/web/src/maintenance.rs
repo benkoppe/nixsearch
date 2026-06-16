@@ -88,7 +88,7 @@ async fn run_loop(config: Arc<AppConfig>, search: SearchService, interval: Durat
         {
             tracing::error!(
                 generation = %generation.path,
-                "published index generation became unreadable; continuing to serve previous generation: {error:#}"
+                "published index generation became invalid; continuing to serve previous generation: {error:#}"
             );
 
             handle_invalid_current_generation(&config, modes, interval).await;
@@ -257,14 +257,14 @@ async fn run_recovery_regeneration(config: &AppConfig) -> MaintenanceOutcome {
                     Ok(()) => {
                         tracing::info!(
                             generation = %generation.path,
-                            "recovery regeneration skipped; current index generation is openable"
+                            "recovery regeneration skipped; current index generation is valid"
                         );
                         return MaintenanceOutcome::Completed;
                     }
                     Err(error) => {
                         tracing::warn!(
                             generation = %generation.path,
-                            "current index generation remains unopenable after lock acquisition; rebuilding: {error:#}"
+                            "current index generation remains invalid after lock acquisition; rebuilding: {error:#}"
                         );
                     }
                 }
@@ -344,7 +344,7 @@ pub(crate) fn current_generation_needs_regeneration(
             if let Err(error) = SearchService::validate_published_generation(config, &generation) {
                 tracing::warn!(
                     generation = %generation.path,
-                    "treating unopenable current index generation as needing regeneration: {error:#}"
+                    "treating invalid current index generation as needing regeneration: {error:#}"
                 );
                 return Ok(true);
             }
@@ -587,7 +587,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recovery_regeneration_rebuilds_fresh_unopenable_generation() {
+    async fn recovery_regeneration_rebuilds_fresh_invalid_generation() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_index(&index_dir);

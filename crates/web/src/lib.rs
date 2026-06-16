@@ -95,7 +95,7 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<PublishedGenera
                 if !config.server.bootstrap {
                     return Err(error).with_context(|| {
                         format!(
-                            "failed to open current index generation {}; run `nixsearch update` first",
+                            "failed to validate current index generation {}; run `nixsearch update` first",
                             generation.path
                         )
                     });
@@ -103,7 +103,7 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<PublishedGenera
 
                 tracing::warn!(
                     generation = %generation.path,
-                    "current index generation cannot be opened; bootstrap will rebuild it: {error:#}"
+                    "current index generation cannot be validated; bootstrap will rebuild it: {error:#}"
                 );
             } else {
                 let missing = maintenance::missing_configured_targets(config, &generation.manifest);
@@ -189,7 +189,7 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<PublishedGenera
                 Err(error) => {
                     tracing::warn!(
                         generation = %generation.path,
-                        "current index generation is still unopenable after acquiring lock; rebuilding it: {error:#}"
+                        "current index generation is still invalid after acquiring lock; rebuilding it: {error:#}"
                     );
                 }
             }
@@ -219,7 +219,7 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<PublishedGenera
             SearchService::validate_published_generation(config, &generation).with_context(
                 || {
                     format!(
-                        "bootstrap published index generation {} but it cannot be opened",
+                        "bootstrap published index generation {} but it cannot be validated",
                         generation.path
                     )
                 },
@@ -390,6 +390,12 @@ mod tests {
         let store = IndexStore::new(index_dir.as_ref());
         let path = store.current_path().unwrap();
         store.read_manifest(&path).unwrap().generation_id
+    }
+
+    fn bootstrap_config(index_dir: impl AsRef<camino::Utf8Path>, tempdir: &TempDir) -> AppConfig {
+        let mut config = app_config(index_dir);
+        config.data.artifact_url = format!("file://{}", tempdir.path().join("artifacts").display());
+        config
     }
 
     struct ReconciledGenerationFixture {
@@ -1651,8 +1657,7 @@ mod tests {
     async fn ensure_current_generation_bootstraps_missing_index() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
-        let mut config = app_config(&index_dir);
-        config.data.artifact_url = format!("file://{}", tempdir.path().join("artifacts").display());
+        let config = bootstrap_config(&index_dir, &tempdir);
 
         let generation = ensure_current_generation(&config).await.unwrap();
 
@@ -1671,8 +1676,7 @@ mod tests {
     async fn ensure_current_generation_bootstraps_missing_current_generation() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
-        let mut config = app_config(&index_dir);
-        config.data.artifact_url = format!("file://{}", tempdir.path().join("artifacts").display());
+        let config = bootstrap_config(&index_dir, &tempdir);
         let store = IndexStore::new(&index_dir);
         store.create_generation_path().unwrap();
         let missing = store.generations_dir().join("missing-generation");
@@ -1689,8 +1693,7 @@ mod tests {
     async fn ensure_current_generation_bootstraps_generation_with_missing_manifest() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
-        let mut config = app_config(&index_dir);
-        config.data.artifact_url = format!("file://{}", tempdir.path().join("artifacts").display());
+        let config = bootstrap_config(&index_dir, &tempdir);
         let store = IndexStore::new(&index_dir);
         let generation_without_manifest = store.create_generation_path().unwrap();
         store.publish(&generation_without_manifest).unwrap();
@@ -1704,7 +1707,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ensure_current_generation_bootstraps_unopenable_generation() {
+    async fn ensure_current_generation_bootstraps_invalid_generation() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_options_index(&index_dir);
@@ -1714,8 +1717,7 @@ mod tests {
         store.write_manifest(&broken, &manifest).unwrap();
         store.publish(&broken).unwrap();
 
-        let mut config = app_config(&index_dir);
-        config.data.artifact_url = format!("file://{}", tempdir.path().join("artifacts").display());
+        let config = bootstrap_config(&index_dir, &tempdir);
 
         let generation = ensure_current_generation(&config).await.unwrap();
 
@@ -1733,8 +1735,7 @@ mod tests {
         let store = IndexStore::new(&index_dir);
         fs::remove_file(store.seo_sidecar_path(&published_path)).unwrap();
 
-        let mut config = app_config(&index_dir);
-        config.data.artifact_url = format!("file://{}", tempdir.path().join("artifacts").display());
+        let config = bootstrap_config(&index_dir, &tempdir);
 
         let generation = ensure_current_generation(&config).await.unwrap();
 
@@ -1745,7 +1746,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ensure_current_generation_errors_on_unopenable_generation_when_bootstrap_disabled() {
+    async fn ensure_current_generation_errors_on_invalid_generation_when_bootstrap_disabled() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_options_index(&index_dir);
@@ -1760,7 +1761,7 @@ mod tests {
         let error = ensure_current_generation(&config).await.unwrap_err();
 
         let error = format!("{error:#}");
-        assert!(error.contains("failed to open current index generation"));
+        assert!(error.contains("failed to validate current index generation"));
         assert!(error.contains("run `nixsearch update` first"));
     }
 
@@ -1786,8 +1787,7 @@ mod tests {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         let published_path = publish_canonical_options_index(&index_dir);
-        let mut config = app_config(&index_dir);
-        config.data.artifact_url = format!("file://{}", tempdir.path().join("artifacts").display());
+        let mut config = bootstrap_config(&index_dir, &tempdir);
         let extra_source = config.sources[SOURCE_FIXTURES].clone();
         config.sources.insert("extra".to_owned(), extra_source);
 

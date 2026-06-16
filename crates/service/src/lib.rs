@@ -246,10 +246,6 @@ impl SearchService {
         })
     }
 
-    pub fn validate_generation(path: impl AsRef<Utf8Path>) -> Result<()> {
-        open_index(path).map(drop)
-    }
-
     pub fn validate_published_generation(
         config: &AppConfig,
         generation: &PublishedGeneration,
