@@ -476,7 +476,14 @@ impl IndexStore {
                 return Ok(None);
             };
 
-            let lease = Arc::new(self.acquire_shared_generation_lease(&path)?);
+            let lease = match self.acquire_shared_generation_lease(&path) {
+                Ok(lease) => Arc::new(lease),
+                Err(error) => match self.try_current_path()? {
+                    Some(current) if current != path => continue,
+                    Some(_) => return Err(error),
+                    None => return Ok(None),
+                },
+            };
 
             match self.try_current_path()? {
                 Some(current) if current == path => {
@@ -914,10 +921,7 @@ mod tests {
         store.write_manifest(&generation, &manifest).unwrap();
         store.publish(&generation).unwrap();
 
-        let loaded = store
-            .try_current_generation_metadata()
-            .unwrap()
-            .unwrap();
+        let loaded = store.try_current_generation_metadata().unwrap().unwrap();
 
         assert_eq!(loaded.path, generation.canonicalize_utf8().unwrap());
         assert_eq!(loaded.manifest.document_count, 1);
@@ -961,12 +965,7 @@ mod tests {
         let tempdir = tempdir().unwrap();
         let store = store_for(&tempdir);
 
-        assert!(
-            store
-                .try_current_generation_metadata()
-                .unwrap()
-                .is_none()
-        );
+        assert!(store.try_current_generation_metadata().unwrap().is_none());
         assert!(store.try_current_leased_generation().unwrap().is_none());
         assert!(
             format!("{:#}", store.current_leased_generation().unwrap_err())
@@ -1101,7 +1100,13 @@ mod tests {
         manifest.generation_id = "sha256:wrong".to_owned();
 
         let error = store
-            .write_seo_sidecar(&PublishedGeneration { path: generation, manifest }, &sidecar)
+            .write_seo_sidecar(
+                &PublishedGeneration {
+                    path: generation,
+                    manifest,
+                },
+                &sidecar,
+            )
             .unwrap_err();
 
         assert!(format!("{error:#}").contains("generation_id mismatch"));

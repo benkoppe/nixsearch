@@ -1556,7 +1556,9 @@ mod tests {
             })
             .unwrap();
 
-        let outcome = service.reload_generation(&store, stale, observed_old).unwrap();
+        let outcome = service
+            .reload_generation(&store, stale, observed_old)
+            .unwrap();
 
         assert_eq!(outcome, ReconcileOutcome::Superseded);
         assert_eq!(service.snapshot().path(), next_path);
@@ -1702,7 +1704,10 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(held.manifest().generated_at, time::OffsetDateTime::UNIX_EPOCH);
+        assert_eq!(
+            held.manifest().generated_at,
+            time::OffsetDateTime::UNIX_EPOCH
+        );
         assert!(result.total > 0);
     }
 

@@ -18,6 +18,7 @@ use crate::lock::{self, UpdateLock};
 pub struct CleanupReport {
     pub deleted_generations: Vec<Utf8PathBuf>,
     pub deleted_incomplete_generations: Vec<Utf8PathBuf>,
+    pub deleted_generation_locks: Vec<Utf8PathBuf>,
     pub preserved_active_generations: Vec<Utf8PathBuf>,
     pub warnings: Vec<String>,
     pub nix_gc: Option<NixCleanupOutcome>,
@@ -77,6 +78,10 @@ pub fn log_report(report: &CleanupReport) {
 
     for path in &report.deleted_incomplete_generations {
         tracing::info!(generation = %path, "deleted stale incomplete index generation");
+    }
+
+    for path in &report.deleted_generation_locks {
+        tracing::info!(lock = %path, "deleted orphaned index generation lock");
     }
 
     for path in &report.preserved_active_generations {
@@ -146,7 +151,13 @@ fn prune_index_generations(config: &AppConfig, report: &mut CleanupReport) {
 
     let entries = match fs::read_dir(index_store.generations_dir()) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            prune_orphaned_generation_locks(&index_store, report);
+            if index_store.generation_locks_dir().exists() {
+                sync_dir_best_effort(&index_store.generation_locks_dir(), report);
+            }
+            return;
+        }
         Err(error) => {
             report.warnings.push(format!(
                 "failed to read index generations directory {}: {error}",
@@ -243,8 +254,12 @@ fn prune_index_generations(config: &AppConfig, report: &mut CleanupReport) {
     }
 
     prune_incomplete_generations(incomplete, delete_failed_after, report);
+    prune_orphaned_generation_locks(&index_store, report);
 
     sync_dir_best_effort(&index_store.generations_dir(), report);
+    if index_store.generation_locks_dir().exists() {
+        sync_dir_best_effort(&index_store.generation_locks_dir(), report);
+    }
 }
 
 fn current_generation_canonical(
@@ -292,16 +307,18 @@ fn prune_complete_generations(
     let keep_non_current = config.maintenance.index_generations.keep.saturating_sub(1);
 
     for generation in complete.into_iter().skip(keep_non_current) {
-        let Some(_lease) = (match index_store.try_acquire_exclusive_generation_lease(&generation.path) {
-            Ok(lease) => lease,
-            Err(error) => {
-                report.warnings.push(format!(
-                    "failed to check active generation lease for {}: {error:#}",
-                    generation.path
-                ));
-                continue;
-            }
-        }) else {
+        let Some(_lease) =
+            (match index_store.try_acquire_exclusive_generation_lease(&generation.path) {
+                Ok(lease) => lease,
+                Err(error) => {
+                    report.warnings.push(format!(
+                        "failed to check active generation lease for {}: {error:#}",
+                        generation.path
+                    ));
+                    continue;
+                }
+            })
+        else {
             report.preserved_active_generations.push(generation.path);
             continue;
         };
@@ -330,6 +347,79 @@ fn prune_incomplete_generations(
             Ok(()) => report.deleted_incomplete_generations.push(path),
             Err(error) => report.warnings.push(format!(
                 "failed to delete stale incomplete index generation {path}: {error}"
+            )),
+        }
+    }
+}
+
+fn prune_orphaned_generation_locks(index_store: &IndexStore, report: &mut CleanupReport) {
+    let entries = match fs::read_dir(index_store.generation_locks_dir()) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return,
+        Err(error) => {
+            report.warnings.push(format!(
+                "failed to read index generation locks directory {}: {error}",
+                index_store.generation_locks_dir()
+            ));
+            return;
+        }
+    };
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                report.warnings.push(format!(
+                    "failed to read index generation lock entry: {error}"
+                ));
+                continue;
+            }
+        };
+
+        let path = match Utf8PathBuf::from_path_buf(entry.path()) {
+            Ok(path) => path,
+            Err(path) => {
+                report.warnings.push(format!(
+                    "skipping non-UTF-8 index generation lock path {}",
+                    path.display()
+                ));
+                continue;
+            }
+        };
+
+        let Some(name) = path.file_name() else {
+            continue;
+        };
+        let Some(generation_name) = name.strip_suffix(".lock") else {
+            continue;
+        };
+
+        if !generation_name.starts_with("generation-") {
+            continue;
+        }
+
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(error) => {
+                report
+                    .warnings
+                    .push(format!("failed to read file type for {path}: {error}"));
+                continue;
+            }
+        };
+
+        if !file_type.is_file() {
+            continue;
+        }
+
+        if index_store.generations_dir().join(generation_name).exists() {
+            continue;
+        }
+
+        match fs::remove_file(&path) {
+            Ok(()) => report.deleted_generation_locks.push(path),
+            Err(error) => report.warnings.push(format!(
+                "failed to delete orphaned index generation lock {path}: {error}"
             )),
         }
     }
@@ -687,15 +777,22 @@ mod tests {
         store_root_from_path,
     };
 
+    fn generation_lock_path(store: &IndexStore, generation: &Utf8PathBuf) -> Utf8PathBuf {
+        let generation_name = generation
+            .file_name()
+            .expect("generation path should have a file name");
+        store
+            .generation_locks_dir()
+            .join(format!("{generation_name}.lock"))
+    }
+
     #[tokio::test]
     async fn cleanup_preserves_generation_with_active_shared_lease() {
         let tempdir = tempdir().unwrap();
         let index_dir = Utf8PathBuf::from_path_buf(tempdir.path().join("indexes")).unwrap();
 
-        let oldest = publish_canonical_index_with_generated_at(
-            &index_dir,
-            time::OffsetDateTime::UNIX_EPOCH,
-        );
+        let oldest =
+            publish_canonical_index_with_generated_at(&index_dir, time::OffsetDateTime::UNIX_EPOCH);
         let leased = publish_canonical_index_with_generated_at(
             &index_dir,
             time::OffsetDateTime::UNIX_EPOCH + TimeDuration::hours(1),
@@ -731,10 +828,8 @@ mod tests {
         let tempdir = tempdir().unwrap();
         let index_dir = Utf8PathBuf::from_path_buf(tempdir.path().join("indexes")).unwrap();
 
-        let leased = publish_canonical_index_with_generated_at(
-            &index_dir,
-            time::OffsetDateTime::UNIX_EPOCH,
-        );
+        let leased =
+            publish_canonical_index_with_generated_at(&index_dir, time::OffsetDateTime::UNIX_EPOCH);
         let retained = publish_canonical_index_with_generated_at(
             &index_dir,
             time::OffsetDateTime::UNIX_EPOCH + TimeDuration::hours(1),
@@ -766,6 +861,50 @@ mod tests {
         assert!(retained.exists());
         assert!(!leased.exists());
         assert_eq!(report.deleted_generations, vec![leased]);
+    }
+
+    #[tokio::test]
+    async fn cleanup_deletes_orphaned_generation_locks() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = Utf8PathBuf::from_path_buf(tempdir.path().join("indexes")).unwrap();
+
+        let oldest =
+            publish_canonical_index_with_generated_at(&index_dir, time::OffsetDateTime::UNIX_EPOCH);
+        let retained = publish_canonical_index_with_generated_at(
+            &index_dir,
+            time::OffsetDateTime::UNIX_EPOCH + TimeDuration::hours(1),
+        );
+        let current = publish_canonical_index_with_generated_at(
+            &index_dir,
+            time::OffsetDateTime::UNIX_EPOCH + TimeDuration::hours(2),
+        );
+
+        let store = IndexStore::new(&index_dir);
+        drop(store.acquire_shared_generation_lease(&oldest).unwrap());
+        drop(store.acquire_shared_generation_lease(&retained).unwrap());
+        drop(store.acquire_shared_generation_lease(&current).unwrap());
+
+        let oldest_lock = generation_lock_path(&store, &oldest);
+        let retained_lock = generation_lock_path(&store, &retained);
+        let current_lock = generation_lock_path(&store, &current);
+        assert!(oldest_lock.exists());
+        assert!(retained_lock.exists());
+        assert!(current_lock.exists());
+
+        let mut config = nixsearch_test_support::app_config(&index_dir);
+        config.maintenance.index_generations.keep = 2;
+
+        let update_lock = crate::lock::acquire_update_lock(&index_dir).unwrap();
+        let report = cleanup_under_lock(&config, &update_lock).await;
+
+        assert!(!oldest.exists());
+        assert!(retained.exists());
+        assert!(current.exists());
+        assert!(!oldest_lock.exists());
+        assert!(retained_lock.exists());
+        assert!(current_lock.exists());
+        assert_eq!(report.deleted_generations, vec![oldest]);
+        assert_eq!(report.deleted_generation_locks, vec![oldest_lock]);
     }
 
     #[test]
