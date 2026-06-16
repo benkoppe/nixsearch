@@ -479,13 +479,39 @@ impl IndexStore {
     }
 
     pub fn try_current_generation_metadata(&self) -> Result<Option<PublishedGeneration>> {
-        let Some(path) = self.try_current_path()? else {
-            return Ok(None);
-        };
+        self.try_current_generation_metadata_with(|_, _| Ok(()))
+    }
 
-        let manifest = self.read_manifest(&path)?;
+    fn try_current_generation_metadata_with(
+        &self,
+        mut after_manifest_read: impl FnMut(&IndexStore, &Utf8Path) -> Result<()>,
+    ) -> Result<Option<PublishedGeneration>> {
+        for _ in 0..100 {
+            let Some(path) = self.try_current_path()? else {
+                return Ok(None);
+            };
 
-        Ok(Some(PublishedGeneration { path, manifest }))
+            let manifest = match self.read_manifest(&path) {
+                Ok(manifest) => manifest,
+                Err(error) => match self.try_current_path()? {
+                    Some(current) if current != path => continue,
+                    Some(_) => return Err(error),
+                    None => return Ok(None),
+                },
+            };
+
+            after_manifest_read(self, &path)?;
+
+            match self.try_current_path()? {
+                Some(current) if current == path => {
+                    return Ok(Some(PublishedGeneration { path, manifest }));
+                }
+                Some(_) => continue,
+                None => return Ok(None),
+            }
+        }
+
+        anyhow::bail!("failed to read stable current generation metadata")
     }
 
     pub fn current_leased_generation(&self) -> Result<LeasedPublishedGeneration> {
@@ -1023,6 +1049,66 @@ mod tests {
 
         assert_eq!(loaded.path, generation.canonicalize_utf8().unwrap());
         assert_eq!(loaded.manifest.document_count, 1);
+    }
+
+    #[test]
+    fn index_store_retries_current_generation_metadata_when_current_changes_after_manifest_read() {
+        let tempdir = tempdir().unwrap();
+        let store = store_for(&tempdir);
+        let old_generation = store.create_generation_path().unwrap();
+        let old_manifest = IndexGenerationManifest::new(
+            1,
+            vec![IndexTargetManifest {
+                source: SOURCE_FIXTURES.to_owned(),
+                ref_id: REF_SMALL.to_owned(),
+                artifact_kind: ArtifactKind::OptionsJson,
+                document_count: 1,
+                artifact_hash: None,
+                revision: None,
+            }],
+        )
+        .unwrap();
+        let new_generation = store.create_generation_path().unwrap();
+        let new_manifest = IndexGenerationManifest::new(
+            2,
+            vec![IndexTargetManifest {
+                source: SOURCE_FIXTURES.to_owned(),
+                ref_id: REF_SMALL.to_owned(),
+                artifact_kind: ArtifactKind::OptionsJson,
+                document_count: 2,
+                artifact_hash: None,
+                revision: None,
+            }],
+        )
+        .unwrap();
+
+        store
+            .write_manifest(&old_generation, &old_manifest)
+            .unwrap();
+        store.publish(&old_generation).unwrap();
+        store
+            .write_manifest(&new_generation, &new_manifest)
+            .unwrap();
+
+        let old_canonical = old_generation.canonicalize_utf8().unwrap();
+        let new_canonical = new_generation.canonicalize_utf8().unwrap();
+        let mut first_attempt = true;
+
+        let loaded = store
+            .try_current_generation_metadata_with(|store, path| {
+                if first_attempt {
+                    first_attempt = false;
+                    assert_eq!(path, old_canonical.as_path());
+                    store.publish(&new_generation).unwrap();
+                }
+
+                Ok(())
+            })
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(loaded.path, new_canonical);
+        assert_eq!(loaded.manifest.document_count, 2);
     }
 
     #[test]

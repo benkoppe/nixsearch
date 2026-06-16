@@ -91,7 +91,7 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<PublishedGenera
 
     match index_store.try_current_generation_metadata() {
         Ok(Some(generation)) => {
-            if let Err(error) = SearchService::validate_generation(&generation.path) {
+            if let Err(error) = SearchService::validate_published_generation(config, &generation) {
                 if !config.server.bootstrap {
                     return Err(error).with_context(|| {
                         format!(
@@ -167,30 +167,33 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<PublishedGenera
         .context("failed to join maintenance lock task")??;
 
     match index_store.try_current_generation_metadata() {
-        Ok(Some(generation)) => match SearchService::validate_generation(&generation.path) {
-            Ok(()) => {
-                let missing = maintenance::missing_configured_targets(config, &generation.manifest);
+        Ok(Some(generation)) => {
+            match SearchService::validate_published_generation(config, &generation) {
+                Ok(()) => {
+                    let missing =
+                        maintenance::missing_configured_targets(config, &generation.manifest);
 
-                if missing.is_empty() || generation_serves_default_scope(config, &generation)? {
-                    tracing::info!(
-                        "current index was created by another process while waiting for lock"
+                    if missing.is_empty() || generation_serves_default_scope(config, &generation)? {
+                        tracing::info!(
+                            "current index was created by another process while waiting for lock"
+                        );
+                        return Ok(generation);
+                    }
+
+                    tracing::warn!(
+                        generation = %generation.path,
+                        missing = %format_target_keys(&missing),
+                        "current index still does not serve a default search scope after acquiring lock; rebuilding"
                     );
-                    return Ok(generation);
                 }
-
-                tracing::warn!(
-                    generation = %generation.path,
-                    missing = %format_target_keys(&missing),
-                    "current index still does not serve a default search scope after acquiring lock; rebuilding"
-                );
+                Err(error) => {
+                    tracing::warn!(
+                        generation = %generation.path,
+                        "current index generation is still unopenable after acquiring lock; rebuilding it: {error:#}"
+                    );
+                }
             }
-            Err(error) => {
-                tracing::warn!(
-                    generation = %generation.path,
-                    "current index generation is still unopenable after acquiring lock; rebuilding it: {error:#}"
-                );
-            }
-        },
+        }
         Ok(None) => {}
         Err(error) => {
             tracing::warn!(
@@ -213,12 +216,14 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<PublishedGenera
 
     match index_store.try_current_generation_metadata()? {
         Some(generation) => {
-            SearchService::validate_generation(&generation.path).with_context(|| {
-                format!(
-                    "bootstrap published index generation {} but it cannot be opened",
-                    generation.path
-                )
-            })?;
+            SearchService::validate_published_generation(config, &generation).with_context(
+                || {
+                    format!(
+                        "bootstrap published index generation {} but it cannot be opened",
+                        generation.path
+                    )
+                },
+            )?;
 
             let report = cleanup::cleanup_under_lock(config, &update_lock).await?;
             cleanup::log_report(&report);
@@ -1721,6 +1726,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ensure_current_generation_bootstraps_generation_with_missing_seo_sidecar() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        let published_path = publish_canonical_options_index(&index_dir);
+        let store = IndexStore::new(&index_dir);
+        fs::remove_file(store.seo_sidecar_path(&published_path)).unwrap();
+
+        let mut config = app_config(&index_dir);
+        config.data.artifact_url = format!("file://{}", tempdir.path().join("artifacts").display());
+
+        let generation = ensure_current_generation(&config).await.unwrap();
+
+        assert_ne!(generation.path, published_path);
+        assert_canonical_options_manifest_targets(&generation.manifest);
+        assert_eq!(store.current_path().unwrap(), generation.path);
+        assert!(store.seo_sidecar_path(&generation.path).exists());
+    }
+
+    #[tokio::test]
     async fn ensure_current_generation_errors_on_unopenable_generation_when_bootstrap_disabled() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
@@ -1737,6 +1761,23 @@ mod tests {
 
         let error = format!("{error:#}");
         assert!(error.contains("failed to open current index generation"));
+        assert!(error.contains("run `nixsearch update` first"));
+    }
+
+    #[tokio::test]
+    async fn ensure_current_generation_errors_on_missing_seo_sidecar_when_bootstrap_disabled() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        let published_path = publish_canonical_options_index(&index_dir);
+        let store = IndexStore::new(&index_dir);
+        fs::remove_file(store.seo_sidecar_path(&published_path)).unwrap();
+        let mut config = app_config(&index_dir);
+        config.server.bootstrap = false;
+
+        let error = ensure_current_generation(&config).await.unwrap_err();
+
+        let error = format!("{error:#}");
+        assert!(error.contains("failed to read SEO sidecar"));
         assert!(error.contains("run `nixsearch update` first"));
     }
 

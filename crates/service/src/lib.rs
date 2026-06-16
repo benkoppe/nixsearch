@@ -250,6 +250,21 @@ impl SearchService {
         open_index(path).map(drop)
     }
 
+    pub fn validate_published_generation(
+        config: &AppConfig,
+        generation: &PublishedGeneration,
+    ) -> Result<()> {
+        validate_generation_id(&generation.manifest)
+            .context("failed to validate supplied index generation manifest")?;
+        let index = open_index(&generation.path)?;
+        let index_store = IndexStore::new(&config.data.index_dir);
+        let sidecar = index_store.read_seo_sidecar(generation)?;
+
+        sidecar
+            .validate_for_index(&generation.manifest, &index)
+            .context("failed to validate SEO sidecar against index")
+    }
+
     pub fn config(&self) -> &AppConfig {
         &self.config
     }

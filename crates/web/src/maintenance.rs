@@ -32,6 +32,13 @@ struct RegenerationModes {
     scheduled_enabled: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InvalidCurrentAction {
+    RecoveryRegeneration,
+    ScheduledRegeneration,
+    Retry,
+}
+
 pub(crate) fn spawn(config: Arc<AppConfig>, search: SearchService) {
     let interval = config
         .server
@@ -71,35 +78,20 @@ async fn run_loop(config: Arc<AppConfig>, search: SearchService, interval: Durat
                     "failed to switch to published index generation; continuing to serve previous generation: {error:#}"
                 );
 
-                if modes.recovery_enabled {
-                    tracing::info!(
-                        "published index generation is unreadable; running recovery regeneration"
-                    );
-                    let outcome = run_recovery_regeneration(&config).await;
-                    sleep_after_regeneration_outcome(outcome, interval).await;
-                    continue;
-                }
-
-                tokio::time::sleep(MANIFEST_ERROR_RETRY.min(RECONCILE_INTERVAL)).await;
+                handle_invalid_current_generation(&config, modes, interval).await;
                 continue;
             }
         };
 
         if should_validate_reconciled_generation(reconcile_outcome)
-            && let Err(error) = SearchService::validate_generation(&generation.path)
+            && let Err(error) = SearchService::validate_published_generation(&config, &generation)
         {
             tracing::error!(
                 generation = %generation.path,
                 "published index generation became unreadable; continuing to serve previous generation: {error:#}"
             );
 
-            if modes.recovery_enabled {
-                let outcome = run_recovery_regeneration(&config).await;
-                sleep_after_regeneration_outcome(outcome, interval).await;
-                continue;
-            }
-
-            tokio::time::sleep(MANIFEST_ERROR_RETRY.min(RECONCILE_INTERVAL)).await;
+            handle_invalid_current_generation(&config, modes, interval).await;
             continue;
         }
 
@@ -155,6 +147,38 @@ fn regeneration_modes(config: &AppConfig) -> RegenerationModes {
     RegenerationModes {
         recovery_enabled: config.server.bootstrap && has_targets,
         scheduled_enabled: config.server.schedule.enabled && has_targets,
+    }
+}
+
+fn invalid_current_action(modes: RegenerationModes) -> InvalidCurrentAction {
+    if modes.recovery_enabled {
+        InvalidCurrentAction::RecoveryRegeneration
+    } else if modes.scheduled_enabled {
+        InvalidCurrentAction::ScheduledRegeneration
+    } else {
+        InvalidCurrentAction::Retry
+    }
+}
+
+async fn handle_invalid_current_generation(
+    config: &AppConfig,
+    modes: RegenerationModes,
+    interval: Duration,
+) {
+    match invalid_current_action(modes) {
+        InvalidCurrentAction::RecoveryRegeneration => {
+            tracing::info!("published index generation is invalid; running recovery regeneration");
+            let outcome = run_recovery_regeneration(config).await;
+            sleep_after_regeneration_outcome(outcome, interval).await;
+        }
+        InvalidCurrentAction::ScheduledRegeneration => {
+            tracing::info!("published index generation is invalid; running scheduled regeneration");
+            let outcome = run_scheduled_regeneration(config, interval).await;
+            sleep_after_regeneration_outcome(outcome, interval).await;
+        }
+        InvalidCurrentAction::Retry => {
+            tokio::time::sleep(MANIFEST_ERROR_RETRY.min(RECONCILE_INTERVAL)).await;
+        }
     }
 }
 
@@ -229,7 +253,7 @@ async fn run_recovery_regeneration(config: &AppConfig) -> MaintenanceOutcome {
                     "current index remains missing configured targets after lock acquisition; rebuilding"
                 );
             } else {
-                match SearchService::validate_generation(&generation.path) {
+                match SearchService::validate_published_generation(config, &generation) {
                     Ok(()) => {
                         tracing::info!(
                             generation = %generation.path,
@@ -317,7 +341,7 @@ pub(crate) fn current_generation_needs_regeneration(
                 return Ok(true);
             }
 
-            if let Err(error) = SearchService::validate_generation(&generation.path) {
+            if let Err(error) = SearchService::validate_published_generation(config, &generation) {
                 tracing::warn!(
                     generation = %generation.path,
                     "treating unopenable current index generation as needing regeneration: {error:#}"
@@ -402,9 +426,9 @@ mod tests {
     use time::Duration as TimeDuration;
 
     use super::{
-        MaintenanceOutcome, clamp_duration, current_generation_needs_regeneration, duration_until,
-        next_due, regeneration_modes, run_recovery_regeneration,
-        should_validate_reconciled_generation,
+        InvalidCurrentAction, MaintenanceOutcome, RegenerationModes, clamp_duration,
+        current_generation_needs_regeneration, duration_until, invalid_current_action, next_due,
+        regeneration_modes, run_recovery_regeneration, should_validate_reconciled_generation,
     };
 
     #[test]
@@ -431,6 +455,42 @@ mod tests {
 
         assert!(!modes.recovery_enabled);
         assert!(modes.scheduled_enabled);
+    }
+
+    #[test]
+    fn invalid_current_action_prefers_recovery_when_enabled() {
+        let modes = RegenerationModes {
+            recovery_enabled: true,
+            scheduled_enabled: true,
+        };
+
+        assert_eq!(
+            invalid_current_action(modes),
+            InvalidCurrentAction::RecoveryRegeneration
+        );
+    }
+
+    #[test]
+    fn invalid_current_action_uses_scheduled_regeneration_without_recovery() {
+        let modes = RegenerationModes {
+            recovery_enabled: false,
+            scheduled_enabled: true,
+        };
+
+        assert_eq!(
+            invalid_current_action(modes),
+            InvalidCurrentAction::ScheduledRegeneration
+        );
+    }
+
+    #[test]
+    fn invalid_current_action_retries_when_regeneration_is_disabled() {
+        let modes = RegenerationModes {
+            recovery_enabled: false,
+            scheduled_enabled: false,
+        };
+
+        assert_eq!(invalid_current_action(modes), InvalidCurrentAction::Retry);
     }
 
     #[test]
@@ -643,6 +703,27 @@ mod tests {
         fs::create_dir_all(&index_dir).unwrap();
         let missing = store.generations_dir().join("missing");
         fs::write(store.current_file(), missing.as_str().as_bytes()).unwrap();
+
+        let config = app_config(&index_dir);
+
+        let needs_regeneration = current_generation_needs_regeneration(
+            &config,
+            &store,
+            Duration::from_secs(60 * 60),
+            time::OffsetDateTime::UNIX_EPOCH,
+        )
+        .unwrap();
+
+        assert!(needs_regeneration);
+    }
+
+    #[test]
+    fn current_generation_needs_regeneration_returns_true_when_seo_sidecar_missing() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        let published_path = publish_canonical_index(&index_dir);
+        let store = IndexStore::new(&index_dir);
+        fs::remove_file(store.seo_sidecar_path(&published_path)).unwrap();
 
         let config = app_config(&index_dir);
 
