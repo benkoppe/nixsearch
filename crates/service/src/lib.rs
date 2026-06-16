@@ -1111,6 +1111,38 @@ mod tests {
     }
 
     #[test]
+    fn forged_sidecar_entry_name_makes_sidecar_unavailable() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        let path = publish_canonical_index(&index_dir);
+        let store = IndexStore::new(&index_dir);
+        let manifest = store.read_manifest(&path).unwrap();
+        let generation = PublishedGeneration { path, manifest };
+        let mut sidecar = store.read_seo_sidecar(&generation).unwrap();
+
+        sidecar.entries[0].name = "not-real".to_owned();
+        store.write_seo_sidecar(&generation, &sidecar).unwrap();
+
+        let config = Arc::new(multi_ref_app_config(&index_dir));
+        let service = SearchService::open_current(config).unwrap();
+        let snapshot = service.snapshot();
+
+        assert!(matches!(snapshot.seo_facts, SeoFactsState::Unavailable(_)));
+        assert!(!service.is_indexable_entry_in_snapshot(
+            &snapshot,
+            SOURCE_FIXTURES,
+            REF_SMALL,
+            "not-real"
+        ));
+        assert!(!service.is_indexable_entry_in_snapshot(
+            &snapshot,
+            SOURCE_FIXTURES,
+            REF_SMALL,
+            "programs.git.enable"
+        ));
+    }
+
+    #[test]
     fn non_default_served_ref_is_not_indexable() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));

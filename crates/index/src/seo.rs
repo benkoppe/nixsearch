@@ -5,7 +5,7 @@ use nixsearch_core::artifact::ArtifactKind;
 use nixsearch_core::document::{DocumentKind, SearchDocument};
 
 use crate::manifest::IndexGenerationManifest;
-use crate::search::{EntryLookup, SearchIndex};
+use crate::search::{EntryLookup, EntrySeoCounts, SearchIndex};
 
 pub const SEO_SIDECAR_SCHEMA_VERSION: u32 = 1;
 
@@ -324,11 +324,7 @@ impl SeoSidecar {
                     )
                 })?;
 
-            if counts.package_supported_count != entry.package_supported_count
-                || counts.option_supported_count != entry.option_supported_count
-                || counts.package_eligible_count != entry.package_eligible_count
-                || counts.option_eligible_count != entry.option_eligible_count
-            {
+            if !entry.matches_index_counts(&counts) {
                 bail!(
                     "SEO sidecar entry {}/{}/{} does not match indexed documents",
                     entry.source,
@@ -345,6 +341,13 @@ impl SeoSidecar {
 impl SeoEntryFacts {
     pub fn is_indexable(&self) -> bool {
         self.package_eligible_count + self.option_eligible_count > 0
+    }
+
+    fn matches_index_counts(&self, counts: &EntrySeoCounts) -> bool {
+        self.package_supported_count == counts.package_supported_count
+            && self.option_supported_count == counts.option_supported_count
+            && self.package_eligible_count == counts.package_eligible_count
+            && self.option_eligible_count == counts.option_eligible_count
     }
 
     fn counts(&self) -> SeoCounts {

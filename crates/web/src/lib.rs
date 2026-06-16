@@ -321,7 +321,7 @@ mod tests {
         REF_SMALL, REF_STABLE, SOURCE_FIXTURES, app_config, app_config_with_extra_fixture_source,
         ingest_context_for, multi_ref_app_config, option_doc_for, package_doc_for, utf8_path_buf,
     };
-    use tempfile::tempdir;
+    use tempfile::{TempDir, tempdir};
     use tower::ServiceExt;
 
     use crate::app_router;
@@ -385,6 +385,41 @@ mod tests {
         let store = IndexStore::new(index_dir.as_ref());
         let path = store.current_path().unwrap();
         store.read_manifest(&path).unwrap().generation_id
+    }
+
+    struct ReconciledGenerationFixture {
+        _tempdir: TempDir,
+        app: Router,
+        old_generation_id: String,
+        new_generation_id: String,
+    }
+
+    fn reconciled_generation_fixture() -> ReconciledGenerationFixture {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+        let old_generation_id = current_generation_id(&index_dir);
+        let app = test_app(app_config(&index_dir));
+
+        let context = ingest_context_for(SOURCE_FIXTURES, REF_SMALL);
+        publish_documents_with_manifest_targets(
+            &index_dir,
+            time::OffsetDateTime::UNIX_EPOCH + time::Duration::hours(1),
+            vec![option_doc_for(
+                &context,
+                "programs.ripgrep.enable",
+                "Ripgrep option.",
+            )],
+            vec![options_target(SOURCE_FIXTURES, REF_SMALL, 1)],
+        );
+        let new_generation_id = current_generation_id(&index_dir);
+
+        ReconciledGenerationFixture {
+            _tempdir: tempdir,
+            app,
+            old_generation_id,
+            new_generation_id,
+        }
     }
 
     fn with_generation(uri: &str, generation_id: &str) -> String {
@@ -932,62 +967,34 @@ mod tests {
 
     #[tokio::test]
     async fn results_slice_reconciles_new_published_generation_before_generation_check() {
-        let tempdir = tempdir().unwrap();
-        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
-        publish_canonical_options_index(&index_dir);
-        let old_generation_id = current_generation_id(&index_dir);
-        let app = test_app(app_config(&index_dir));
-
-        let context = ingest_context_for(SOURCE_FIXTURES, REF_SMALL);
-        publish_documents_with_manifest_targets(
-            &index_dir,
-            time::OffsetDateTime::UNIX_EPOCH + time::Duration::hours(1),
-            vec![option_doc_for(
-                &context,
-                "programs.ripgrep.enable",
-                "Ripgrep option.",
-            )],
-            vec![options_target(SOURCE_FIXTURES, REF_SMALL, 1)],
-        );
-        let new_generation_id = current_generation_id(&index_dir);
+        let fixture = reconciled_generation_fixture();
 
         let uri = with_generation(
             "/-/results/slice?url=%2F%3Fq%3Dgit&offset=0",
-            &old_generation_id,
+            &fixture.old_generation_id,
         );
-        let (status, body) = request_body(app, &uri).await;
+        let (status, body) = request_body(fixture.app, &uri).await;
 
         assert_eq!(status, StatusCode::CONFLICT);
         assert!(body.contains(r#""error":"stale_generation""#));
-        assert!(body.contains(&format!(r#""generationId":"{new_generation_id}""#)));
+        assert!(body.contains(&format!(
+            r#""generationId":"{}""#,
+            fixture.new_generation_id
+        )));
     }
 
     #[tokio::test]
     async fn state_events_reconciles_new_published_generation_before_generation_check() {
-        let tempdir = tempdir().unwrap();
-        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
-        publish_canonical_options_index(&index_dir);
-        let old_generation_id = current_generation_id(&index_dir);
-        let app = test_app(app_config(&index_dir));
+        let fixture = reconciled_generation_fixture();
 
-        let context = ingest_context_for(SOURCE_FIXTURES, REF_SMALL);
-        publish_documents_with_manifest_targets(
-            &index_dir,
-            time::OffsetDateTime::UNIX_EPOCH + time::Duration::hours(1),
-            vec![option_doc_for(
-                &context,
-                "programs.ripgrep.enable",
-                "Ripgrep option.",
-            )],
-            vec![options_target(SOURCE_FIXTURES, REF_SMALL, 1)],
+        let uri = with_generation(
+            "/-/state/events?url=%2F%3Fq%3Dgit",
+            &fixture.old_generation_id,
         );
-        let new_generation_id = current_generation_id(&index_dir);
-
-        let uri = with_generation("/-/state/events?url=%2F%3Fq%3Dgit", &old_generation_id);
-        let (status, body) = request_body(app, &uri).await;
+        let (status, body) = request_body(fixture.app, &uri).await;
 
         assert_eq!(status, StatusCode::OK);
-        assert!(body.contains(&new_generation_id));
+        assert!(body.contains(&fixture.new_generation_id));
     }
 
     #[tokio::test]

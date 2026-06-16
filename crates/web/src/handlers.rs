@@ -132,7 +132,7 @@ pub async fn state_events(State(state): State<AppState>, headers: HeaderMap, uri
     };
     let target_public_url = public_path_and_query(&target_uri);
     let page_urls = page_urls_for_public_uri(&state.config, &headers, &target_uri);
-    let snapshot = reconcile_snapshot_for_request(&state);
+    let snapshot = current_snapshot_for_incremental_request(&state);
 
     if !client_generation_matches(query.generation_id.as_deref(), &snapshot) {
         return generation_change_response(
@@ -287,20 +287,23 @@ fn client_generation_matches(
     client_generation_id == Some(snapshot.manifest().generation_id.as_str())
 }
 
-fn reconcile_snapshot_for_request(state: &AppState) -> ServedGenerationSnapshot {
+fn current_snapshot_for_incremental_request(state: &AppState) -> ServedGenerationSnapshot {
     for _ in 0..REQUEST_RECONCILE_ATTEMPTS {
-        match state.search.reconcile_current_generation() {
-            Ok(ReconcileReport::Unchanged { .. } | ReconcileReport::Reloaded { .. }) => {
-                return state.search.snapshot();
-            }
-            Ok(ReconcileReport::Superseded) => continue,
+        let report = match state.search.reconcile_current_generation() {
+            Ok(report) => report,
             Err(error) => {
                 tracing::warn!(
                     "failed to reconcile published index generation during request; continuing to serve previous generation: {error:#}"
                 );
                 return state.search.snapshot();
             }
+        };
+
+        if matches!(report, ReconcileReport::Superseded) {
+            continue;
         }
+
+        return state.search.snapshot();
     }
 
     tracing::warn!(
@@ -563,7 +566,7 @@ pub async fn results_slice(
         }
     };
 
-    let snapshot = reconcile_snapshot_for_request(&state);
+    let snapshot = current_snapshot_for_incremental_request(&state);
 
     if !client_generation_matches(query.generation_id.as_deref(), &snapshot) {
         return stale_generation_response(&snapshot);
