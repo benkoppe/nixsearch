@@ -34,11 +34,34 @@ pub struct NixCleanupOutcome {
 }
 
 const NIXSEARCH_GCROOTS_DIR: &str = "/nix/var/nix/gcroots/nixsearch-runtime";
+const RUNTIME_GC_ROOT_MARKER: &str = "nixsearch-runtime-root.json";
 
 #[derive(Debug)]
 struct CompleteGeneration {
     path: Utf8PathBuf,
     generated_at: time::OffsetDateTime,
+}
+
+#[derive(Debug)]
+struct RuntimeStoreRoots {
+    required_current_exe: Vec<PathBuf>,
+    auxiliary: Vec<PathBuf>,
+}
+
+#[derive(Debug)]
+struct RuntimeGcRoots {
+    path: PathBuf,
+}
+
+impl RuntimeGcRoots {
+    fn cleanup(self, report: &mut CleanupReport) {
+        if let Err(error) = fs::remove_dir_all(&self.path) {
+            report.warnings.push(format!(
+                "failed to delete temporary runtime GC roots directory {}: {error}",
+                self.path.display()
+            ));
+        }
+    }
 }
 
 pub async fn cleanup_locked(config: &AppConfig) -> Result<CleanupReport> {
@@ -56,8 +79,12 @@ pub async fn cleanup_under_lock(
 
     prune_index_generations(config, &mut report);
 
-    let runtime_roots_prepared =
-        !config.maintenance.nix_store.gc || protect_runtime_gc_roots(&mut report).await;
+    let runtime_gc_roots = if config.maintenance.nix_store.gc {
+        prepare_runtime_gc_roots(&mut report).await
+    } else {
+        None
+    };
+    let runtime_roots_prepared = !config.maintenance.nix_store.gc || runtime_gc_roots.is_some();
 
     if config.maintenance.nix_store.optimise {
         report.nix_optimise =
@@ -70,6 +97,10 @@ pub async fn cleanup_under_lock(
         } else {
             skipped_nix_cleanup("gc", "nix store gc")
         });
+    }
+
+    if let Some(runtime_gc_roots) = runtime_gc_roots {
+        runtime_gc_roots.cleanup(&mut report);
     }
 
     Ok(report)
@@ -527,14 +558,14 @@ fn sync_generation_locks_dir_best_effort(index_store: &IndexStore, report: &mut 
     }
 }
 
-async fn protect_runtime_gc_roots(report: &mut CleanupReport) -> bool {
-    let roots = runtime_store_roots(report);
+async fn prepare_runtime_gc_roots(report: &mut CleanupReport) -> Option<RuntimeGcRoots> {
+    let roots = runtime_store_roots(report)?;
 
-    if roots.is_empty() {
+    if roots.required_current_exe.is_empty() && roots.auxiliary.is_empty() {
         report.warnings.push(
             "failed to identify any runtime Nix store paths; skipping Nix store GC".to_owned(),
         );
-        return false;
+        return None;
     }
 
     let roots_dir = Path::new(NIXSEARCH_GCROOTS_DIR);
@@ -543,23 +574,37 @@ async fn protect_runtime_gc_roots(report: &mut CleanupReport) -> bool {
             "failed to create runtime GC roots directory {}: {error}; skipping Nix store GC",
             roots_dir.display()
         ));
-        return false;
+        return None;
     }
 
-    let mut rooted_any = false;
-    for (index, root) in roots.iter().enumerate() {
-        let Some(name) = root.file_name().and_then(|name| name.to_str()) else {
-            report.warnings.push(format!(
-                "failed to derive runtime GC root name for {}; skipping it",
-                root.display()
-            ));
-            continue;
-        };
+    let run_roots = create_runtime_gc_roots_dir(roots_dir, report)?;
 
-        let link = roots_dir.join(format!("{index}-{name}"));
+    if let Err(error) = write_runtime_gc_root_marker(&run_roots.path, &roots) {
+        report.warnings.push(format!(
+            "failed to write runtime GC roots marker in {}: {error}",
+            run_roots.path.display()
+        ));
+    }
+
+    for root in &roots.required_current_exe {
+        let link = runtime_gc_root_link_path(&run_roots.path, root);
         if let Err(error) = add_runtime_gc_root(root, &link).await {
             report.warnings.push(format!(
-                "failed to create runtime GC root {} -> {}: {error}",
+                "failed to create required runtime GC root {} -> {}; skipping Nix store GC: {error}",
+                link.display(),
+                root.display()
+            ));
+            run_roots.cleanup(report);
+            return None;
+        }
+    }
+
+    let mut rooted_any = !roots.required_current_exe.is_empty();
+    for root in &roots.auxiliary {
+        let link = runtime_gc_root_link_path(&run_roots.path, root);
+        if let Err(error) = add_runtime_gc_root(root, &link).await {
+            report.warnings.push(format!(
+                "failed to create auxiliary runtime GC root {} -> {}: {error}",
                 link.display(),
                 root.display()
             ));
@@ -573,22 +618,61 @@ async fn protect_runtime_gc_roots(report: &mut CleanupReport) -> bool {
         report
             .warnings
             .push("failed to create any runtime GC roots; skipping Nix store GC".to_owned());
-        return false;
+        run_roots.cleanup(report);
+        return None;
     }
 
+    sync_std_dir_best_effort(&run_roots.path, report);
     sync_std_dir_best_effort(roots_dir, report);
-    true
+    Some(run_roots)
 }
 
-fn runtime_store_roots(report: &mut CleanupReport) -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
+fn runtime_store_roots(report: &mut CleanupReport) -> Option<RuntimeStoreRoots> {
+    let required_current_exe = required_current_exe_store_roots(report)?;
+    let auxiliary = auxiliary_runtime_store_roots(&required_current_exe);
 
-    match std::env::current_exe() {
-        Ok(path) => candidates.push(path),
-        Err(error) => report
-            .warnings
-            .push(format!("failed to resolve current executable: {error}")),
+    Some(RuntimeStoreRoots {
+        required_current_exe,
+        auxiliary,
+    })
+}
+
+fn required_current_exe_store_roots(report: &mut CleanupReport) -> Option<Vec<PathBuf>> {
+    let current_exe = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(error) => {
+            report.warnings.push(format!(
+                "failed to resolve current executable; skipping Nix store GC: {error}"
+            ));
+            return None;
+        }
+    };
+
+    let mut roots = current_exe_store_roots_from_paths(&current_exe, None);
+    match current_exe.canonicalize() {
+        Ok(canonical) => {
+            push_store_roots_for_path_without_canonicalize(&canonical, &mut roots);
+        }
+        Err(error) if roots.is_empty() => {
+            report.warnings.push(format!(
+                "failed to canonicalize current executable {}; skipping Nix store GC: {error}",
+                current_exe.display()
+            ));
+            return None;
+        }
+        Err(error) => {
+            report.warnings.push(format!(
+                "failed to canonicalize current executable {}; relying on lexical Nix store root: {error}",
+                current_exe.display()
+            ));
+        }
     }
+
+    Some(roots)
+}
+
+fn auxiliary_runtime_store_roots(required_roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
 
     for command in ["nixsearch", "nix", "nix-store"] {
         if let Some(path) = command_path(command) {
@@ -610,7 +694,7 @@ fn runtime_store_roots(report: &mut CleanupReport) -> Vec<PathBuf> {
         candidates.extend(nix_path_store_candidates(&value));
     }
 
-    store_roots_for_candidates(candidates)
+    store_roots_for_candidates_excluding(candidates, required_roots)
 }
 
 fn command_path(command: &str) -> Option<PathBuf> {
@@ -637,24 +721,32 @@ fn nix_path_store_candidates(value: &std::ffi::OsStr) -> Vec<PathBuf> {
         .collect()
 }
 
-fn store_roots_for_candidates(candidates: Vec<PathBuf>) -> Vec<PathBuf> {
+fn store_roots_for_candidates_excluding(
+    candidates: Vec<PathBuf>,
+    excluded_roots: &[PathBuf],
+) -> Vec<PathBuf> {
     let mut roots = Vec::new();
 
     for candidate in candidates {
         push_store_roots_for_path(&candidate, &mut roots);
     }
 
+    roots.retain(|root| !excluded_roots.iter().any(|excluded| excluded == root));
     roots
 }
 
 fn push_store_roots_for_path(path: &Path, roots: &mut Vec<PathBuf>) {
-    if let Some(root) = store_root_from_path(path) {
-        push_unique_root(roots, root);
-    }
+    push_store_roots_for_path_without_canonicalize(path, roots);
 
     if let Ok(canonical) = path.canonicalize()
         && let Some(root) = store_root_from_path(&canonical)
     {
+        push_unique_root(roots, root);
+    }
+}
+
+fn push_store_roots_for_path_without_canonicalize(path: &Path, roots: &mut Vec<PathBuf>) {
+    if let Some(root) = store_root_from_path(path) {
         push_unique_root(roots, root);
     }
 }
@@ -685,13 +777,86 @@ fn store_root_from_path(path: &Path) -> Option<PathBuf> {
     Some(PathBuf::from("/nix/store").join(store_entry))
 }
 
-async fn add_runtime_gc_root(root: &Path, link: &Path) -> std::result::Result<(), String> {
-    match fs::remove_file(link) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.to_string()),
+fn current_exe_store_roots_from_paths(
+    current_exe: &Path,
+    canonical: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+
+    push_store_roots_for_path_without_canonicalize(current_exe, &mut roots);
+    if let Some(canonical) = canonical {
+        push_store_roots_for_path_without_canonicalize(canonical, &mut roots);
     }
 
+    roots
+}
+
+fn create_runtime_gc_roots_dir(
+    roots_dir: &Path,
+    report: &mut CleanupReport,
+) -> Option<RuntimeGcRoots> {
+    let timestamp = time::OffsetDateTime::now_utc().unix_timestamp_nanos();
+
+    for attempt in 0..100 {
+        let path = roots_dir.join(format!("run-{}-{timestamp}-{attempt}", std::process::id()));
+
+        match fs::create_dir(&path) {
+            Ok(()) => return Some(RuntimeGcRoots { path }),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                report.warnings.push(format!(
+                    "failed to create temporary runtime GC roots directory {}: {error}; skipping Nix store GC",
+                    path.display()
+                ));
+                return None;
+            }
+        }
+    }
+
+    report.warnings.push(format!(
+        "failed to create unique temporary runtime GC roots directory in {}; skipping Nix store GC",
+        roots_dir.display()
+    ));
+    None
+}
+
+fn write_runtime_gc_root_marker(path: &Path, roots: &RuntimeStoreRoots) -> Result<()> {
+    let required_current_exe_roots = roots
+        .required_current_exe
+        .iter()
+        .map(|root| root.display().to_string())
+        .collect::<Vec<_>>();
+    let auxiliary_roots = roots
+        .auxiliary
+        .iter()
+        .map(|root| root.display().to_string())
+        .collect::<Vec<_>>();
+    let marker = serde_json::json!({
+        "schema_version": 1,
+        "pid": std::process::id(),
+        "created_at": time::OffsetDateTime::now_utc(),
+        "required_current_exe_roots": required_current_exe_roots,
+        "auxiliary_roots": auxiliary_roots,
+    });
+
+    fs::write(
+        path.join(RUNTIME_GC_ROOT_MARKER),
+        serde_json::to_vec_pretty(&marker)?,
+    )?;
+
+    Ok(())
+}
+
+fn runtime_gc_root_link_path(roots_dir: &Path, root: &Path) -> PathBuf {
+    let name = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("unknown-store-root");
+
+    roots_dir.join(name)
+}
+
+async fn add_runtime_gc_root(root: &Path, link: &Path) -> std::result::Result<(), String> {
     let output = Command::new("nix-store")
         .arg("--add-root")
         .arg(link)
@@ -832,8 +997,9 @@ mod tests {
     use time::Duration as TimeDuration;
 
     use crate::cleanup::{
-        cleanup_under_lock, push_store_roots_for_path, should_try_legacy_nix_store,
-        store_root_from_path,
+        CleanupReport, RUNTIME_GC_ROOT_MARKER, RuntimeGcRoots, cleanup_under_lock,
+        current_exe_store_roots_from_paths, push_store_roots_for_path, runtime_gc_root_link_path,
+        should_try_legacy_nix_store, store_root_from_path, write_runtime_gc_root_marker,
     };
 
     const STALE_IMMEDIATELY: &str = "0.000000001s";
@@ -1142,5 +1308,103 @@ mod tests {
         push_store_roots_for_path(Path::new("/nix/store/env-path/bin/nix"), &mut roots);
 
         assert_eq!(roots, vec![PathBuf::from("/nix/store/env-path")]);
+    }
+
+    #[test]
+    fn current_exe_store_roots_include_lexical_and_canonical_store_paths() {
+        let roots = current_exe_store_roots_from_paths(
+            Path::new("/nix/store/lexical-nixsearch/bin/nixsearch"),
+            Some(Path::new("/nix/store/canonical-nixsearch/bin/nixsearch")),
+        );
+
+        assert_eq!(
+            roots,
+            vec![
+                PathBuf::from("/nix/store/lexical-nixsearch"),
+                PathBuf::from("/nix/store/canonical-nixsearch"),
+            ]
+        );
+    }
+
+    #[test]
+    fn current_exe_store_roots_allow_non_store_executable() {
+        let roots = current_exe_store_roots_from_paths(Path::new("/usr/bin/nixsearch"), None);
+
+        assert!(roots.is_empty());
+    }
+
+    #[test]
+    fn current_exe_store_roots_use_canonical_store_path_for_wrappers() {
+        let roots = current_exe_store_roots_from_paths(
+            Path::new("/usr/local/bin/nixsearch"),
+            Some(Path::new("/nix/store/canonical-nixsearch/bin/nixsearch")),
+        );
+
+        assert_eq!(roots, vec![PathBuf::from("/nix/store/canonical-nixsearch")]);
+    }
+
+    #[test]
+    fn runtime_gc_root_link_path_uses_store_entry_name() {
+        let link = runtime_gc_root_link_path(
+            Path::new("/tmp/nixsearch-runtime/run-1"),
+            Path::new("/nix/store/abc123-nixsearch"),
+        );
+
+        assert_eq!(
+            link,
+            PathBuf::from("/tmp/nixsearch-runtime/run-1/abc123-nixsearch")
+        );
+    }
+
+    #[test]
+    fn runtime_gc_root_marker_records_roots() {
+        let tempdir = tempdir().unwrap();
+        let roots = crate::cleanup::RuntimeStoreRoots {
+            required_current_exe: vec![PathBuf::from("/nix/store/current-nixsearch")],
+            auxiliary: vec![PathBuf::from("/nix/store/current-nix")],
+        };
+
+        write_runtime_gc_root_marker(tempdir.path(), &roots).unwrap();
+
+        let marker = fs::read_to_string(tempdir.path().join(RUNTIME_GC_ROOT_MARKER)).unwrap();
+        let marker: serde_json::Value = serde_json::from_str(&marker).unwrap();
+        assert_eq!(marker["schema_version"], 1);
+        assert_eq!(
+            marker["required_current_exe_roots"],
+            serde_json::json!(["/nix/store/current-nixsearch"])
+        );
+        assert_eq!(
+            marker["auxiliary_roots"],
+            serde_json::json!(["/nix/store/current-nix"])
+        );
+    }
+
+    #[test]
+    fn runtime_gc_roots_cleanup_removes_run_directory() {
+        let tempdir = tempdir().unwrap();
+        let run_dir = tempdir.path().join("run");
+        fs::create_dir(&run_dir).unwrap();
+        fs::write(run_dir.join("root"), b"root").unwrap();
+        let mut report = CleanupReport::default();
+
+        RuntimeGcRoots {
+            path: run_dir.clone(),
+        }
+        .cleanup(&mut report);
+
+        assert!(!run_dir.exists());
+        assert!(report.warnings.is_empty());
+    }
+
+    #[test]
+    fn runtime_gc_roots_cleanup_warns_when_run_directory_removal_fails() {
+        let tempdir = tempdir().unwrap();
+        let missing = tempdir.path().join("missing-run");
+        let mut report = CleanupReport::default();
+
+        RuntimeGcRoots { path: missing }.cleanup(&mut report);
+
+        assert_eq!(report.warnings.len(), 1);
+        assert!(report.warnings[0].contains("failed to delete temporary runtime GC roots"));
     }
 }
