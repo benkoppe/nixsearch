@@ -395,16 +395,16 @@ mod tests {
         app_router(AppState { config, search })
     }
 
-    async fn wait_for_seo_facts_verification_to_start(search: &SearchService) {
+    async fn wait_for_seo_facts_verification_to_be_claimed(search: &SearchService) {
         for _ in 0..50 {
-            if !search.current_seo_facts_need_verification() {
+            if !search.current_seo_facts_can_start_verification() {
                 return;
             }
 
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
 
-        panic!("SEO facts verification did not start");
+        panic!("SEO facts verification was not claimed");
     }
 
     struct TestResponse {
@@ -718,7 +718,7 @@ mod tests {
         let fixture = reconciled_generation_fixture();
 
         let (status, body) = request_body(fixture.app, "/").await;
-        wait_for_seo_facts_verification_to_start(&fixture.search).await;
+        wait_for_seo_facts_verification_to_be_claimed(&fixture.search).await;
 
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains(&format!(

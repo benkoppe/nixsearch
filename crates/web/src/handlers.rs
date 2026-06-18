@@ -304,10 +304,7 @@ fn current_snapshot_for_request(state: &AppState) -> ServedGenerationSnapshot {
             continue;
         }
 
-        let snapshot = state.search.snapshot();
-        maintenance::spawn_seo_facts_verification_if_needed(state.search.clone());
-
-        return snapshot;
+        return snapshot_for_request_with_seo_verification(state);
     }
 
     tracing::warn!(
@@ -315,6 +312,10 @@ fn current_snapshot_for_request(state: &AppState) -> ServedGenerationSnapshot {
         "published index generation changed repeatedly during request reconciliation; continuing with current snapshot"
     );
 
+    snapshot_for_request_with_seo_verification(state)
+}
+
+fn snapshot_for_request_with_seo_verification(state: &AppState) -> ServedGenerationSnapshot {
     let snapshot = state.search.snapshot();
     maintenance::spawn_seo_facts_verification_if_needed(state.search.clone());
 

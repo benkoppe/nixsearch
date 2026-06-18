@@ -66,7 +66,7 @@ pub(crate) fn spawn(config: Arc<AppConfig>, search: SearchService) {
 }
 
 pub(crate) fn spawn_seo_facts_verification_if_needed(search: SearchService) {
-    if !search.current_seo_facts_need_verification() {
+    if !search.current_seo_facts_can_start_verification() {
         return;
     }
 

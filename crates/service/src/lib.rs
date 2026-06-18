@@ -322,7 +322,7 @@ impl SearchService {
     }
 
     pub fn verify_current_seo_facts(&self) -> SeoFactsVerificationReport {
-        let Some(candidate) = ({
+        let (generation, index, facts) = {
             let mut current = self
                 .current
                 .write()
@@ -350,14 +350,11 @@ impl SearchService {
                     let facts = Arc::clone(facts);
                     current.seo_facts = SeoFactsState::Verifying(Arc::clone(&facts));
 
-                    Some((generation, index, facts))
+                    (generation, index, facts)
                 }
             }
-        }) else {
-            unreachable!("all SEO facts states return or provide a verification candidate")
         };
 
-        let (generation, index, facts) = candidate;
         let published = generation.to_published_generation();
         let verification = facts.validate_for_index(generation.manifest(), &index);
 
@@ -404,7 +401,7 @@ impl SearchService {
         }
     }
 
-    pub fn current_seo_facts_need_verification(&self) -> bool {
+    pub fn current_seo_facts_can_start_verification(&self) -> bool {
         let current = self
             .current
             .read()
@@ -1276,7 +1273,7 @@ mod tests {
         let service = SearchService::open_current(config).unwrap();
         let snapshot = service.snapshot();
 
-        assert!(service.current_seo_facts_need_verification());
+        assert!(service.current_seo_facts_can_start_verification());
         assert!(service.sitemap_candidates(&snapshot).is_err());
         assert_eq!(
             service.source_has_indexable_entries(&snapshot, SOURCE_FIXTURES, REF_SMALL),
@@ -1292,7 +1289,7 @@ mod tests {
             service.source_has_indexable_entries(&snapshot, SOURCE_FIXTURES, REF_SMALL),
             Ok(true)
         );
-        assert!(!service.current_seo_facts_need_verification());
+        assert!(!service.current_seo_facts_can_start_verification());
 
         let report = service.verify_current_seo_facts();
         assert!(matches!(
@@ -1310,7 +1307,7 @@ mod tests {
         let config = Arc::new(multi_ref_app_config(&index_dir));
         let service = SearchService::open_current(config).unwrap();
 
-        assert!(service.current_seo_facts_need_verification());
+        assert!(service.current_seo_facts_can_start_verification());
         {
             let mut current = service
                 .current
@@ -1324,7 +1321,7 @@ mod tests {
             current.seo_facts = super::SeoFactsState::Verifying(facts);
         }
 
-        assert!(!service.current_seo_facts_need_verification());
+        assert!(!service.current_seo_facts_can_start_verification());
         let report = service.verify_current_seo_facts();
         assert!(matches!(
             report,
@@ -1416,7 +1413,7 @@ mod tests {
         let report = service.verify_current_seo_facts();
         assert!(matches!(report, SeoFactsVerificationReport::Invalid { .. }));
         assert!(service.sitemap_candidates(&service.snapshot()).is_err());
-        assert!(!service.current_seo_facts_need_verification());
+        assert!(!service.current_seo_facts_can_start_verification());
 
         let report = service.verify_current_seo_facts();
         assert!(matches!(
