@@ -9,6 +9,7 @@ use nixsearch_ops::generate::build_and_publish_generation;
 use nixsearch_ops::lock::acquire_update_lock;
 use nixsearch_ops::produce::artifact_store_from_config;
 use nixsearch_ops::targets::{TargetKey, select_targets};
+use nixsearch_service::SearchService;
 
 use crate::args::{ConfigArgs, SelectionArgs};
 
@@ -41,7 +42,11 @@ pub(super) fn inspect(args: ConfigArgs) -> Result<()> {
     let index_store = IndexStore::new(&config.data.index_dir);
 
     let generation = index_store.current_leased_generation()?;
-    let validation = index_store.validate_leased_generation(&generation);
+    let validation = if config.public_seo_enabled() {
+        SearchService::validate_leased_generation_for_public_seo(&config, &generation)
+    } else {
+        SearchService::validate_leased_generation_for_serve(&config, &generation)
+    };
     let manifest = generation.manifest();
 
     println!("current index");

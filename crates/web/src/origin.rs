@@ -12,6 +12,7 @@ pub struct PageUrls {
     pub current_url: String,
     pub image_url: String,
     pub origin: String,
+    pub public_seo_enabled: bool,
 }
 
 impl PageUrls {
@@ -70,13 +71,18 @@ fn page_urls_for_uri(config: &AppConfig, headers: &HeaderMap, uri: &Uri) -> Page
     let path = uri.path();
     let query = uri.query();
 
-    page_urls_from_origin(origin_for_request(config, headers), path, query)
+    page_urls_from_origin(
+        origin_for_request(config, headers),
+        path,
+        query,
+        config.public_seo_enabled(),
+    )
 }
 
 #[cfg(test)]
 fn page_urls_from_base(base: Url, path: &str, query: Option<&str>) -> PageUrls {
     let origin = origin_from_url(base);
-    page_urls_from_origin(origin, path, query)
+    page_urls_from_origin(origin, path, query, true)
 }
 
 fn origin_for_request(config: &AppConfig, headers: &HeaderMap) -> String {
@@ -92,7 +98,7 @@ fn origin_for_request(config: &AppConfig, headers: &HeaderMap) -> String {
 
 #[cfg(test)]
 fn page_urls_from_headers(headers: &HeaderMap, path: &str, query: Option<&str>) -> PageUrls {
-    page_urls_from_origin(origin_from_headers(headers), path, query)
+    page_urls_from_origin(origin_from_headers(headers), path, query, false)
 }
 
 #[cfg(test)]
@@ -114,7 +120,12 @@ fn origin_from_headers(headers: &HeaderMap) -> String {
     Url::parse(&origin).map(origin_from_url).unwrap_or(origin)
 }
 
-fn page_urls_from_origin(origin: String, path: &str, query: Option<&str>) -> PageUrls {
+fn page_urls_from_origin(
+    origin: String,
+    path: &str,
+    query: Option<&str>,
+    public_seo_enabled: bool,
+) -> PageUrls {
     let path_and_query = match query {
         Some(query) => format!("{path}?{query}"),
         None => path.to_owned(),
@@ -124,6 +135,7 @@ fn page_urls_from_origin(origin: String, path: &str, query: Option<&str>) -> Pag
         current_url: format!("{origin}{path_and_query}"),
         image_url: format!("{origin}/apple-touch-icon.png"),
         origin,
+        public_seo_enabled,
     }
 }
 

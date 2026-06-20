@@ -56,13 +56,20 @@
 
   function currentHeadMetadata() {
     const canonical = document.head.querySelector('link[rel~="canonical"]');
+    const ogUrl = headMetaContent("property", "og:url");
+    const ogImage = headMetaContent("property", "og:image");
 
     return {
       title: document.title,
       description: headMetaContent("name", "description"),
       robots: headMetaContent("name", "robots"),
-      url: headMetaContent("property", "og:url"),
-      imageUrl: headMetaContent("property", "og:image"),
+      openGraph:
+        ogUrl && ogImage
+          ? {
+              url: ogUrl,
+              imageUrl: ogImage,
+            }
+          : null,
       canonicalUrl: canonical ? canonical.getAttribute("href") || "" : null,
     };
   }
@@ -155,12 +162,29 @@
 
     setMeta("name", "description", metadata.description);
     setMeta("name", "robots", metadata.robots);
-    setMeta("property", "og:url", metadata.url);
-    setMeta("property", "og:title", metadata.title);
-    setMeta("property", "og:description", metadata.description);
-    setMeta("property", "og:image", metadata.imageUrl);
+    if (metadata.openGraph) {
+      setMeta("property", "og:url", metadata.openGraph.url);
+      setMeta("property", "og:type", "website");
+      setMeta("property", "og:site_name", "nixsearch");
+      setMeta("property", "og:title", metadata.title);
+      setMeta("property", "og:description", metadata.description);
+      setMeta("property", "og:image", metadata.openGraph.imageUrl);
+    } else {
+      removeOpenGraphMetadata();
+    }
     setCanonicalUrl(metadata.canonicalUrl);
     return true;
+  }
+
+  function removeOpenGraphMetadata() {
+    [
+      "og:url",
+      "og:type",
+      "og:site_name",
+      "og:title",
+      "og:description",
+      "og:image",
+    ].forEach((property) => setMeta("property", property, null));
   }
 
   function restoreHeadMetadata(metadata) {

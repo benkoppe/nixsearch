@@ -136,6 +136,7 @@ fn assert_error_contains(error: &str, expected: &str) {
 fn default_config_is_valid() {
     let config = AppConfig::load(None).unwrap();
 
+    config.validate().unwrap();
     assert_eq!(config.data.artifact_url, "file://./data/artifacts");
     assert_eq!(config.data.index_dir, Utf8PathBuf::from("./data/indexes"));
     assert_eq!(config.server.listen, "127.0.0.1:3000");
@@ -293,6 +294,10 @@ fn loads_example_config_file() {
 
     let config = AppConfig::load(Some(&path)).unwrap();
 
+    assert_eq!(
+        config.server.public_url.as_deref(),
+        Some("https://nixsearch.example.com")
+    );
     assert!(config.sources.contains_key("eval-fixture"));
     assert_eq!(config.default_ref_set(), Some("unstable"));
     assert_eq!(

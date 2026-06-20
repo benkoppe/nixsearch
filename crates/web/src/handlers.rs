@@ -65,6 +65,14 @@ pub async fn datastar_js() -> impl IntoResponse {
 }
 
 pub async fn robots_txt(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
+    if !state.config.public_seo_enabled() {
+        return (
+            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            "User-agent: *\nDisallow: /\n",
+        )
+            .into_response();
+    }
+
     let urls = page_urls(state.config.as_ref(), &headers, &uri);
     (
         [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
@@ -77,6 +85,10 @@ pub async fn robots_txt(State(state): State<AppState>, headers: HeaderMap, uri: 
 }
 
 pub async fn sitemap_xml(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
+    if !state.config.public_seo_enabled() {
+        return sitemaps_not_found().await;
+    }
+
     let urls = page_urls(state.config.as_ref(), &headers, &uri);
     let snapshot = current_snapshot_for_request(&state);
 
@@ -1023,6 +1035,7 @@ fn initial_return_metadata(
         current_url: page_urls.absolute_url(&close_path),
         image_url: page_urls.image_url.clone(),
         origin: page_urls.origin.clone(),
+        public_seo_enabled: page_urls.public_seo_enabled,
     };
 
     let metadata = templates::layout::page_head_metadata(

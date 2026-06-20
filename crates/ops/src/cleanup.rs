@@ -272,15 +272,26 @@ fn prune_index_generations(config: &AppConfig, report: &mut CleanupReport) {
             .as_ref()
             .is_some_and(|current| current == &canonical);
 
-        if is_current
-            && valid_seo_complete_generation(&index_store, &canonical)
+        if is_current {
+            if config.public_seo_enabled() {
+                if valid_seo_complete_generation(&index_store, &canonical)
+                    .map(|manifest| {
+                        current_is_valid = true;
+                        Some(manifest)
+                    })
+                    .is_some()
+                {
+                    continue;
+                }
+            } else if structurally_complete_generation_manifest(&index_store, &canonical)
                 .map(|manifest| {
                     current_is_valid = true;
                     Some(manifest)
                 })
                 .is_some()
-        {
-            continue;
+            {
+                continue;
+            }
         }
 
         if let Some(manifest) = structurally_complete_generation_manifest(&index_store, &canonical)
@@ -1117,7 +1128,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cleanup_preserves_complete_generations_when_current_sidecar_is_missing() {
+    async fn cleanup_preserves_complete_generations_when_public_current_sidecar_is_missing() {
         let tempdir = tempdir().unwrap();
         let index_dir = Utf8PathBuf::from_path_buf(tempdir.path().join("indexes")).unwrap();
 
@@ -1131,6 +1142,7 @@ mod tests {
         fs::remove_file(store.seo_sidecar_path(&current)).unwrap();
 
         let mut config = nixsearch_test_support::app_config(&index_dir);
+        config.server.public_url = Some("https://search.example.com".to_owned());
         config.maintenance.index_generations.keep = 1;
 
         let update_lock = crate::lock::acquire_update_lock(&index_dir).unwrap();
@@ -1145,6 +1157,34 @@ mod tests {
                 .iter()
                 .any(|warning| warning.contains("current index generation is missing"))
         );
+    }
+
+    #[tokio::test]
+    async fn cleanup_prunes_normally_when_non_public_current_sidecar_is_missing() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = Utf8PathBuf::from_path_buf(tempdir.path().join("indexes")).unwrap();
+
+        let fallback =
+            publish_canonical_index_with_generated_at(&index_dir, time::OffsetDateTime::UNIX_EPOCH);
+        let current = publish_canonical_index_with_generated_at(
+            &index_dir,
+            time::OffsetDateTime::UNIX_EPOCH + TimeDuration::hours(1),
+        );
+        let store = IndexStore::new(&index_dir);
+        let sidecar_path = store.seo_sidecar_path(&current);
+        fs::remove_file(&sidecar_path).unwrap();
+
+        let mut config = nixsearch_test_support::app_config(&index_dir);
+        config.maintenance.index_generations.keep = 1;
+
+        let update_lock = crate::lock::acquire_update_lock(&index_dir).unwrap();
+        let report = cleanup_under_lock(&config, &update_lock).await.unwrap();
+
+        assert!(!fallback.exists());
+        assert!(current.exists());
+        assert!(!sidecar_path.exists());
+        assert_eq!(report.deleted_generations, vec![fallback]);
+        assert!(report.warnings.is_empty());
     }
 
     #[tokio::test]

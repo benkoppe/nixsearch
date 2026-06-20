@@ -161,14 +161,16 @@ async fn handle_invalid_current_generation(
     modes: RegenerationModes,
     interval: Duration,
 ) {
-    let repair = run_seo_sidecar_repair(config).await;
-    match repair {
-        MaintenanceOutcome::Completed => return,
-        MaintenanceOutcome::LockBusy => {
-            sleep_after_regeneration_outcome(repair, interval).await;
-            return;
+    if config.public_seo_enabled() {
+        let repair = run_seo_sidecar_repair(config).await;
+        match repair {
+            MaintenanceOutcome::Completed => return,
+            MaintenanceOutcome::LockBusy => {
+                sleep_after_regeneration_outcome(repair, interval).await;
+                return;
+            }
+            MaintenanceOutcome::Failed => {}
         }
-        MaintenanceOutcome::Failed => {}
     }
 
     match invalid_current_action(modes) {
@@ -410,14 +412,17 @@ fn current_generation_status(
         });
     }
 
-    if let Err(error) = SearchService::validate_leased_generation(config, &generation) {
+    if let Err(error) = SearchService::validate_leased_generation_for_serve(config, &generation) {
         return Ok(CurrentGenerationStatus::Invalid {
             generation: published,
             error,
         });
     }
 
-    if let Err(error) = SearchService::validate_leased_generation_seo_facts(config, &generation) {
+    if config.public_seo_enabled()
+        && let Err(error) =
+            SearchService::validate_leased_generation_for_public_seo(config, &generation)
+    {
         return Ok(CurrentGenerationStatus::Invalid {
             generation: published,
             error,
@@ -501,7 +506,8 @@ mod tests {
     fn regeneration_modes_enable_recovery_without_scheduling() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
-        let config = app_config(&index_dir);
+        let mut config = app_config(&index_dir);
+        config.server.public_url = Some("https://search.example.com".to_owned());
 
         let modes = regeneration_modes(&config);
 
@@ -777,7 +783,8 @@ mod tests {
         let store = IndexStore::new(&index_dir);
         fs::remove_file(store.seo_sidecar_path(&published_path)).unwrap();
 
-        let config = app_config(&index_dir);
+        let mut config = app_config(&index_dir);
+        config.server.public_url = Some("https://search.example.com".to_owned());
 
         let needs_regeneration = current_generation_needs_regeneration(
             &config,

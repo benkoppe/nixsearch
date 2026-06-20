@@ -147,6 +147,10 @@ impl AppConfig {
         self.ref_sets.keys().next().map(String::as_str)
     }
 
+    pub fn public_seo_enabled(&self) -> bool {
+        self.server.public_url.is_some()
+    }
+
     pub fn refs_for_ref_set_source(&self, ref_set_id: &str, source_id: &str) -> Option<&[String]> {
         self.ref_sets
             .get(ref_set_id)?

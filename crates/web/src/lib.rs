@@ -39,9 +39,7 @@ struct AppState {
 }
 
 pub async fn serve(config: AppConfig) -> Result<()> {
-    if config.server.public_url.is_none() {
-        bail!("server.public_url is required when serving the web UI");
-    }
+    config.validate()?;
 
     ensure_current_generation(&config).await?;
 
@@ -95,10 +93,12 @@ fn app_router(state: AppState) -> Router {
 async fn ensure_current_generation(config: &AppConfig) -> Result<PublishedGeneration> {
     let index_store = IndexStore::new(&config.data.index_dir);
 
-    if matches!(
-        validated_current_generation(config, &index_store),
-        Ok(CurrentGenerationValidation::Invalid { .. })
-    ) {
+    if config.public_seo_enabled()
+        && matches!(
+            validated_current_generation(config, &index_store),
+            Ok(CurrentGenerationValidation::Invalid { .. })
+        )
+    {
         match repair_current_generation(config).await {
             Ok(()) => {}
             Err(error) => {
@@ -302,7 +302,17 @@ fn validated_current_generation(
     };
     let published = generation.to_published_generation();
 
-    if let Err(error) = SearchService::validate_leased_generation(config, &generation) {
+    if let Err(error) = SearchService::validate_leased_generation_for_serve(config, &generation) {
+        return Ok(CurrentGenerationValidation::Invalid {
+            generation: published,
+            error,
+        });
+    }
+
+    if config.public_seo_enabled()
+        && let Err(error) =
+            SearchService::validate_leased_generation_for_public_seo(config, &generation)
+    {
         return Ok(CurrentGenerationValidation::Invalid {
             generation: published,
             error,
@@ -509,7 +519,7 @@ mod tests {
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_options_index(&index_dir);
         let old_generation_id = current_generation_id(&index_dir);
-        let app = test_app(app_config(&index_dir));
+        let app = test_app(app_config_with_public_url(&index_dir));
 
         let context = ingest_context_for(SOURCE_FIXTURES, REF_SMALL);
         publish_documents_with_manifest_targets(
@@ -689,6 +699,13 @@ mod tests {
         assert!(body.contains(&tag), "missing og:url tag {tag:?}");
     }
 
+    fn assert_no_open_graph(body: &str) {
+        assert!(
+            !body.contains(r#"property="og:"#),
+            "unexpected Open Graph tag in body"
+        );
+    }
+
     fn assert_h1_count(body: &str, expected: usize) {
         let count = body.matches("<h1").count();
         assert_eq!(count, expected, "unexpected h1 count in body");
@@ -727,7 +744,7 @@ mod tests {
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_options_index(&index_dir);
 
-        let app = test_app(app_config(&index_dir));
+        let app = test_app(app_config_with_public_url(&index_dir));
 
         assert_eq!(request_status(app, "/missing").await, StatusCode::NOT_FOUND);
     }
@@ -738,7 +755,7 @@ mod tests {
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_options_index(&index_dir);
 
-        let app = test_app(app_config(&index_dir));
+        let app = test_app(app_config_with_public_url(&index_dir));
 
         assert_eq!(
             request_status(app, "/fixtures?ref=missing").await,
@@ -877,21 +894,21 @@ mod tests {
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_options_index(&index_dir);
 
-        let app = test_app(app_config(&index_dir));
+        let app = test_app(app_config_with_public_url(&index_dir));
 
         let (status, content_type, body) =
             request_content_type_and_body(app.clone(), "/robots.txt").await;
         assert_eq!(status, StatusCode::OK);
         assert!(content_type.starts_with("text/plain"));
         assert!(body.contains("User-agent: *"));
-        assert!(body.contains("Sitemap: http://localhost/sitemap.xml"));
+        assert!(body.contains("Sitemap: https://search.example.com/sitemap.xml"));
 
         let (status, content_type, body) =
             request_content_type_and_body(app.clone(), "/sitemap.xml").await;
         assert_eq!(status, StatusCode::OK);
         assert!(content_type.starts_with("application/xml"));
         assert!(body.contains(r#"<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">"#));
-        assert!(body.contains("<loc>http://localhost/</loc>"));
+        assert!(body.contains("<loc>https://search.example.com/</loc>"));
 
         let (status, content_type, body) =
             request_content_type_and_body(app.clone(), "/sitemaps").await;
@@ -920,7 +937,7 @@ mod tests {
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_options_index(&index_dir);
 
-        let app = test_app(app_config(&index_dir));
+        let app = test_app(app_config_with_public_url(&index_dir));
         let response = app
             .oneshot(
                 Request::builder()
@@ -934,7 +951,7 @@ mod tests {
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8(bytes.to_vec()).unwrap();
 
-        assert!(body.contains("http://localhost/"));
+        assert!(body.contains("https://search.example.com/"));
         assert!(!body.contains("example.com&amp;x=&lt;tag&gt;"));
         assert!(!body.contains("http://example.com&x=<tag>/"));
     }
@@ -1108,12 +1125,41 @@ mod tests {
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_options_index(&index_dir);
 
+        let app = test_app(app_config_with_public_url(&index_dir));
+        let (status, content_type, body) = request_content_type_and_body(app, "/robots.txt").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(content_type.starts_with("text/plain"));
+        assert!(body.contains("Sitemap: https://search.example.com/sitemap.xml"));
+    }
+
+    #[tokio::test]
+    async fn robots_txt_disallows_without_public_url() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
         let app = test_app(app_config(&index_dir));
         let (status, content_type, body) = request_content_type_and_body(app, "/robots.txt").await;
 
         assert_eq!(status, StatusCode::OK);
         assert!(content_type.starts_with("text/plain"));
-        assert!(body.contains("Sitemap: http://localhost/sitemap.xml"));
+        assert_eq!(body, "User-agent: *\nDisallow: /\n");
+        assert!(!body.contains("Sitemap:"));
+    }
+
+    #[tokio::test]
+    async fn sitemap_returns_404_without_public_url() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config(&index_dir));
+
+        assert_eq!(
+            request_status(app, "/sitemap.xml").await,
+            StatusCode::NOT_FOUND
+        );
     }
 
     #[tokio::test]
@@ -1541,6 +1587,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn home_without_public_url_emits_no_public_seo_metadata() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config(&index_dir));
+        let (status, body) = request_body(app, "/").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_no_canonical(&body);
+        assert_has_robots(&body);
+        assert_no_open_graph(&body);
+    }
+
+    #[tokio::test]
     async fn contextual_entry_page_seeds_return_head_metadata_for_modal_close() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
@@ -1559,7 +1620,7 @@ mod tests {
         assert!(body.contains(r#"<script id="initial-history-metadata" type="application/json">"#));
         assert!(body.contains(r#""returnHeadMetadata":{"#));
         assert!(body.contains(r#""returnHeadMetadataUrl":"/?q=git""#));
-        assert!(body.contains(r#""url":"https://search.example.com/?q=git""#));
+        assert!(body.contains(r#""openGraph":{"url":"https://search.example.com/?q=git""#));
         assert!(body.contains(" results for git"));
         assert!(body.contains(r#""canonicalUrl":null"#));
         assert!(body.contains(r#""robots":"noindex,follow""#));
@@ -1577,6 +1638,21 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_has_canonical(&body, "https://search.example.com/fixtures");
         assert_no_robots(&body);
+    }
+
+    #[tokio::test]
+    async fn source_without_public_url_emits_no_public_seo_metadata() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config(&index_dir));
+        let (status, body) = request_body(app, "/fixtures").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_no_canonical(&body);
+        assert_has_robots(&body);
+        assert_no_open_graph(&body);
     }
 
     #[tokio::test]
@@ -1653,6 +1729,22 @@ mod tests {
             "https://search.example.com/fixtures/programs.git.enable",
         );
         assert_no_robots(&body);
+    }
+
+    #[tokio::test]
+    async fn direct_entry_without_public_url_emits_no_public_seo_metadata() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config(&index_dir));
+        let (status, body) = request_body(app, "/fixtures/programs.git.enable").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("entry-page"));
+        assert_no_canonical(&body);
+        assert_has_robots(&body);
+        assert_no_open_graph(&body);
     }
 
     #[tokio::test]
@@ -2144,7 +2236,8 @@ mod tests {
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         let published_path = publish_canonical_options_index(&index_dir);
         let store = IndexStore::new(&index_dir);
-        fs::remove_file(store.seo_sidecar_path(&published_path)).unwrap();
+        let sidecar_path = store.seo_sidecar_path(&published_path);
+        fs::remove_file(&sidecar_path).unwrap();
 
         let config = bootstrap_config(&index_dir, &tempdir);
 
@@ -2155,7 +2248,8 @@ mod tests {
         assert_eq!(store.current_path().unwrap(), generation.path);
         let search = SearchService::open_current(Arc::new(config)).unwrap();
         let snapshot = search.snapshot();
-        assert!(search.sitemap_candidates(&snapshot).is_ok());
+        assert!(search.sitemap_candidates(&snapshot).is_err());
+        assert!(!sidecar_path.exists());
     }
 
     #[tokio::test]

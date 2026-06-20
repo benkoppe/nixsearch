@@ -34,7 +34,7 @@ impl Clone for SearchService {
 struct ServedGeneration {
     generation: LeasedPublishedGeneration,
     index: Arc<SearchIndex>,
-    seo_facts: Arc<SeoSidecar>,
+    seo_facts: Option<Arc<SeoSidecar>>,
 }
 
 impl ServedGeneration {
@@ -60,7 +60,7 @@ impl fmt::Debug for ServedGeneration {
 pub struct ServedGenerationSnapshot {
     generation: LeasedPublishedGeneration,
     pub index: Arc<SearchIndex>,
-    seo_facts: Arc<SeoSidecar>,
+    seo_facts: Option<Arc<SeoSidecar>>,
 }
 
 impl fmt::Debug for ServedGenerationSnapshot {
@@ -228,7 +228,18 @@ impl SearchService {
         })
     }
 
-    pub fn validate_leased_generation(
+    pub fn validate_leased_generation_for_serve(
+        config: &AppConfig,
+        generation: &LeasedPublishedGeneration,
+    ) -> Result<()> {
+        let index_store = IndexStore::new(&config.data.index_dir);
+        index_store
+            .open_structurally_complete_published_generation(generation.published_generation())
+            .context("failed to validate structurally complete generation")
+            .map(|_| ())
+    }
+
+    pub fn validate_leased_generation_for_public_seo(
         config: &AppConfig,
         generation: &LeasedPublishedGeneration,
     ) -> Result<()> {
@@ -582,6 +593,10 @@ impl SearchService {
         snapshot: &ServedGenerationSnapshot,
         document: &SearchDocument,
     ) -> bool {
+        if !self.config.public_seo_enabled() || snapshot.seo_facts.is_none() {
+            return false;
+        }
+
         let common = document.common();
 
         self.source_ref_allowed_for_seo(snapshot, &common.source, &common.ref_id)
@@ -593,7 +608,7 @@ impl SearchService {
         source_id: &str,
         ref_id: &str,
     ) -> SeoFactsResult<bool> {
-        let seo_facts = &snapshot.seo_facts;
+        let seo_facts = snapshot.seo_facts.as_ref().ok_or(SeoFactsUnavailable)?;
 
         if !self.source_ref_allowed_for_seo(snapshot, source_id, ref_id) {
             return Ok(false);
@@ -610,7 +625,7 @@ impl SearchService {
         &self,
         snapshot: &ServedGenerationSnapshot,
     ) -> SeoFactsResult<Vec<SitemapCandidate>> {
-        let seo_facts = &snapshot.seo_facts;
+        let seo_facts = snapshot.seo_facts.as_ref().ok_or(SeoFactsUnavailable)?;
         let mut candidates = Vec::new();
 
         for entry in &seo_facts.entries {
@@ -845,14 +860,22 @@ fn load_servable_generation(
     generation: LeasedPublishedGeneration,
 ) -> Result<ServedGeneration> {
     let index_store = IndexStore::new(&config.data.index_dir);
-    let (index, seo_facts) = index_store
-        .open_valid_leased_generation(&generation)
-        .context("failed to open SEO-complete served generation")?;
+    let (index, seo_facts) = if config.public_seo_enabled() {
+        let (index, seo_facts) = index_store
+            .open_valid_leased_generation(&generation)
+            .context("failed to open SEO-complete served generation")?;
+        (index, Some(Arc::new(seo_facts)))
+    } else {
+        let complete = index_store
+            .open_structurally_complete_published_generation(generation.published_generation())
+            .context("failed to open structurally complete served generation")?;
+        (complete.index, None)
+    };
 
     Ok(ServedGeneration {
         generation,
         index: Arc::new(index),
-        seo_facts: Arc::new(seo_facts),
+        seo_facts,
     })
 }
 
@@ -962,6 +985,18 @@ mod tests {
         config
     }
 
+    fn app_config_with_public_url(index_dir: &camino::Utf8Path) -> AppConfig {
+        let mut config = app_config(index_dir);
+        config.server.public_url = Some("https://search.example.com".to_owned());
+        config
+    }
+
+    fn multi_ref_app_config_with_public_url(index_dir: &camino::Utf8Path) -> AppConfig {
+        let mut config = multi_ref_app_config(index_dir);
+        config.server.public_url = Some("https://search.example.com".to_owned());
+        config
+    }
+
     fn set_fixture_refs_artifact_kind(config: &mut AppConfig, artifact_kind: ArtifactKind) {
         let source = config
             .sources
@@ -1016,7 +1051,7 @@ mod tests {
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_index(&index_dir);
 
-        let config = Arc::new(app_config(&index_dir));
+        let config = Arc::new(app_config_with_public_url(&index_dir));
         let service = SearchService::open_current(Arc::clone(&config)).unwrap();
 
         let result = service
@@ -1037,7 +1072,7 @@ mod tests {
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_index(&index_dir);
 
-        let config = Arc::new(app_config(&index_dir));
+        let config = Arc::new(app_config_with_public_url(&index_dir));
         let service = SearchService::open_current(Arc::clone(&config)).unwrap();
 
         let result = service
@@ -1065,7 +1100,7 @@ mod tests {
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_index(&index_dir);
 
-        let config = Arc::new(app_config(&index_dir));
+        let config = Arc::new(app_config_with_public_url(&index_dir));
         let service = SearchService::open_current(config).unwrap();
 
         let result = service
@@ -1162,7 +1197,7 @@ mod tests {
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_index(&index_dir);
 
-        let config = Arc::new(app_config(&index_dir));
+        let config = Arc::new(app_config_with_public_url(&index_dir));
         let service = SearchService::open_current(config).unwrap();
 
         let facts = service
@@ -1186,7 +1221,7 @@ mod tests {
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_index(&index_dir);
 
-        let config = Arc::new(multi_ref_app_config(&index_dir));
+        let config = Arc::new(multi_ref_app_config_with_public_url(&index_dir));
         let service = SearchService::open_current(config).unwrap();
 
         assert!(service.configured_source_exists(SOURCE_FIXTURES));
@@ -1205,7 +1240,7 @@ mod tests {
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_index(&index_dir);
 
-        let config = Arc::new(multi_ref_app_config(&index_dir));
+        let config = Arc::new(multi_ref_app_config_with_public_url(&index_dir));
         let service = SearchService::open_current(config).unwrap();
         let snapshot = service.snapshot();
 
@@ -1222,7 +1257,7 @@ mod tests {
         publish_canonical_index(&index_dir);
 
         assert_document_ref_allowed_for_seo(
-            multi_ref_app_config(&index_dir),
+            multi_ref_app_config_with_public_url(&index_dir),
             SOURCE_FIXTURES,
             REF_SMALL,
             true,
@@ -1236,7 +1271,7 @@ mod tests {
         publish_fixture_options_index_for_refs(&index_dir, &[REF_SMALL, REF_STABLE]);
 
         assert_document_ref_allowed_for_seo(
-            multi_ref_app_config(&index_dir),
+            multi_ref_app_config_with_public_url(&index_dir),
             SOURCE_FIXTURES,
             REF_STABLE,
             false,
@@ -1250,7 +1285,7 @@ mod tests {
         publish_canonical_index(&index_dir);
 
         assert_document_ref_allowed_for_seo(
-            multi_ref_app_config(&index_dir),
+            multi_ref_app_config_with_public_url(&index_dir),
             SOURCE_FIXTURES,
             REF_STABLE,
             false,
@@ -1264,7 +1299,7 @@ mod tests {
         publish_canonical_index(&index_dir);
 
         assert_document_ref_allowed_for_seo(
-            multi_ref_app_config(&index_dir),
+            multi_ref_app_config_with_public_url(&index_dir),
             "missing",
             REF_SMALL,
             false,
@@ -1277,7 +1312,7 @@ mod tests {
             let tempdir = tempdir().unwrap();
             let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
             publish_canonical_index(&index_dir);
-            let mut config = multi_ref_app_config(&index_dir);
+            let mut config = multi_ref_app_config_with_public_url(&index_dir);
             config
                 .sources
                 .get_mut(SOURCE_FIXTURES)
@@ -1294,7 +1329,7 @@ mod tests {
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_index(&index_dir);
 
-        let config = Arc::new(multi_ref_app_config(&index_dir));
+        let config = Arc::new(multi_ref_app_config_with_public_url(&index_dir));
         let service = SearchService::open_current(config).unwrap();
         let snapshot = service.snapshot();
 
@@ -1326,7 +1361,7 @@ mod tests {
             vec![options_target(SOURCE_FIXTURES, REF_SMALL, 1)],
         );
 
-        let config = Arc::new(multi_ref_app_config(&index_dir));
+        let config = Arc::new(multi_ref_app_config_with_public_url(&index_dir));
         let service = SearchService::open_current(config).unwrap();
         let snapshot = service.snapshot();
 
@@ -1353,7 +1388,7 @@ mod tests {
         sidecar.entries[0].name = "not-real".to_owned();
         write_raw_seo_sidecar(&store, &generation, &sidecar);
 
-        let config = Arc::new(multi_ref_app_config(&index_dir));
+        let config = Arc::new(multi_ref_app_config_with_public_url(&index_dir));
         let error = SearchService::open_current(Arc::clone(&config)).unwrap_err();
         assert!(format!("{error:#}").contains("SEO sidecar facts do not match indexed documents"));
 
@@ -1395,7 +1430,7 @@ mod tests {
         write_raw_manifest(&store, &forged_generation, &forged_manifest);
         write_raw_seo_sidecar(&store, &forged_generation, &sidecar);
 
-        let config = Arc::new(app_config(&index_dir));
+        let config = Arc::new(app_config_with_public_url(&index_dir));
         let error = SearchService::open_current(config).unwrap_err();
         let message = format!("{error:#}");
 
@@ -1409,7 +1444,7 @@ mod tests {
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_fixture_options_index_for_refs(&index_dir, &[REF_SMALL, REF_STABLE]);
 
-        let config = Arc::new(multi_ref_app_config(&index_dir));
+        let config = Arc::new(multi_ref_app_config_with_public_url(&index_dir));
         let service = SearchService::open_current(config).unwrap();
         let snapshot = service.snapshot();
 
@@ -1428,9 +1463,24 @@ mod tests {
         let store = IndexStore::new(&index_dir);
         fs::remove_file(store.seo_sidecar_path(&path)).unwrap();
 
-        let config = Arc::new(app_config(&index_dir));
+        let config = Arc::new(app_config_with_public_url(&index_dir));
         let error = SearchService::open_current(config).unwrap_err();
         assert!(format!("{error:#}").contains("failed to read SEO sidecar"));
+    }
+
+    #[test]
+    fn open_current_accepts_missing_sidecar_without_public_seo() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        let path = publish_canonical_index(&index_dir);
+        let store = IndexStore::new(&index_dir);
+        let sidecar_path = store.seo_sidecar_path(&path);
+        fs::remove_file(&sidecar_path).unwrap();
+
+        let config = Arc::new(app_config(&index_dir));
+        SearchService::open_current(config).unwrap();
+
+        assert!(!sidecar_path.exists());
     }
 
     #[test]
@@ -1450,7 +1500,7 @@ mod tests {
             vec![options_target(SOURCE_FIXTURES, REF_SMALL, 1)],
         );
 
-        let config = Arc::new(app_config(&index_dir));
+        let config = Arc::new(app_config_with_public_url(&index_dir));
         let service = SearchService::open_current(config).unwrap();
         let snapshot = service.snapshot();
 
@@ -1487,7 +1537,7 @@ mod tests {
             ],
         );
 
-        let config = Arc::new(app_config(&index_dir));
+        let config = Arc::new(app_config_with_public_url(&index_dir));
         let service = SearchService::open_current(config).unwrap();
         let snapshot = service.snapshot();
 
@@ -1534,7 +1584,7 @@ mod tests {
             vec![options_target(SOURCE_FIXTURES, REF_SMALL, 2)],
         );
 
-        let config = Arc::new(app_config(&index_dir));
+        let config = Arc::new(app_config_with_public_url(&index_dir));
         let service = SearchService::open_current(config).unwrap();
         let snapshot = service.snapshot();
 
@@ -1561,7 +1611,7 @@ mod tests {
             vec![options_target(SOURCE_FIXTURES, REF_SMALL, 2)],
         );
 
-        let config = Arc::new(app_config(&index_dir));
+        let config = Arc::new(app_config_with_public_url(&index_dir));
         let service = SearchService::open_current(config).unwrap();
         let snapshot = service.snapshot();
 
@@ -1574,7 +1624,7 @@ mod tests {
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_fixture_options_index_for_refs(&index_dir, &[REF_SMALL, REF_STABLE]);
 
-        let config = Arc::new(multi_ref_app_config(&index_dir));
+        let config = Arc::new(multi_ref_app_config_with_public_url(&index_dir));
         let service = SearchService::open_current(config).unwrap();
         let snapshot = service.snapshot();
 
@@ -1607,7 +1657,7 @@ mod tests {
                 vec![options_target(SOURCE_FIXTURES, REF_SMALL, 1)],
             );
 
-            let mut config = app_config(&index_dir);
+            let mut config = app_config_with_public_url(&index_dir);
             config
                 .sources
                 .get_mut(SOURCE_FIXTURES)
@@ -1630,7 +1680,7 @@ mod tests {
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_index(&index_dir);
 
-        let config = Arc::new(app_config(&index_dir));
+        let config = Arc::new(app_config_with_public_url(&index_dir));
         let service = SearchService::open_current(config).unwrap();
 
         let error = service
@@ -1649,7 +1699,7 @@ mod tests {
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_index(&index_dir);
 
-        let config = Arc::new(app_config(&index_dir));
+        let config = Arc::new(app_config_with_public_url(&index_dir));
         let service = SearchService::open_current(config).unwrap();
 
         let error = service
@@ -1669,7 +1719,7 @@ mod tests {
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_index(&index_dir);
 
-        let config = Arc::new(multi_ref_app_config(&index_dir));
+        let config = Arc::new(multi_ref_app_config_with_public_url(&index_dir));
         let service = SearchService::open_current(config).unwrap();
 
         let error = service
@@ -1726,7 +1776,7 @@ mod tests {
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_fixture_options_index_for_refs(&index_dir, &[REF_SMALL, REF_STABLE]);
 
-        let config = Arc::new(multi_ref_app_config(&index_dir));
+        let config = Arc::new(multi_ref_app_config_with_public_url(&index_dir));
         let service = SearchService::open_current(config).unwrap();
         let snapshot = service.snapshot();
 
@@ -1850,7 +1900,7 @@ mod tests {
             vec![options_target("other", REF_SMALL, 1)],
         );
 
-        let config = Arc::new(app_config(&index_dir));
+        let config = Arc::new(app_config_with_public_url(&index_dir));
         let service = SearchService::open_current(config).unwrap();
 
         let error = service.search_scopes(None, None, None).unwrap_err();
@@ -1914,7 +1964,7 @@ mod tests {
         let store = IndexStore::new(&index_dir);
         let manifest = store.read_manifest(&path).unwrap();
 
-        let config = Arc::new(app_config(&index_dir));
+        let config = Arc::new(app_config_with_public_url(&index_dir));
         let service = SearchService::from_leased_generation(
             config,
             leased_generation(&index_dir, path.clone(), manifest),
@@ -1941,7 +1991,7 @@ mod tests {
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         let path = publish_canonical_index(&index_dir);
 
-        let config = Arc::new(app_config(&index_dir));
+        let config = Arc::new(app_config_with_public_url(&index_dir));
         let service = SearchService::open_current(config).unwrap();
         let snapshot = service.snapshot();
 
@@ -2001,7 +2051,7 @@ mod tests {
 
         fs::remove_file(store.seo_sidecar_path(&path)).unwrap();
 
-        let config = Arc::new(app_config(&index_dir));
+        let config = Arc::new(app_config_with_public_url(&index_dir));
         let error = SearchService::from_leased_generation(
             config,
             leased_generation(&index_dir, path.clone(), manifest.clone()),
@@ -2019,7 +2069,7 @@ mod tests {
         let store = IndexStore::new(&index_dir);
         let manifest = store.read_manifest(&path).unwrap();
 
-        let config = Arc::new(app_config(&index_dir));
+        let config = Arc::new(app_config_with_public_url(&index_dir));
         let service = SearchService::from_leased_generation(
             config,
             leased_generation(&index_dir, path.clone(), manifest.clone()),
@@ -2047,7 +2097,7 @@ mod tests {
         publish_canonical_index_with_generated_at(&index_dir, time::OffsetDateTime::UNIX_EPOCH);
         let store = IndexStore::new(&index_dir);
 
-        let config = Arc::new(app_config(&index_dir));
+        let config = Arc::new(app_config_with_public_url(&index_dir));
         let service = SearchService::open_current(config).unwrap();
         let before = service.current_index();
 
@@ -2071,7 +2121,7 @@ mod tests {
         publish_canonical_index_with_generated_at(&index_dir, time::OffsetDateTime::UNIX_EPOCH);
         let store = IndexStore::new(&index_dir);
 
-        let config = Arc::new(app_config(&index_dir));
+        let config = Arc::new(app_config_with_public_url(&index_dir));
         let service = SearchService::open_current(Arc::clone(&config)).unwrap();
         let before = service.current_index();
 

@@ -44,10 +44,16 @@ pub enum ResultsContent<'a> {
 pub(crate) struct PageMetadata {
     title: String,
     description: String,
-    url: String,
-    image_url: String,
+    open_graph: Option<OpenGraphMetadata>,
     canonical_url: Option<String>,
     robots: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenGraphMetadata {
+    url: String,
+    image_url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,12 +157,14 @@ pub fn render_full_page(page: FullPageRender<'_>) -> Markup {
                 @if let Some(robots) = metadata.robots {
                     meta name="robots" content=(robots);
                 }
-                meta property="og:url" content=(&metadata.url);
-                meta property="og:type" content="website";
-                meta property="og:site_name" content="nixsearch";
-                meta property="og:title" content=(&metadata.title);
-                meta property="og:description" content=(&metadata.description);
-                meta property="og:image" content=(&metadata.image_url);
+                @if let Some(open_graph) = &metadata.open_graph {
+                    meta property="og:url" content=(&open_graph.url);
+                    meta property="og:type" content="website";
+                    meta property="og:site_name" content="nixsearch";
+                    meta property="og:title" content=(&metadata.title);
+                    meta property="og:description" content=(&metadata.description);
+                    meta property="og:image" content=(&open_graph.image_url);
+                }
                 link rel="icon" type="image/x-icon" href="/favicon.ico";
                 link rel="apple-touch-icon" href="/apple-touch-icon.png";
                 script type="module" src=(DATASTAR_JS_URL) {}
@@ -282,8 +290,7 @@ pub(crate) fn noindex_head_metadata(
     PageMetadata {
         title: title.to_owned(),
         description: description.to_owned(),
-        url: page_urls.current_url.clone(),
-        image_url: page_urls.image_url.clone(),
+        open_graph: open_graph_metadata(page_urls),
         canonical_url: None,
         robots: Some(ROBOTS_NOINDEX_FOLLOW),
     }
@@ -351,19 +358,20 @@ fn page_metadata(
     page_urls: &PageUrls,
     index_metadata: IndexMetadata,
 ) -> PageMetadata {
-    let url = index_metadata
-        .canonical_url
-        .clone()
-        .unwrap_or_else(|| page_urls.current_url.clone());
-
     PageMetadata {
         title: title_for_entry(config, request, source_filter, entry.document()),
         description: description_for(config, request, source_filter, search_result, entry),
-        url,
-        image_url: page_urls.image_url.clone(),
+        open_graph: open_graph_metadata(page_urls),
         canonical_url: index_metadata.canonical_url,
         robots: index_metadata.robots,
     }
+}
+
+fn open_graph_metadata(page_urls: &PageUrls) -> Option<OpenGraphMetadata> {
+    page_urls.public_seo_enabled.then(|| OpenGraphMetadata {
+        url: page_urls.current_url.clone(),
+        image_url: page_urls.image_url.clone(),
+    })
 }
 
 fn page_index_metadata(
@@ -375,6 +383,10 @@ fn page_index_metadata(
     entry: &EntryData,
     page_urls: &PageUrls,
 ) -> IndexMetadata {
+    if !state.config.public_seo_enabled() {
+        return noindex_metadata();
+    }
+
     if matches!(results_content, ResultsContent::Error { .. }) {
         return noindex_metadata();
     }
@@ -740,6 +752,7 @@ mod tests {
             current_url: "https://search.example.com/?q=git".to_owned(),
             image_url: "https://search.example.com/apple-touch-icon.png".to_owned(),
             origin: "https://search.example.com".to_owned(),
+            public_seo_enabled: true,
         }
     }
 
@@ -937,9 +950,10 @@ mod tests {
 
         assert_eq!(metadata.title, "nixsearch");
         assert_eq!(metadata.description, "Search the Nix ecosystem");
-        assert_eq!(metadata.url, "https://search.example.com/?q=git");
+        let open_graph = metadata.open_graph.unwrap();
+        assert_eq!(open_graph.url, "https://search.example.com/?q=git");
         assert_eq!(
-            metadata.image_url,
+            open_graph.image_url,
             "https://search.example.com/apple-touch-icon.png"
         );
     }

@@ -4,7 +4,7 @@ index_dir = "./data/indexes"
 
 [server]
 listen = "127.0.0.1:3000"
-# public_url = "https://nixsearch.example.com"
+public_url = "https://nixsearch.example.com"
 bootstrap = true
 
 [server.schedule]
