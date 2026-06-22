@@ -442,6 +442,7 @@ mod tests {
     struct TestResponse {
         status: StatusCode,
         content_type: String,
+        location: Option<String>,
         body: String,
     }
 
@@ -464,6 +465,12 @@ mod tests {
         (response.status, response.content_type, response.body)
     }
 
+    async fn request_status_and_location(app: Router, uri: &str) -> (StatusCode, Option<String>) {
+        let response = request_test_response(app, uri).await;
+
+        (response.status, response.location)
+    }
+
     async fn request_test_response(app: Router, uri: &str) -> TestResponse {
         let response = app
             .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
@@ -476,11 +483,17 @@ mod tests {
             .and_then(|value| value.to_str().ok())
             .unwrap_or("")
             .to_owned();
+        let location = response
+            .headers()
+            .get("location")
+            .and_then(|value| value.to_str().ok())
+            .map(ToOwned::to_owned);
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
 
         TestResponse {
             status,
             content_type,
+            location,
             body: String::from_utf8(bytes.to_vec()).unwrap(),
         }
     }
@@ -1172,6 +1185,10 @@ mod tests {
             StatusCode::BAD_REQUEST
         );
         assert_eq!(
+            request_status(app.clone(), "/?kind=option").await,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
             request_status(app.clone(), "/fixtures/").await,
             StatusCode::PERMANENT_REDIRECT
         );
@@ -1179,6 +1196,33 @@ mod tests {
             request_status(app, "/?q=git&page=1001").await,
             StatusCode::BAD_REQUEST
         );
+    }
+
+    #[tokio::test]
+    async fn public_page_preserves_query_when_redirecting_trailing_slash() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config(&index_dir));
+        let (status, location) = request_status_and_location(app, "/fixtures/?q=git").await;
+
+        assert_eq!(status, StatusCode::PERMANENT_REDIRECT);
+        assert_eq!(location.as_deref(), Some("/fixtures?q=git"));
+    }
+
+    #[tokio::test]
+    async fn public_page_rejects_tracking_query_params() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config(&index_dir));
+        let (status, body) = request_body(app, "/?q=git&utm_source=x").await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("unknown query parameter"));
+        assert!(body.contains("utm_source"));
     }
 
     #[tokio::test]
@@ -1236,7 +1280,8 @@ mod tests {
             request_body(app.clone(), "/-/state/events?url=%2F%3Fkind%3Dapp").await;
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("Request failed"));
-        assert!(body.contains("kind app"));
+        assert!(body.contains("unknown query parameter"));
+        assert!(body.contains("kind"));
 
         let uri = with_generation("/-/results/slice?url=%2Ffixtures&offset=0", &generation_id);
         let (status, body) = request_body(app.clone(), &uri).await;
@@ -1249,7 +1294,8 @@ mod tests {
         );
         let (status, body) = request_body(app, &uri).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body.contains("kind app and service"));
+        assert!(body.contains("unknown query parameter"));
+        assert!(body.contains("kind"));
     }
 
     #[tokio::test]
@@ -1821,10 +1867,7 @@ mod tests {
 
         let app = test_app(app_config_with_public_url(&index_dir));
 
-        for url in [
-            "/fixtures/programs.git.enable?ref=small",
-            "/fixtures/programs.git.enable?kind=option",
-        ] {
+        for url in ["/fixtures/programs.git.enable?ref=small"] {
             let (status, body) = request_body(app.clone(), url).await;
 
             assert_eq!(status, StatusCode::OK, "{url}");
@@ -1948,39 +1991,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn redundant_kind_on_unambiguous_entry_canonicalizes_cleanly() {
-        let tempdir = tempdir().unwrap();
-        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
-        publish_canonical_options_index(&index_dir);
-
-        let app = test_app(app_config_with_public_url(&index_dir));
-        let (status, body) = request_body(app, "/fixtures/programs.git.enable?kind=option").await;
-
-        assert_eq!(status, StatusCode::OK);
-        assert_has_canonical(
-            &body,
-            "https://search.example.com/fixtures/programs.git.enable",
-        );
-        assert_no_robots(&body);
-    }
-
-    #[tokio::test]
     async fn cross_kind_stale_entries_do_not_force_kind_canonicals() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_ambiguous_package_option_index(&index_dir);
 
         let app = test_app(app_config_with_public_url(&index_dir));
-
-        let (status, body) = request_body(app.clone(), "/fixtures/git?kind=package").await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_no_canonical(&body);
-        assert_has_robots(&body);
-
-        let (status, body) = request_body(app.clone(), "/fixtures/git?kind=option").await;
-        assert_eq!(status, StatusCode::OK);
-        assert_has_canonical(&body, "https://search.example.com/fixtures/git");
-        assert_no_robots(&body);
 
         let (status, body) = request_body(app, "/fixtures/git").await;
         assert_eq!(status, StatusCode::OK);
@@ -2010,25 +2026,21 @@ mod tests {
         let generation_id = current_generation_id(&index_dir);
 
         let app = test_app(app_config(&index_dir));
-        let (status, body) = request_body(app.clone(), "/?q=git&kind=option").await;
+        let (status, body) = request_body(app.clone(), "/?q=git").await;
 
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains(r#"href="/fixtures/git?q=git&amp;source=all""#));
-        assert!(!body.contains(r#"href="/fixtures/git?q=git&amp;kind=package&amp;source=all""#));
-        assert!(!body.contains(r#"href="/fixtures/git?q=git&amp;kind=option&amp;source=all""#));
-        assert!(!body.contains(r#"/fixtures/ripgrep?q=git&amp;kind=option"#));
+        assert!(!body.contains("?kind="));
 
         let uri = with_generation(
-            "/-/results/slice?url=%2F%3Fq%3Dgit%26kind%3Doption&offset=0",
+            "/-/results/slice?url=%2F%3Fq%3Dgit&offset=0",
             &generation_id,
         );
         let (status, body) = request_body(app, &uri).await;
 
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("/fixtures/git?q=git&amp;source=all"));
-        assert!(!body.contains("/fixtures/git?q=git&amp;kind=package&amp;source=all"));
-        assert!(!body.contains("/fixtures/git?q=git&amp;kind=option&amp;source=all"));
-        assert!(!body.contains("/fixtures/ripgrep?q=git&amp;kind=option"));
+        assert!(!body.contains("?kind="));
     }
 
     #[tokio::test]
@@ -2357,7 +2369,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn source_kind_query_emits_noindex_without_canonical() {
+    async fn source_kind_query_returns_bad_request() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_options_index(&index_dir);
@@ -2365,9 +2377,9 @@ mod tests {
         let app = test_app(app_config_with_public_url(&index_dir));
         let (status, body) = request_body(app, "/fixtures?kind=option").await;
 
-        assert_eq!(status, StatusCode::OK);
-        assert_no_canonical(&body);
-        assert_has_robots(&body);
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("unknown query parameter"));
+        assert!(body.contains("kind"));
     }
 
     #[tokio::test]
@@ -2505,7 +2517,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn state_events_accepts_absolute_public_url_for_metadata() {
+    async fn state_events_rejects_matching_absolute_public_url() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_options_index(&index_dir);
@@ -2516,12 +2528,11 @@ mod tests {
             "/-/state/events?url=https%3A%2F%2Fsearch.example.com%2Ffixtures",
             &generation_id,
         );
-        let (status, body) = request_body(app, &uri).await;
+        let (status, content_type, body) = request_content_type_and_body(app, &uri).await;
 
-        assert_eq!(status, StatusCode::OK);
-        assert!(body.contains("nixsearchApplyHeadMetadata"));
-        assert!(body.contains(r#""canonicalUrl":"https://search.example.com/fixtures""#));
-        assert!(body.contains(r#""robots":null"#));
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(content_type.starts_with("text/plain"));
+        assert!(body.contains("endpoint URL must be a path-and-query URL"));
     }
 
     #[tokio::test]
@@ -2531,15 +2542,15 @@ mod tests {
         publish_canonical_options_index(&index_dir);
 
         let app = test_app(app_config_with_public_url(&index_dir));
-        let (status, body) = request_body(
+        let (status, content_type, body) = request_content_type_and_body(
             app,
             "/-/state/events?url=https%3A%2F%2Fevil.example%2Ffixtures",
         )
         .await;
 
-        assert_eq!(status, StatusCode::OK);
-        assert!(body.contains("does not match expected origin"));
-        assert!(!body.contains("nixsearchApplyHeadMetadata"));
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(content_type.starts_with("text/plain"));
+        assert!(body.contains("endpoint URL must be a path-and-query URL"));
     }
 
     #[tokio::test]

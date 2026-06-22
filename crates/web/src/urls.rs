@@ -436,28 +436,12 @@ mod tests {
     }
 
     #[test]
-    fn entry_url_for_does_not_inherit_stale_query_kind() {
-        let url = entry_url_for(
-            "fixtures",
-            "ripgrep",
-            &PageQuery {
-                q: Some("ripgrep".to_owned()),
-                kind: Some("option".to_owned()),
-                ..PageQuery::default()
-            },
-        );
-
-        assert_eq!(url, "/fixtures/ripgrep?q=ripgrep");
-    }
-
-    #[test]
-    fn entry_url_for_hit_omits_request_kind_and_preserves_context() {
+    fn entry_url_for_hit_preserves_result_context() {
         let config = app_config("./data/indexes");
         let request = PageRequest {
             query: PageQuery {
                 q: Some("git".to_owned()),
                 ref_set: Some("unused".to_owned()),
-                kind: Some("option".to_owned()),
                 source: Some(LinkOrigin::All),
                 page: Some(2),
                 ..PageQuery::default()
@@ -501,7 +485,6 @@ mod tests {
             query: PageQuery {
                 q: Some("git".to_owned()),
                 ref_id: Some("small".to_owned()),
-                kind: Some("option".to_owned()),
                 source: None,
                 ..PageQuery::default()
             },

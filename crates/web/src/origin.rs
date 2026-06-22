@@ -5,6 +5,7 @@ use nixsearch_config::app::AppConfig;
 
 #[cfg(test)]
 use crate::request::non_empty;
+#[cfg(test)]
 use crate::request::public_uri;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,6 +29,7 @@ pub fn page_urls(config: &AppConfig, headers: &HeaderMap, uri: &Uri) -> PageUrls
     page_urls_for_uri(config, headers, uri)
 }
 
+#[cfg(test)]
 pub(crate) fn public_uri_for_request(
     config: &AppConfig,
     headers: &HeaderMap,
@@ -134,6 +136,7 @@ fn origin_from_url(mut url: Url) -> String {
     url.to_string().trim_end_matches('/').to_owned()
 }
 
+#[cfg(test)]
 fn absolute_url_origin(raw_url: &str) -> Option<String> {
     let raw_url = raw_url
         .split_once('#')

@@ -5,10 +5,8 @@ use std::ops::Deref;
 use axum::http::Uri;
 use percent_encoding::percent_decode;
 
-use nixsearch_config::app::AppConfig;
-use nixsearch_core::document::DocumentKind;
-
 use crate::{DEFAULT_LIMIT, MAX_OFFSET, MAX_PAGE};
+use nixsearch_config::app::AppConfig;
 
 type ParseResult<T> = std::result::Result<T, RequestParseError>;
 
@@ -62,8 +60,6 @@ pub struct PageQuery {
 
     pub ref_set: Option<String>,
 
-    pub kind: Option<String>,
-
     pub source: Option<LinkOrigin>,
 
     pub page: Option<usize>,
@@ -113,7 +109,6 @@ pub struct DetailState {
     pub source: String,
     pub entry: String,
     pub ref_id: Option<String>,
-    pub kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -218,12 +213,6 @@ fn detail_state(
             source: source.clone(),
             entry: entry.clone(),
             ref_id: detail_ref(config, source, raw_ref, active_ref_set, source_ref),
-            kind: request
-                .query
-                .kind
-                .as_deref()
-                .and_then(non_empty)
-                .map(ToOwned::to_owned),
         })
 }
 
@@ -359,7 +348,6 @@ pub(crate) fn page_request_from_public_uri(uri: &Uri) -> ParseResult<PageRequest
     let mut q = None;
     let mut ref_id = None;
     let mut ref_set = None;
-    let mut kind = None;
     let mut source_param = None;
     let mut page = None;
     let mut seen = HashSet::new();
@@ -371,9 +359,6 @@ pub(crate) fn page_request_from_public_uri(uri: &Uri) -> ParseResult<PageRequest
             "q" => q = non_empty_string(value),
             "ref" => ref_id = Some(required_value(&key, value)?),
             "ref_set" => ref_set = Some(required_value(&key, value)?),
-            "kind" => {
-                kind = Some(required_value(&key, value)?);
-            }
             "source" => {
                 if value != LinkOrigin::All.as_str() {
                     return Err(RequestParseError::new("source must be all"));
@@ -395,8 +380,6 @@ pub(crate) fn page_request_from_public_uri(uri: &Uri) -> ParseResult<PageRequest
         return Err(RequestParseError::new("page requires q"));
     }
 
-    validate_public_kind(kind.as_deref())?;
-
     Ok(PageRequest {
         source,
         entry,
@@ -404,7 +387,6 @@ pub(crate) fn page_request_from_public_uri(uri: &Uri) -> ParseResult<PageRequest
             q,
             ref_id,
             ref_set,
-            kind,
             source: source_param,
             page,
         },
@@ -421,8 +403,12 @@ pub(crate) fn state_events_query_from_uri(uri: &Uri) -> ParseResult<StateQuery> 
         mark_seen(&mut seen, &key)?;
 
         match key.as_str() {
-            "url" => url = Some(required_value(&key, value)?),
-            "previous_url" => previous_url = non_empty_string(value),
+            "url" => url = Some(endpoint_path_query_uri(&required_value(&key, value)?)?),
+            "previous_url" => {
+                previous_url = non_empty_string(value)
+                    .map(|value| endpoint_path_query_uri(&value))
+                    .transpose()?;
+            }
             "generation_id" => generation_id = non_empty_string(value),
             "datastar" => {}
             _ => {
@@ -451,7 +437,7 @@ pub(crate) fn slice_query_from_uri(uri: &Uri) -> ParseResult<SliceQuery> {
         mark_seen(&mut seen, &key)?;
 
         match key.as_str() {
-            "url" => url = Some(required_value(&key, value)?),
+            "url" => url = Some(endpoint_path_query_uri(&required_value(&key, value)?)?),
             "offset" => {
                 offset = Some(parse_bounded_usize(&value, "offset", 0, MAX_OFFSET)?);
             }
@@ -481,27 +467,42 @@ pub(crate) fn slice_query_from_uri(uri: &Uri) -> ParseResult<SliceQuery> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StateQuery {
-    pub url: String,
-    pub previous_url: Option<String>,
+    pub url: Uri,
+    pub previous_url: Option<Uri>,
     pub generation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SliceQuery {
-    pub url: String,
+    pub url: Uri,
     pub offset: usize,
     pub limit: Option<usize>,
     pub generation_id: Option<String>,
 }
 
-pub(crate) fn validate_public_kind(value: Option<&str>) -> ParseResult<()> {
-    match value {
-        None | Some("package" | "option") => Ok(()),
-        Some("app" | "service") => Err(RequestParseError::new(
-            "kind app and service are not valid public SEO filters",
-        )),
-        Some(other) => Err(RequestParseError::new(format!("unknown kind {other:?}"))),
+fn endpoint_path_query_uri(raw_url: &str) -> ParseResult<Uri> {
+    if raw_url.contains('#') {
+        return Err(RequestParseError::new(
+            "endpoint URL must not include a fragment",
+        ));
     }
+    if !raw_url.starts_with('/') || raw_url.starts_with("//") {
+        return Err(RequestParseError::new(
+            "endpoint URL must be a path-and-query URL",
+        ));
+    }
+
+    let uri = raw_url
+        .parse::<Uri>()
+        .map_err(|error| RequestParseError::new(format!("invalid endpoint URL: {error}")))?;
+
+    if uri.scheme().is_some() || uri.authority().is_some() {
+        return Err(RequestParseError::new(
+            "endpoint URL must be a path-and-query URL",
+        ));
+    }
+
+    Ok(uri)
 }
 
 pub(crate) fn strict_query_pairs(raw_query: &str) -> ParseResult<Vec<(String, String)>> {
@@ -586,19 +587,6 @@ fn parse_bounded_usize(value: &str, name: &str, min: usize, max: usize) -> Parse
     }
 
     Ok(value)
-}
-
-pub fn parse_document_kind(
-    value: Option<&str>,
-) -> std::result::Result<Option<DocumentKind>, String> {
-    match value.and_then(non_empty) {
-        None => Ok(None),
-        Some("option") => Ok(Some(DocumentKind::Option)),
-        Some("package") => Ok(Some(DocumentKind::Package)),
-        Some("app") => Ok(Some(DocumentKind::App)),
-        Some("service") => Ok(Some(DocumentKind::Service)),
-        Some(other) => Err(format!("unknown entry kind {other:?}")),
-    }
 }
 
 #[cfg(test)]
@@ -751,15 +739,12 @@ mod tests {
 
     #[test]
     fn parses_entry_public_url() {
-        let request = page_request_from_public_url(
-            "/fixtures/programs.git.enable?q=git&ref=small&kind=option",
-        )
-        .unwrap();
+        let request =
+            page_request_from_public_url("/fixtures/programs.git.enable?q=git&ref=small").unwrap();
         assert_eq!(request.source.as_deref(), Some("fixtures"));
         assert_eq!(request.entry.as_deref(), Some("programs.git.enable"));
         assert_eq!(request.query.q.as_deref(), Some("git"));
         assert_eq!(request.query.ref_id.as_deref(), Some("small"));
-        assert_eq!(request.query.kind.as_deref(), Some("option"));
     }
 
     #[test]
@@ -805,11 +790,11 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_public_kind_values() {
-        for kind in ["", "app", "service", "bogus"] {
+    fn rejects_public_kind_query_param() {
+        for kind in ["", "option", "package", "app", "service", "bogus"] {
             let error = page_request_from_public_url(&format!("/?kind={kind}")).unwrap_err();
 
-            assert!(error.contains("kind"));
+            assert!(error.contains("unknown query parameter \"kind\""));
         }
     }
 
@@ -894,7 +879,8 @@ mod tests {
         let uri = Uri::from_static("/-/state/events?url=%2Ffixtures&previous_url=");
         let query = state_events_query_from_uri(&uri).unwrap();
 
-        assert_eq!(query.url, "/fixtures");
+        assert_eq!(query.url.path(), "/fixtures");
+        assert_eq!(query.url.query(), None);
         assert_eq!(query.previous_url, None);
         assert_eq!(query.generation_id, None);
     }
@@ -906,8 +892,9 @@ mod tests {
         );
         let query = state_events_query_from_uri(&uri).unwrap();
 
-        assert_eq!(query.url, "/?q=hello");
-        assert_eq!(query.previous_url.as_deref(), Some("/"));
+        assert_eq!(query.url.path(), "/");
+        assert_eq!(query.url.query(), Some("q=hello"));
+        assert_eq!(query.previous_url.as_ref().map(Uri::path), Some("/"));
         assert_eq!(query.generation_id.as_deref(), Some("sha256:abc"));
     }
 
@@ -920,6 +907,10 @@ mod tests {
             "/-/state/events?url=%zz",
             "/-/state/events?url=%2F&extra=1",
             "/-/state/events?url=%2F&generation_id=one&generation_id=two",
+            "/-/state/events?url=%3Fq%3Dgit",
+            "/-/state/events?url=fixtures%3Fq%3Dgit",
+            "/-/state/events?url=https%3A%2F%2Fsearch.example.com%2Ffixtures",
+            "/-/state/events?url=%2F%3Fq%3Dgit&previous_url=https%3A%2F%2Fsearch.example.com%2F",
         ] {
             let uri: Uri = uri.parse().unwrap();
 
@@ -934,7 +925,8 @@ mod tests {
         );
         let query = slice_query_from_uri(&uri).unwrap();
 
-        assert_eq!(query.url, "/?q=git");
+        assert_eq!(query.url.path(), "/");
+        assert_eq!(query.url.query(), Some("q=git"));
         assert_eq!(query.offset, 50);
         assert_eq!(query.limit, Some(25));
         assert_eq!(query.generation_id.as_deref(), Some("sha256:abc"));
@@ -945,7 +937,8 @@ mod tests {
         let uri = Uri::from_static("/-/results/slice?url=%2F%3Fq%3Dgit&offset=0&datastar=%7B%7D");
         let query = slice_query_from_uri(&uri).unwrap();
 
-        assert_eq!(query.url, "/?q=git");
+        assert_eq!(query.url.path(), "/");
+        assert_eq!(query.url.query(), Some("q=git"));
         assert_eq!(query.offset, 0);
         assert_eq!(query.limit, None);
         assert_eq!(query.generation_id, None);
@@ -962,6 +955,9 @@ mod tests {
             "/-/results/slice?url=%2F%3Fq%3Dgit&offset=0&limit=201",
             "/-/results/slice?url=%2F%3Fq%3Dgit&offset=0&extra=1",
             "/-/results/slice?url=%2F%3Fq%3Dgit&offset=0&generation_id=one&generation_id=two",
+            "/-/results/slice?url=%3Fq%3Dgit&offset=0",
+            "/-/results/slice?url=fixtures%3Fq%3Dgit&offset=0",
+            "/-/results/slice?url=https%3A%2F%2Fsearch.example.com%2Ffixtures&offset=0",
         ] {
             let uri: Uri = uri.parse().unwrap();
 

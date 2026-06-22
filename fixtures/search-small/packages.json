@@ -4,7 +4,7 @@
     "git": {
       "pname": "git",
       "version": "2.45.0",
-      "package_programs": ["git", "git-credential-store", "git-shell", "git-upload-pack", "scalar"],
+      "programs": ["git", "git-credential-store", "git-shell", "git-upload-pack", "scalar"],
       "meta": {
         "description": "Distributed version control system.",
         "homepage": "https://git-scm.com/",
@@ -22,7 +22,7 @@
     "ripgrep": {
       "pname": "ripgrep",
       "version": "14.1.0",
-      "package_programs": ["rg"],
+      "programs": ["rg"],
       "meta": {
         "description": "Line-oriented search tool.",
         "homepage": "https://github.com/BurntSushi/ripgrep",

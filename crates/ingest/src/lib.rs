@@ -237,10 +237,9 @@ struct RawPackage {
     version: Option<String>,
 
     #[serde(default)]
-    #[serde(alias = "package_programs")]
     programs: Vec<String>,
 
-    #[serde(default, alias = "package_mainProgram")]
+    #[serde(default)]
     main_program: Option<String>,
 
     #[serde(default)]
@@ -534,6 +533,52 @@ mod tests {
 
         assert_eq!(package.common.name, "foo");
         assert_eq!(package.attribute, "foo");
+    }
+
+    #[test]
+    fn parses_canonical_package_program_fields() {
+        let json = r#"
+           {
+             "packages": {
+               "foo": {
+                 "programs": ["foo", "fooctl"],
+                 "mainProgram": "foo"
+               }
+             }
+           }
+           "#;
+
+        let docs = parse_packages_json_with_strip_prefixes(json.as_bytes(), &ingest_context(), &[])
+            .unwrap();
+        let SearchDocument::Package(package) = &docs[0] else {
+            panic!("expected package document");
+        };
+
+        assert_eq!(package.programs, ["foo", "fooctl"]);
+        assert_eq!(package.main_program.as_deref(), Some("foo"));
+    }
+
+    #[test]
+    fn ignores_legacy_package_program_aliases() {
+        let json = r#"
+           {
+             "packages": {
+               "foo": {
+                 "package_programs": ["foo"],
+                 "package_mainProgram": "foo"
+               }
+             }
+           }
+           "#;
+
+        let docs = parse_packages_json_with_strip_prefixes(json.as_bytes(), &ingest_context(), &[])
+            .unwrap();
+        let SearchDocument::Package(package) = &docs[0] else {
+            panic!("expected package document");
+        };
+
+        assert!(package.programs.is_empty());
+        assert_eq!(package.main_program, None);
     }
 
     #[test]

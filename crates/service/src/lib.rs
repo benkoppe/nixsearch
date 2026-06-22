@@ -200,7 +200,6 @@ pub struct EntryRequest {
     pub source: String,
     pub ref_id: Option<String>,
     pub name: String,
-    pub kind: Option<DocumentKind>,
 }
 
 #[derive(Debug, Clone)]
@@ -209,11 +208,6 @@ struct ConfiguredSearchTarget {
     ref_id: String,
     artifact_kind: ArtifactKind,
     entry_kind: IndexedEntryKind,
-}
-
-enum ResolvedEntryLookup {
-    Lookup(EntryLookup),
-    KindMismatch(EntryLookup),
 }
 
 impl SearchService {
@@ -402,15 +396,12 @@ impl SearchService {
         snapshot: &ServedGenerationSnapshot,
         request: EntryRequest,
     ) -> ServiceResult<EntryLookupResult> {
-        let resolved = self.resolve_entry_lookup_for_snapshot(snapshot, request)?;
+        let lookup = self.resolve_entry_lookup_for_snapshot(snapshot, request)?;
 
-        match resolved {
-            ResolvedEntryLookup::Lookup(lookup) => snapshot
-                .index
-                .find_entry(lookup)
-                .map_err(ServiceError::EntryLookup),
-            ResolvedEntryLookup::KindMismatch(_) => Ok(EntryLookupResult::NotFound),
-        }
+        snapshot
+            .index
+            .find_entry(lookup)
+            .map_err(ServiceError::EntryLookup)
     }
 
     pub fn find_entry_with_facts_with_snapshot(
@@ -419,15 +410,12 @@ impl SearchService {
         request: EntryRequest,
         facts: &EntryFacts,
     ) -> ServiceResult<EntryLookupResult> {
-        let resolved = self.resolve_entry_lookup_for_snapshot(snapshot, request)?;
+        let lookup = self.resolve_entry_lookup_for_snapshot(snapshot, request)?;
 
-        match resolved {
-            ResolvedEntryLookup::Lookup(lookup) => snapshot
-                .index
-                .find_entry_with_facts(lookup, facts)
-                .map_err(ServiceError::EntryLookup),
-            ResolvedEntryLookup::KindMismatch(_) => Ok(EntryLookupResult::NotFound),
-        }
+        snapshot
+            .index
+            .find_entry_with_facts(lookup, facts)
+            .map_err(ServiceError::EntryLookup)
     }
 
     pub fn entry_facts_current(&self, request: EntryRequest) -> ServiceResult<EntryFacts> {
@@ -440,17 +428,12 @@ impl SearchService {
         snapshot: &ServedGenerationSnapshot,
         request: EntryRequest,
     ) -> ServiceResult<EntryFacts> {
-        let resolved = self.resolve_entry_lookup_for_snapshot(snapshot, request)?;
+        let lookup = self.resolve_entry_lookup_for_snapshot(snapshot, request)?;
 
-        match resolved {
-            ResolvedEntryLookup::Lookup(lookup) => snapshot
-                .index
-                .entry_facts(lookup)
-                .map_err(ServiceError::EntryLookup),
-            ResolvedEntryLookup::KindMismatch(lookup) => {
-                Ok(EntryFacts::not_found_for_lookup(&lookup))
-            }
-        }
+        snapshot
+            .index
+            .entry_facts(lookup)
+            .map_err(ServiceError::EntryLookup)
     }
 
     pub fn search_scopes(
@@ -548,28 +531,19 @@ impl SearchService {
         &self,
         snapshot: &ServedGenerationSnapshot,
         request: EntryRequest,
-    ) -> std::result::Result<ResolvedEntryLookup, RequestResolutionError> {
+    ) -> std::result::Result<EntryLookup, RequestResolutionError> {
         let target = self.resolve_entry_target_for_snapshot(
             snapshot,
             &request.source,
             request.ref_id.as_deref(),
         )?;
-        let kind_mismatch = request.kind.as_ref().is_some_and(|kind| {
-            IndexedEntryKind::from_document_kind(kind) != Some(target.entry_kind)
-        });
 
-        let lookup = EntryLookup {
+        Ok(EntryLookup {
             source: request.source,
             ref_id: target.ref_id,
             entry_kind: target.entry_kind,
             name: request.name,
-        };
-
-        if kind_mismatch {
-            Ok(ResolvedEntryLookup::KindMismatch(lookup))
-        } else {
-            Ok(ResolvedEntryLookup::Lookup(lookup))
-        }
+        })
     }
 
     pub fn configured_source_exists(&self, source_id: &str) -> bool {
@@ -1051,7 +1025,7 @@ mod tests {
     use nixsearch_config::producer::ProducerConfig;
     use nixsearch_config::source::SourceKind;
     use nixsearch_core::artifact::ArtifactKind;
-    use nixsearch_core::document::{DocumentKind, SearchDocument};
+    use nixsearch_core::document::SearchDocument;
     use nixsearch_index::manifest::{canonical_generation_id, refresh_generation_id};
     use nixsearch_index::search::{EntryFactsStatus, EntryLookupResult};
     use nixsearch_index::store::{IndexStore, LeasedPublishedGeneration, PublishedGeneration};
@@ -1219,7 +1193,6 @@ mod tests {
                 source: SOURCE_FIXTURES.to_owned(),
                 ref_id: Some(REF_SMALL.to_owned()),
                 name: "programs.git.enable".to_owned(),
-                kind: Some(DocumentKind::Option),
             })
             .unwrap();
 
@@ -1336,7 +1309,6 @@ mod tests {
                 source: SOURCE_FIXTURES.to_owned(),
                 ref_id: Some(REF_SMALL.to_owned()),
                 name: "programs.git.enable".to_owned(),
-                kind: Some(DocumentKind::Option),
             })
             .unwrap_err();
 
@@ -1425,70 +1397,12 @@ mod tests {
                 source: SOURCE_FIXTURES.to_owned(),
                 ref_id: Some(REF_SMALL.to_owned()),
                 name: "programs.git.enable".to_owned(),
-                kind: Some(DocumentKind::Option),
             })
             .unwrap();
 
         assert_eq!(facts.status(), EntryFactsStatus::Unique);
         assert_eq!(facts.count, 1);
         assert_eq!(facts.seo_eligible(), Some(true));
-    }
-
-    #[test]
-    fn entry_requested_kind_mismatch_returns_not_found_after_served_target_resolution() {
-        let tempdir = tempdir().unwrap();
-        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
-        publish_canonical_index(&index_dir);
-
-        let config = Arc::new(app_config_with_public_url(&index_dir));
-        let service = SearchService::open_current(config).unwrap();
-        let snapshot = service.snapshot();
-        let request = EntryRequest {
-            source: SOURCE_FIXTURES.to_owned(),
-            ref_id: Some(REF_SMALL.to_owned()),
-            name: "programs.git.enable".to_owned(),
-            kind: Some(DocumentKind::Package),
-        };
-
-        let lookup = service
-            .find_entry_with_snapshot(&snapshot, request.clone())
-            .unwrap();
-        let facts = service
-            .entry_facts_with_snapshot(&snapshot, request.clone())
-            .unwrap();
-        let lookup_with_facts = service
-            .find_entry_with_facts_with_snapshot(&snapshot, request, &facts)
-            .unwrap();
-
-        assert!(matches!(lookup, EntryLookupResult::NotFound));
-        assert_eq!(facts.status(), EntryFactsStatus::NotFound);
-        assert_eq!(facts.count, 0);
-        assert!(matches!(lookup_with_facts, EntryLookupResult::NotFound));
-    }
-
-    #[test]
-    fn entry_requested_kind_mismatch_does_not_hide_unserved_ref() {
-        let tempdir = tempdir().unwrap();
-        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
-        publish_canonical_index(&index_dir);
-
-        let config = Arc::new(multi_ref_app_config(&index_dir));
-        let service = SearchService::open_current(config).unwrap();
-
-        let error = service
-            .find_entry_current(EntryRequest {
-                source: SOURCE_FIXTURES.to_owned(),
-                ref_id: Some(REF_STABLE.to_owned()),
-                name: "programs.git.enable".to_owned(),
-                kind: Some(DocumentKind::Package),
-            })
-            .unwrap_err();
-
-        assert!(matches!(
-            error,
-            ServiceError::Resolution(RequestResolutionError::UnservedRef { source_id, ref_id })
-                if source_id == SOURCE_FIXTURES && ref_id == REF_STABLE
-        ));
     }
 
     #[test]
@@ -2242,7 +2156,6 @@ mod tests {
                 source: SOURCE_FIXTURES.to_owned(),
                 ref_id: Some(REF_STABLE.to_owned()),
                 name: "programs.git.enable".to_owned(),
-                kind: Some(DocumentKind::Option),
             })
             .unwrap_err();
 

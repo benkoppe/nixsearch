@@ -17,12 +17,10 @@ use nixsearch_service::{
 use crate::AppState;
 use crate::DEFAULT_LIMIT;
 use crate::entry::{AnnotatedEntryDocument, EntryData};
-use crate::origin::{
-    PageUrls, page_urls, page_urls_for_public_uri, public_path_and_query, public_uri_for_request,
-};
+use crate::origin::{PageUrls, page_urls, page_urls_for_public_uri, public_path_and_query};
 use crate::request::{
-    PageRequest, PageState, SourceFilter, non_empty, normalized_query,
-    page_request_from_public_uri, page_state, parse_document_kind, public_uri, strict_query_pairs,
+    PageRequest, PageState, SourceFilter, normalized_query, page_request_from_public_uri,
+    page_state, public_uri,
 };
 use crate::scripts::datastar_script;
 use crate::sitemap::{
@@ -197,45 +195,9 @@ fn normalized_public_uri(uri: &Uri) -> std::result::Result<Option<String>, Strin
         }
     }
 
-    let mut seen_semantic = std::collections::HashSet::new();
-    let mut semantic = Vec::<(String, String)>::new();
-    if let Some(query) = uri.query() {
-        for (key, value) in strict_query_pairs(query).map_err(|error| error.to_string())? {
-            if is_tracking_param(&key) {
-                continue;
-            }
-
-            if !is_supported_public_param(&key) {
-                return Err(format!("unknown query parameter {key:?}"));
-            }
-
-            if !seen_semantic.insert(key.clone()) {
-                return Err(format!("duplicate query parameter {key:?}"));
-            }
-
-            if (key == "q" && value.trim().is_empty()) || (key == "page" && value == "1") {
-                continue;
-            }
-
-            semantic.push((key, value));
-        }
-    }
-
-    let normalized_query = semantic
-        .into_iter()
-        .map(|(key, value)| {
-            format!(
-                "{}={}",
-                urlencoding::encode(&key),
-                urlencoding::encode(&value)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("&");
-    let normalized = if normalized_query.is_empty() {
-        normalized_path
-    } else {
-        format!("{normalized_path}?{normalized_query}")
+    let normalized = match uri.query() {
+        Some(query) => format!("{normalized_path}?{query}"),
+        None => normalized_path,
     };
     let current = match uri.query() {
         Some(query) => format!("{}?{query}", uri.path()),
@@ -247,24 +209,6 @@ fn normalized_public_uri(uri: &Uri) -> std::result::Result<Option<String>, Strin
     } else {
         Ok(Some(normalized))
     }
-}
-
-fn is_tracking_param(key: &str) -> bool {
-    matches!(
-        key,
-        "utm_source"
-            | "utm_medium"
-            | "utm_campaign"
-            | "utm_term"
-            | "utm_content"
-            | "fbclid"
-            | "gclid"
-            | "msclkid"
-    )
-}
-
-fn is_supported_public_param(key: &str) -> bool {
-    matches!(key, "q" | "ref" | "ref_set" | "kind" | "source" | "page")
 }
 
 pub async fn state_events(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
@@ -280,13 +224,7 @@ pub async fn state_events(State(state): State<AppState>, headers: HeaderMap, uri
         }
     };
 
-    let target_uri = match public_uri_for_request(&state.config, &headers, &query.url) {
-        Ok(uri) => uri,
-        Err(error) => {
-            let page_urls = page_urls(&state.config, &headers, &Uri::from_static("/"));
-            return sse_error_response(state.config.public_seo_enabled(), &page_urls, &error, None);
-        }
-    };
+    let target_uri = query.url;
     let target_public_url = public_path_and_query(&target_uri);
     let page_urls = page_urls_for_public_uri(&state.config, &headers, &target_uri);
     let snapshot = current_snapshot_for_request(&state);
@@ -327,9 +265,7 @@ pub async fn state_events(State(state): State<AppState>, headers: HeaderMap, uri
 
     let previous_request = query
         .previous_url
-        .as_deref()
-        .and_then(non_empty)
-        .and_then(|url| public_uri_for_request(&state.config, &headers, url).ok())
+        .as_ref()
         .and_then(|uri| page_request_from_public_uri(&uri).ok());
     let navigation =
         state_events_navigation(&state, &snapshot, previous_request.as_ref(), &page_state);
@@ -743,7 +679,7 @@ fn results_content_for_search<'a>(
 
 pub async fn results_slice(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     uri: Uri,
 ) -> Response {
     let query = match crate::request::slice_query_from_uri(&uri) {
@@ -759,12 +695,7 @@ pub async fn results_slice(
         return stale_generation_response(&snapshot);
     }
 
-    let uri = match public_uri_for_request(&state.config, &headers, &query.url) {
-        Ok(uri) => uri,
-        Err(error) => {
-            return json_error_response(StatusCode::BAD_REQUEST, &error);
-        }
-    };
+    let uri = query.url;
     let request = match page_request_from_public_uri(&uri) {
         Ok(request) => request,
         Err(error) => {
@@ -967,7 +898,6 @@ fn render_parse_error_response(state: &AppState, page_urls: PageUrls, message: &
 #[derive(Debug)]
 enum EntryLoadError {
     NotFound { entry: String },
-    InvalidKind(String),
     IndexUnavailable,
     Lookup(ServiceError),
 }
@@ -976,7 +906,6 @@ impl EntryLoadError {
     fn status(&self) -> StatusCode {
         match self {
             Self::NotFound { .. } => StatusCode::NOT_FOUND,
-            Self::InvalidKind(_) => StatusCode::BAD_REQUEST,
             Self::IndexUnavailable => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Lookup(error) => status_for_service_error(error),
         }
@@ -985,7 +914,6 @@ impl EntryLoadError {
     fn message(&self) -> String {
         match self {
             Self::NotFound { entry } => format!("Entry {entry:?} was not found."),
-            Self::InvalidKind(error) => error.clone(),
             Self::IndexUnavailable => "search index was not opened".to_owned(),
             Self::Lookup(error) => format!("{error:#}"),
         }
@@ -1037,9 +965,9 @@ fn entry_data_for_load_error(error: &EntryLoadError) -> EntryData {
         EntryLoadError::NotFound { entry } => EntryData::NotFound {
             entry: entry.clone(),
         },
-        EntryLoadError::InvalidKind(_)
-        | EntryLoadError::IndexUnavailable
-        | EntryLoadError::Lookup(_) => EntryData::Error(error.message()),
+        EntryLoadError::IndexUnavailable | EntryLoadError::Lookup(_) => {
+            EntryData::Error(error.message())
+        }
     }
 }
 
@@ -1287,13 +1215,10 @@ fn load_entry_data_from_snapshot(
             })
         });
 
-    let kind = parse_document_kind(detail.kind.as_deref()).map_err(EntryLoadError::InvalidKind)?;
-
     let entry_request = EntryRequest {
         source: detail.source.clone(),
         ref_id: lookup_ref.map(ToOwned::to_owned),
         name: detail.entry.clone(),
-        kind,
     };
 
     let facts = state
@@ -1404,7 +1329,6 @@ mod tests {
                 source: "fixtures".to_owned(),
                 entry: "programs.git.enable".to_owned(),
                 ref_id: None,
-                kind: None,
             }),
         }
     }
