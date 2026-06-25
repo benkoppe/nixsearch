@@ -4,8 +4,11 @@ use axum::http::Uri;
 
 use crate::MAX_PAGE;
 
-use super::decode::{mark_seen, non_empty_string, parse_bounded_usize, required_value};
-use super::{ParseResult, RequestParseError, non_empty, strict_decode, strict_query_pairs};
+use super::decode::{
+    mark_seen, non_empty_string, parse_bounded_usize, required_value, strict_decode,
+    strict_query_pairs,
+};
+use super::{ParseResult, RequestParseError, non_empty};
 
 #[derive(Debug, Clone, Default)]
 pub struct PageRequest {

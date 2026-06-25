@@ -150,21 +150,25 @@ fn detail_ref(
     if let Some(refs) =
         active_ref_set.and_then(|ref_set| config.refs_for_ref_set_source(ref_set, source))
     {
-        if refs.len() == 1 {
-            return match raw_ref {
-                Some(ref_id) if !refs.iter().any(|candidate| candidate == ref_id) => None,
-                _ => refs.first().cloned(),
-            };
-        }
-
-        return raw_ref
-            .filter(|ref_id| refs.iter().any(|candidate| candidate == ref_id))
-            .map(ToOwned::to_owned);
+        return ref_from_ref_set_refs(refs, raw_ref);
     }
 
     source_ref
         .map(ToOwned::to_owned)
         .or_else(|| raw_ref.map(ToOwned::to_owned))
+}
+
+fn ref_from_ref_set_refs(refs: &[String], raw_ref: Option<&str>) -> Option<String> {
+    if refs.len() == 1 {
+        return match raw_ref {
+            Some(ref_id) if !refs.iter().any(|candidate| candidate == ref_id) => None,
+            _ => refs.first().cloned(),
+        };
+    }
+
+    raw_ref
+        .filter(|ref_id| refs.iter().any(|candidate| candidate == ref_id))
+        .map(ToOwned::to_owned)
 }
 
 fn normalize_all_ref_set(config: &AppConfig, ref_set: Option<&str>) -> Option<String> {
@@ -181,16 +185,9 @@ fn normalize_source_ref_scope(
     ref_set: Option<&str>,
 ) -> (RefScope, Option<String>) {
     if let Some(ref_set) = ref_set {
-        let source_ref = match config.refs_for_ref_set_source(ref_set, source) {
-            Some(refs) if refs.len() == 1 => match ref_id {
-                Some(ref_id) if !refs.iter().any(|candidate| candidate == ref_id) => None,
-                _ => refs.first().cloned(),
-            },
-            Some(refs) => ref_id
-                .filter(|ref_id| refs.iter().any(|candidate| candidate == ref_id))
-                .map(ToOwned::to_owned),
-            None => None,
-        };
+        let source_ref = config
+            .refs_for_ref_set_source(ref_set, source)
+            .and_then(|refs| ref_from_ref_set_refs(refs, ref_id));
 
         return (
             RefScope::RefSet {

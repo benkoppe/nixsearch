@@ -56,10 +56,10 @@ pub(crate) fn strict_decode(value: &str, plus_as_space: bool) -> ParseResult<Str
 }
 
 pub(super) fn non_empty_string(value: String) -> Option<String> {
-    if value.trim().is_empty() {
-        None
-    } else {
+    if non_empty(&value).is_some() {
         Some(value)
+    } else {
+        None
     }
 }
 

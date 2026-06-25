@@ -4,8 +4,10 @@ use axum::http::Uri;
 
 use crate::{DEFAULT_LIMIT, MAX_OFFSET};
 
-use super::decode::{mark_seen, non_empty_string, parse_bounded_usize, required_value};
-use super::{ParseResult, RequestParseError, strict_query_pairs};
+use super::decode::{
+    mark_seen, non_empty_string, parse_bounded_usize, required_value, strict_query_pairs,
+};
+use super::{ParseResult, RequestParseError};
 
 pub(crate) fn state_events_query_from_uri(uri: &Uri) -> ParseResult<StateQuery> {
     let mut url = None;

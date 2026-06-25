@@ -10,7 +10,6 @@ pub use decode::non_empty;
 pub use public::{LinkOrigin, PageQuery, PageRequest, normalized_query};
 pub use state::{PageState, SourceFilter, page_state};
 
-pub(crate) use decode::{strict_decode, strict_query_pairs};
 pub(crate) use endpoint::{slice_query_from_uri, state_events_query_from_uri};
 pub(crate) use public::{page_request_from_public_uri, public_uri};
 #[cfg(test)]
