@@ -1,11 +1,11 @@
 use maud::{Markup, PreEscaped, html};
 
 use nixsearch_config::app::AppConfig;
-use nixsearch_config::source::SourceKind;
 use nixsearch_service::ServedGenerationSnapshot;
 
 use crate::AppState;
 use crate::request::{PageRequest, PageState, SourceFilter};
+use crate::source_labels::{source_display_name, source_kind_noun};
 
 use super::source_tag::color_for_source;
 
@@ -71,14 +71,6 @@ fn title_for(config: &AppConfig, source_filter: &SourceFilter) -> (&'static str,
     }
 }
 
-fn source_display_name<'a>(config: &'a AppConfig, source_id: &'a str) -> &'a str {
-    config
-        .sources
-        .get(source_id)
-        .and_then(|source| source.name.as_deref())
-        .unwrap_or(source_id)
-}
-
 /// Returns the entry count and its noun (e.g. `(123456, "packages and options")`)
 /// for the active set, or `None` when counts are unavailable (e.g. the index has
 /// no matching targets yet).
@@ -116,18 +108,8 @@ fn kind_noun_for(config: &AppConfig, source_filter: &SourceFilter) -> &'static s
         SourceFilter::Named(source) => config
             .sources
             .get(source)
-            .map(|source| kind_noun(source.kind))
+            .map(|source| source_kind_noun(source.kind))
             .unwrap_or("entries"),
-    }
-}
-
-pub(crate) fn kind_noun(kind: SourceKind) -> &'static str {
-    match kind {
-        SourceKind::Packages => "packages",
-        SourceKind::Options => "options",
-        SourceKind::Apps => "apps",
-        SourceKind::Services => "services",
-        SourceKind::Mixed => "packages and options",
     }
 }
 
@@ -158,12 +140,5 @@ mod tests {
         assert_eq!(format_count(1_000), "1,000");
         assert_eq!(format_count(123_456), "123,456");
         assert_eq!(format_count(1_234_567), "1,234,567");
-    }
-
-    #[test]
-    fn kind_noun_maps_source_kinds() {
-        assert_eq!(kind_noun(SourceKind::Packages), "packages");
-        assert_eq!(kind_noun(SourceKind::Options), "options");
-        assert_eq!(kind_noun(SourceKind::Mixed), "packages and options");
     }
 }

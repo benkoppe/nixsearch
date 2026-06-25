@@ -17,6 +17,7 @@ use nixsearch_service::{
 use crate::AppState;
 use crate::DEFAULT_LIMIT;
 use crate::entry::{AnnotatedEntryDocument, EntryData};
+use crate::metadata::{self, PageHeadMetadataInput, PageMetadata};
 use crate::origin::{PageUrls, page_urls, page_urls_for_public_uri, public_path_and_query};
 use crate::request::{
     PageRequest, PageState, SourceFilter, normalized_query, page_request_from_public_uri,
@@ -28,8 +29,8 @@ use crate::sitemap::{
 };
 use crate::templates;
 use crate::templates::layout::{
-    InitialReturnMetadata, PageMetadata, ResultsContent, generation_change_script,
-    head_metadata_script, modal_patch_script, results_patch_script,
+    InitialReturnMetadata, ResultsContent, generation_change_script, head_metadata_script,
+    modal_patch_script, results_patch_script,
 };
 use crate::urls::{
     canonical_home_path, canonical_source_path, close_url_for_state, sitemap_candidate_path,
@@ -373,15 +374,15 @@ pub async fn state_events(State(state): State<AppState>, headers: HeaderMap, uri
     .write_as_axum_sse_event()));
 
     if navigation.has_complete_metadata(&page_state, &search_result, &entry) {
-        let metadata = templates::layout::page_head_metadata(
-            &state,
-            &request,
-            &page_state,
-            &page_urls,
-            &snapshot,
-            results_content,
-            &entry,
-        );
+        let metadata = metadata::page_head_metadata(PageHeadMetadataInput {
+            state: &state,
+            request: &request,
+            page_state: &page_state,
+            page_urls: &page_urls,
+            snapshot: &snapshot,
+            content: results_content.metadata_content(),
+            entry: &entry,
+        });
 
         events.push(Ok(ExecuteScript::new(head_metadata_script(
             &metadata,
@@ -518,15 +519,15 @@ fn generation_change_content(
     let modal_entry = if direct_entry { &empty_entry } else { &entry };
     let modal_html =
         templates::modal::render(&state.config, &page_state, modal_entry).into_string();
-    let metadata = templates::layout::page_head_metadata(
+    let metadata = metadata::page_head_metadata(PageHeadMetadataInput {
         state,
-        &request,
-        &page_state,
+        request: &request,
+        page_state: &page_state,
         page_urls,
         snapshot,
-        results_content,
-        &entry,
-    );
+        content: results_content.metadata_content(),
+        entry: &entry,
+    });
 
     Ok(GenerationChangeContent {
         results_html,
@@ -564,7 +565,7 @@ fn generation_change_error_content(
     let results_html =
         templates::results::render_status_error("Request failed", &message).into_string();
     let modal_html = templates::modal::render_empty_container().into_string();
-    let metadata = templates::layout::noindex_head_metadata(
+    let metadata = metadata::noindex_head_metadata(
         state.config.public_seo_enabled(),
         page_urls,
         "Request failed",
@@ -991,15 +992,15 @@ fn initial_return_metadata(
         origin: page_urls.origin.clone(),
     };
 
-    let metadata = templates::layout::page_head_metadata(
+    let metadata = metadata::page_head_metadata(PageHeadMetadataInput {
         state,
-        &close_request,
-        &close_state,
-        &close_page_urls,
+        request: &close_request,
+        page_state: &close_state,
+        page_urls: &close_page_urls,
         snapshot,
-        results_content,
-        &EntryData::Empty,
-    );
+        content: results_content.metadata_content(),
+        entry: &EntryData::Empty,
+    });
 
     Some(InitialReturnMetadata {
         metadata,
@@ -1093,12 +1094,8 @@ fn sse_error_response(
     target_public_url: Option<&str>,
 ) -> Response {
     let html = templates::results::render_status_error("Request failed", error).into_string();
-    let metadata = templates::layout::noindex_head_metadata(
-        public_seo_enabled,
-        page_urls,
-        "Request failed",
-        error,
-    );
+    let metadata =
+        metadata::noindex_head_metadata(public_seo_enabled, page_urls, "Request failed", error);
 
     let mut events: Vec<std::result::Result<Event, Infallible>> = Vec::new();
 
@@ -1139,15 +1136,15 @@ fn sse_entry_error_response(context: SseEntryErrorContext<'_>, error: &EntryLoad
     let modal_html =
         templates::modal::render(&context.state.config, context.page_state, modal_entry)
             .into_string();
-    let metadata = templates::layout::page_head_metadata(
-        context.state,
-        context.request,
-        context.page_state,
-        context.page_urls,
-        context.snapshot,
-        context.results_content,
-        &entry,
-    );
+    let metadata = metadata::page_head_metadata(PageHeadMetadataInput {
+        state: context.state,
+        request: context.request,
+        page_state: context.page_state,
+        page_urls: context.page_urls,
+        snapshot: context.snapshot,
+        content: context.results_content.metadata_content(),
+        entry: &entry,
+    });
 
     let mut events: Vec<std::result::Result<Event, Infallible>> = Vec::new();
 

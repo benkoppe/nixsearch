@@ -16,11 +16,13 @@ use nixsearch_service::SearchService;
 mod entry;
 mod handlers;
 mod maintenance;
+mod metadata;
 mod origin;
 mod render_docs;
 mod request;
 mod scripts;
 mod sitemap;
+mod source_labels;
 mod templates;
 mod urls;
 

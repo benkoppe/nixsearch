@@ -6,18 +6,17 @@ use serde::Serialize;
 use nixsearch_config::app::AppConfig;
 use nixsearch_config::server::{AnalyticsScriptConfig, ScriptAttributeValue};
 use nixsearch_index::search::SearchResult;
-use nixsearch_service::{SeoFactsResult, ServedGenerationSnapshot};
+use nixsearch_service::ServedGenerationSnapshot;
 
 use crate::AppState;
 use crate::DATASTAR_JS_URL;
 use crate::RECONCILE_EVENTS_URL;
 use crate::entry::EntryData;
+use crate::metadata::{MetadataContent, PageHeadMetadataInput, PageMetadata};
 use crate::origin::PageUrls;
-use crate::request::{PageRequest, PageState, SourceFilter, non_empty, normalized_query};
+use crate::request::{PageRequest, PageState, SourceFilter};
 use crate::scripts::navigation_script;
-use crate::urls::{
-    canonical_entry_path_for_document, canonical_home_path, canonical_source_path, source_path,
-};
+use crate::urls::source_path;
 
 use super::footer;
 use super::home;
@@ -27,8 +26,6 @@ use super::search;
 use super::source_tag;
 
 static CSS: &str = include_str!("../../style.css");
-const DEFAULT_DESCRIPTION: &str = "Search the Nix ecosystem";
-const ROBOTS_NOINDEX_FOLLOW: &str = "noindex,follow";
 
 #[derive(Clone, Copy)]
 pub enum ResultsContent<'a> {
@@ -38,26 +35,15 @@ pub enum ResultsContent<'a> {
     Error { title: &'a str, message: &'a str },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PageMetadata {
-    title: String,
-    description: String,
-    open_graph: Option<OpenGraphMetadata>,
-    canonical_url: Option<String>,
-    robots: Option<&'static str>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct OpenGraphMetadata {
-    url: String,
-    #[serde(rename = "type")]
-    kind: String,
-    site_name: String,
-    title: String,
-    description: String,
-    image_url: String,
+impl<'a> ResultsContent<'a> {
+    pub(crate) fn metadata_content(self) -> MetadataContent<'a> {
+        match self {
+            Self::Home => MetadataContent::Home,
+            Self::SearchResults(result) => MetadataContent::SearchResults(result),
+            Self::DirectEntry(_) => MetadataContent::DirectEntry,
+            Self::Error { .. } => MetadataContent::Error,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,12 +61,6 @@ pub(crate) struct FullPageRender<'a> {
     pub results_content: ResultsContent<'a>,
     pub entry: &'a EntryData,
     pub initial_return_metadata: Option<&'a InitialReturnMetadata>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct IndexMetadata {
-    canonical_url: Option<String>,
-    robots: Option<&'static str>,
 }
 
 pub fn render_full_page(page: FullPageRender<'_>) -> Markup {
@@ -119,15 +99,15 @@ pub fn render_full_page(page: FullPageRender<'_>) -> Markup {
     let generation_state = generation_state_json(&served_generation.manifest().generation_id);
     let initial_history_metadata = initial_return_metadata.map(initial_history_metadata_json);
 
-    let metadata = page_head_metadata(
+    let metadata = crate::metadata::page_head_metadata(PageHeadMetadataInput {
         state,
         request,
         page_state,
         page_urls,
-        served_generation,
-        results_content,
+        snapshot: served_generation,
+        content: results_content.metadata_content(),
         entry,
-    );
+    });
 
     let form_action = match source_filter {
         SourceFilter::All => "/".to_owned(),
@@ -250,57 +230,6 @@ fn append_escaped(output: &mut String, value: &str) {
     write!(Escaper::new(output), "{value}").expect("writing to a String should not fail");
 }
 
-pub(crate) fn page_head_metadata(
-    state: &AppState,
-    request: &PageRequest,
-    page_state: &PageState,
-    page_urls: &PageUrls,
-    served_generation: &ServedGenerationSnapshot,
-    results_content: ResultsContent<'_>,
-    entry: &EntryData,
-) -> PageMetadata {
-    let search_result_for_metadata = match results_content {
-        ResultsContent::SearchResults(result) => Ok(result),
-        ResultsContent::Error { message, .. } => Err(message),
-        ResultsContent::Home | ResultsContent::DirectEntry(_) => Err(""),
-    };
-
-    let index_metadata = page_index_metadata(
-        state,
-        request,
-        page_state,
-        served_generation,
-        results_content,
-        entry,
-        page_urls,
-    );
-
-    page_metadata(
-        &state.config,
-        request,
-        &page_state.source_filter,
-        search_result_for_metadata,
-        entry,
-        page_urls,
-        index_metadata,
-    )
-}
-
-pub(crate) fn noindex_head_metadata(
-    public_seo_enabled: bool,
-    page_urls: &PageUrls,
-    title: &str,
-    description: &str,
-) -> PageMetadata {
-    PageMetadata {
-        title: title.to_owned(),
-        description: description.to_owned(),
-        open_graph: open_graph_metadata(public_seo_enabled, page_urls, None, title, description),
-        canonical_url: None,
-        robots: Some(ROBOTS_NOINDEX_FOLLOW),
-    }
-}
-
 pub(crate) fn head_metadata_script(
     metadata: &PageMetadata,
     target_public_url: Option<&str>,
@@ -352,306 +281,6 @@ pub(crate) fn generation_change_script(
     format!(
         "if (window.nixsearchApplyGenerationChange) window.nixsearchApplyGenerationChange({payload_json});"
     )
-}
-
-fn page_metadata(
-    config: &AppConfig,
-    request: &PageRequest,
-    source_filter: &SourceFilter,
-    search_result: Result<&SearchResult, &str>,
-    entry: &EntryData,
-    page_urls: &PageUrls,
-    index_metadata: IndexMetadata,
-) -> PageMetadata {
-    let canonical_url = index_metadata.canonical_url;
-    let title = title_for_entry(config, request, source_filter, entry.document());
-    let description = description_for(config, request, source_filter, search_result, entry);
-    let open_graph_canonical = (index_metadata.robots != Some(ROBOTS_NOINDEX_FOLLOW))
-        .then_some(canonical_url.as_deref())
-        .flatten();
-
-    PageMetadata {
-        open_graph: open_graph_metadata(
-            config.public_seo_enabled(),
-            page_urls,
-            open_graph_canonical,
-            &title,
-            &description,
-        ),
-        title,
-        description,
-        canonical_url,
-        robots: index_metadata.robots,
-    }
-}
-
-fn open_graph_metadata(
-    public_seo_enabled: bool,
-    page_urls: &PageUrls,
-    canonical_url: Option<&str>,
-    title: &str,
-    description: &str,
-) -> Option<OpenGraphMetadata> {
-    let canonical_url = canonical_url?;
-
-    public_seo_enabled.then(|| OpenGraphMetadata {
-        url: canonical_url.to_owned(),
-        kind: "website".to_owned(),
-        site_name: "nixsearch".to_owned(),
-        title: title.to_owned(),
-        description: description.to_owned(),
-        image_url: page_urls.image_url.clone(),
-    })
-}
-
-fn page_index_metadata(
-    state: &AppState,
-    request: &PageRequest,
-    page_state: &PageState,
-    served_generation: &ServedGenerationSnapshot,
-    results_content: ResultsContent<'_>,
-    entry: &EntryData,
-    page_urls: &PageUrls,
-) -> IndexMetadata {
-    if !state.config.public_seo_enabled() {
-        return noindex_metadata();
-    }
-
-    if matches!(results_content, ResultsContent::Error { .. }) {
-        return noindex_metadata();
-    }
-
-    if request
-        .query
-        .ref_set
-        .as_deref()
-        .and_then(non_empty)
-        .is_some()
-    {
-        return noindex_metadata();
-    }
-
-    match entry {
-        EntryData::Found(entry) => {
-            let document = &entry.document;
-
-            if request_has_entry_context(request) {
-                return noindex_metadata();
-            }
-
-            if !entry.annotation.unique_within_kind {
-                return noindex_metadata();
-            }
-
-            if !document.is_seo_eligible_entry() {
-                return noindex_metadata();
-            }
-
-            if !state
-                .search
-                .document_ref_allowed_for_seo(served_generation, document)
-            {
-                return noindex_metadata();
-            }
-
-            return canonical_metadata(
-                page_urls.absolute_url(&canonical_entry_path_for_document(&state.config, document)),
-            );
-        }
-        EntryData::NotFound { .. } | EntryData::Ambiguous(_) | EntryData::Error(_) => {
-            return noindex_metadata();
-        }
-        EntryData::Empty => {}
-    }
-
-    if page_state.detail.is_some() {
-        return noindex_metadata();
-    }
-
-    if normalized_query(&request.query).is_some() || request.query.page.unwrap_or(1) > 1 {
-        return noindex_metadata();
-    }
-
-    match &page_state.source_filter {
-        SourceFilter::All => {
-            if request.source.is_none()
-                && request.entry.is_none()
-                && request
-                    .query
-                    .ref_id
-                    .as_deref()
-                    .and_then(non_empty)
-                    .is_none()
-                && request.query.source.is_none()
-            {
-                canonical_metadata(page_urls.absolute_url(&canonical_home_path()))
-            } else {
-                noindex_metadata()
-            }
-        }
-        SourceFilter::Named(source) => {
-            if request.entry.is_some() || request.query.source.is_some() {
-                return noindex_metadata();
-            }
-
-            let Some(ref_id) = page_state.source_ref.as_deref() else {
-                return noindex_metadata();
-            };
-
-            source_index_metadata(
-                state
-                    .search
-                    .source_has_indexable_entries(served_generation, source, ref_id),
-                page_urls.absolute_url(&canonical_source_path(&state.config, source, ref_id)),
-            )
-        }
-    }
-}
-
-fn request_has_entry_context(request: &PageRequest) -> bool {
-    normalized_query(&request.query).is_some()
-        || request
-            .query
-            .ref_set
-            .as_deref()
-            .and_then(non_empty)
-            .is_some()
-        || request.query.source.is_some()
-        || request.query.page.unwrap_or(1) > 1
-}
-
-fn source_index_metadata(
-    has_indexable_entries: SeoFactsResult<bool>,
-    canonical_url: String,
-) -> IndexMetadata {
-    match has_indexable_entries {
-        Ok(true) => canonical_metadata(canonical_url),
-        Ok(false) | Err(_) => noindex_metadata(),
-    }
-}
-
-fn canonical_metadata(canonical_url: String) -> IndexMetadata {
-    IndexMetadata {
-        canonical_url: Some(canonical_url),
-        robots: None,
-    }
-}
-
-fn noindex_metadata() -> IndexMetadata {
-    IndexMetadata {
-        canonical_url: None,
-        robots: Some(ROBOTS_NOINDEX_FOLLOW),
-    }
-}
-
-#[cfg(test)]
-fn title_for(config: &AppConfig, request: &PageRequest, source_filter: &SourceFilter) -> String {
-    title_for_entry(config, request, source_filter, None)
-}
-
-fn title_for_entry(
-    config: &AppConfig,
-    request: &PageRequest,
-    source_filter: &SourceFilter,
-    entry_document: Option<&nixsearch_core::document::SearchDocument>,
-) -> String {
-    let mut parts = Vec::new();
-
-    if let Some(document) = entry_document {
-        parts.push(document.common().name.to_owned());
-    } else if let Some(entry) = request.entry.as_deref().and_then(crate::request::non_empty) {
-        parts.push(entry.to_owned());
-    } else if let Some(q) = normalized_query(&request.query) {
-        parts.push(q.to_owned());
-    }
-
-    if let SourceFilter::Named(source_id) = source_filter {
-        parts.push(source_display_name(config, source_id).to_owned());
-    }
-
-    parts.push("nixsearch".to_owned());
-    parts.join(" · ")
-}
-
-fn description_for(
-    config: &AppConfig,
-    request: &PageRequest,
-    source_filter: &SourceFilter,
-    search_result: Result<&SearchResult, &str>,
-    entry: &EntryData,
-) -> String {
-    if let Some(document) = entry.document() {
-        return description_for_document(config, document);
-    }
-
-    if let (Ok(result), Some(q)) = (search_result, normalized_query(&request.query)) {
-        return format!("{} results for {q}", result.total);
-    }
-
-    default_description_for(config, source_filter)
-}
-
-fn default_description_for(config: &AppConfig, source_filter: &SourceFilter) -> String {
-    match source_filter {
-        SourceFilter::All => DEFAULT_DESCRIPTION.to_owned(),
-        SourceFilter::Named(source) => {
-            let source_config = config.sources.get(source);
-            let source_name = source_config
-                .and_then(|source| source.name.as_deref())
-                .unwrap_or(source);
-            let kind = source_config
-                .map(|source| home::kind_noun(source.kind))
-                .unwrap_or("entries");
-
-            format!("Search {source_name} {kind}")
-        }
-    }
-}
-
-fn description_for_document(
-    config: &AppConfig,
-    document: &nixsearch_core::document::SearchDocument,
-) -> String {
-    let common = document.common();
-    let source = source_display_name(config, &common.source);
-
-    match document {
-        nixsearch_core::document::SearchDocument::Option(option) => option
-            .description
-            .as_ref()
-            .and_then(|description| {
-                first_non_empty_line(description.plain_text().as_ref()).map(ToOwned::to_owned)
-            })
-            .map(|description| format!("{} · {description}", common.name))
-            .unwrap_or_else(|| format!("{} · {source}", common.name)),
-        nixsearch_core::document::SearchDocument::Package(package) => {
-            let name = package
-                .version
-                .as_deref()
-                .and_then(crate::request::non_empty)
-                .map(|version| format!("{} {version}", common.name))
-                .unwrap_or_else(|| common.name.clone());
-            let description = package
-                .description
-                .as_deref()
-                .and_then(first_non_empty_line)
-                .unwrap_or(source);
-
-            format!("{name} · {description}")
-        }
-    }
-}
-
-fn first_non_empty_line(value: &str) -> Option<&str> {
-    value.lines().map(str::trim).find(|line| !line.is_empty())
-}
-
-fn source_display_name<'a>(config: &'a AppConfig, source_id: &'a str) -> &'a str {
-    config
-        .sources
-        .get(source_id)
-        .and_then(|source| source.name.as_deref())
-        .unwrap_or(source_id)
 }
 
 fn source_metadata_json(config: &AppConfig) -> String {
@@ -736,57 +365,14 @@ fn json_script_content<T: Serialize>(value: &T) -> String {
 #[cfg(test)]
 mod tests {
     use nixsearch_config::server::ScriptAttributeValue;
-    use nixsearch_core::document::{DocText, OptionDoc, PackageDoc, SearchDocument};
-    use nixsearch_core::ingest::IngestContext;
-    use nixsearch_index::annotation::SearchHitAnnotation;
-    use nixsearch_index::search::SearchResult;
-    use nixsearch_test_support::{
-        SOURCE_FIXTURES, app_config, app_config_with_public_url, utf8_path_buf,
-    };
+    use nixsearch_test_support::{app_config, utf8_path_buf};
     use tempfile::tempdir;
 
-    use crate::origin::PageUrls;
-    use crate::request::{PageQuery, PageRequest, SourceFilter};
-
-    use super::{
-        EntryData, IndexMetadata, analytics_script, description_for, generation_state_json,
-        json_script_content, page_metadata, title_for, title_for_entry,
-    };
+    use super::{analytics_script, generation_state_json, json_script_content};
 
     fn config() -> nixsearch_config::app::AppConfig {
         let tempdir = tempdir().unwrap();
         app_config(utf8_path_buf(tempdir.path().join("indexes")))
-    }
-
-    fn public_config() -> nixsearch_config::app::AppConfig {
-        let tempdir = tempdir().unwrap();
-        app_config_with_public_url(utf8_path_buf(tempdir.path().join("indexes")))
-    }
-
-    fn page_urls() -> PageUrls {
-        PageUrls {
-            current_url: "https://search.example.com/?q=git".to_owned(),
-            image_url: "https://search.example.com/apple-touch-icon.png".to_owned(),
-            origin: "https://search.example.com".to_owned(),
-        }
-    }
-
-    fn ingest_context() -> IngestContext {
-        IngestContext {
-            source: SOURCE_FIXTURES.to_owned(),
-            ref_id: "small".to_owned(),
-            revision: None,
-            repo: None,
-        }
-    }
-
-    fn found_entry(document: SearchDocument) -> EntryData {
-        EntryData::Found(crate::entry::AnnotatedEntryDocument {
-            annotation: SearchHitAnnotation {
-                unique_within_kind: true,
-            },
-            document: Box::new(document),
-        })
     }
 
     #[test]
@@ -859,225 +445,5 @@ mod tests {
         );
 
         assert!(!generation_state_json("</script>").contains("</script>"));
-    }
-
-    #[test]
-    fn title_includes_query_and_named_source() {
-        let config = config();
-        let request = PageRequest {
-            source: Some(SOURCE_FIXTURES.to_owned()),
-            entry: None,
-            query: PageQuery {
-                q: Some("git".to_owned()),
-                ..PageQuery::default()
-            },
-        };
-
-        assert_eq!(
-            title_for(
-                &config,
-                &request,
-                &SourceFilter::Named(SOURCE_FIXTURES.to_owned())
-            ),
-            "git · Fixtures · nixsearch"
-        );
-    }
-
-    #[test]
-    fn title_omits_all_source_filter() {
-        let config = config();
-        let request = PageRequest {
-            source: None,
-            entry: None,
-            query: PageQuery {
-                q: Some("git".to_owned()),
-                ..PageQuery::default()
-            },
-        };
-
-        assert_eq!(
-            title_for(&config, &request, &SourceFilter::All),
-            "git · nixsearch"
-        );
-    }
-
-    #[test]
-    fn title_includes_named_source_without_query() {
-        let config = config();
-        let request = PageRequest {
-            source: Some(SOURCE_FIXTURES.to_owned()),
-            entry: None,
-            query: PageQuery::default(),
-        };
-
-        assert_eq!(
-            title_for(
-                &config,
-                &request,
-                &SourceFilter::Named(SOURCE_FIXTURES.to_owned())
-            ),
-            "Fixtures · nixsearch"
-        );
-    }
-
-    #[test]
-    fn title_uses_entry_document_when_present() {
-        let config = config();
-        let document = SearchDocument::Package(PackageDoc::new(&ingest_context(), "git"));
-        let request = PageRequest {
-            source: Some(SOURCE_FIXTURES.to_owned()),
-            entry: Some("git".to_owned()),
-            query: PageQuery {
-                q: Some("version control".to_owned()),
-                ..PageQuery::default()
-            },
-        };
-
-        assert_eq!(
-            title_for_entry(
-                &config,
-                &request,
-                &SourceFilter::Named(SOURCE_FIXTURES.to_owned()),
-                Some(&document),
-            ),
-            "git · Fixtures · nixsearch"
-        );
-    }
-
-    #[test]
-    fn metadata_describes_home_page() {
-        let config = public_config();
-        let request = PageRequest::default();
-        let search = SearchResult {
-            hits: Vec::new(),
-            total: 0,
-        };
-        let metadata = page_metadata(
-            &config,
-            &request,
-            &SourceFilter::All,
-            Ok(&search),
-            &EntryData::Empty,
-            &page_urls(),
-            IndexMetadata::default(),
-        );
-
-        assert_eq!(metadata.title, "nixsearch");
-        assert_eq!(metadata.description, "Search the Nix ecosystem");
-        assert!(metadata.open_graph.is_none());
-    }
-
-    #[test]
-    fn metadata_omits_open_graph_without_public_url() {
-        let config = config();
-        let request = PageRequest::default();
-        let search = SearchResult {
-            hits: Vec::new(),
-            total: 0,
-        };
-
-        let metadata = page_metadata(
-            &config,
-            &request,
-            &SourceFilter::All,
-            Ok(&search),
-            &EntryData::Empty,
-            &page_urls(),
-            IndexMetadata::default(),
-        );
-
-        assert_eq!(metadata.open_graph, None);
-    }
-
-    #[test]
-    fn metadata_describes_source_page() {
-        let config = config();
-        let request = PageRequest {
-            source: Some(SOURCE_FIXTURES.to_owned()),
-            ..PageRequest::default()
-        };
-        let search = SearchResult {
-            hits: Vec::new(),
-            total: 0,
-        };
-        let metadata = page_metadata(
-            &config,
-            &request,
-            &SourceFilter::Named(SOURCE_FIXTURES.to_owned()),
-            Ok(&search),
-            &EntryData::Empty,
-            &page_urls(),
-            IndexMetadata::default(),
-        );
-
-        assert_eq!(metadata.description, "Search Fixtures options");
-    }
-
-    #[test]
-    fn metadata_describes_search_results() {
-        let config = config();
-        let request = PageRequest {
-            query: PageQuery {
-                q: Some("git".to_owned()),
-                ..PageQuery::default()
-            },
-            ..PageRequest::default()
-        };
-        let search = SearchResult {
-            hits: Vec::new(),
-            total: 59_526,
-        };
-
-        assert_eq!(
-            description_for(
-                &config,
-                &request,
-                &SourceFilter::All,
-                Ok(&search),
-                &EntryData::Empty
-            ),
-            "59526 results for git"
-        );
-    }
-
-    #[test]
-    fn metadata_describes_package_entry() {
-        let config = config();
-        let mut package = PackageDoc::new(&ingest_context(), "git");
-        package.version = Some("2.54.0".to_owned());
-        package.description = Some("Distributed version control system\nextra".to_owned());
-        let document = SearchDocument::Package(package);
-
-        assert_eq!(
-            description_for(
-                &config,
-                &PageRequest::default(),
-                &SourceFilter::All,
-                Err("unused"),
-                &found_entry(document)
-            ),
-            "git 2.54.0 · Distributed version control system"
-        );
-    }
-
-    #[test]
-    fn metadata_describes_option_entry() {
-        let config = config();
-        let mut option = OptionDoc::new(&ingest_context(), "programs.git.enable");
-        option.description = Some(DocText::Markdown(
-            "Enable Git support.\nMore details.".to_owned(),
-        ));
-        let document = SearchDocument::Option(option);
-
-        assert_eq!(
-            description_for(
-                &config,
-                &PageRequest::default(),
-                &SourceFilter::All,
-                Err("unused"),
-                &found_entry(document)
-            ),
-            "programs.git.enable · Enable Git support."
-        );
     }
 }
