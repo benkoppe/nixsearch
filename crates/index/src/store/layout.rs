@@ -7,7 +7,6 @@ use time::OffsetDateTime;
 use super::IndexStore;
 
 pub(super) const CURRENT_TEMP_PREFIX: &str = "CURRENT.tmp";
-pub(super) const INTEGRITY_TEMP_PREFIX: &str = "integrity.json.tmp";
 pub(super) const MANIFEST_TEMP_PREFIX: &str = "index-manifest.json.tmp";
 pub(super) const SEO_SIDECAR_TEMP_PREFIX: &str = "seo-facts.json.tmp";
 

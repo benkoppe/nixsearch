@@ -1,5 +1,7 @@
 pub mod annotation;
+mod atomic_file;
 pub mod generation;
+mod integrity;
 pub mod manifest;
 mod query;
 mod ranking;
