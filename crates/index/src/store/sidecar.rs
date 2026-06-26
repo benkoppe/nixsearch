@@ -78,6 +78,21 @@ impl IndexStore {
         Ok(())
     }
 
+    pub fn require_seo_sidecar_file(&self, generation: &PublishedGeneration) -> Result<()> {
+        validate_index_schema_version(&generation.manifest)
+            .context("failed to validate supplied index generation manifest")?;
+
+        let path = self.seo_sidecar_path(&generation.path);
+        let metadata = fs::metadata(&path)
+            .with_context(|| format!("failed to read SEO sidecar metadata {path}"))?;
+
+        if !metadata.is_file() {
+            anyhow::bail!("SEO sidecar is not a file {path}");
+        }
+
+        Ok(())
+    }
+
     pub fn read_seo_sidecar(&self, generation: &PublishedGeneration) -> Result<SeoSidecar> {
         validate_index_schema_version(&generation.manifest)
             .context("failed to validate supplied index generation manifest")?;

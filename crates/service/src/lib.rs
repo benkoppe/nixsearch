@@ -1,5 +1,4 @@
 use std::fmt;
-use std::fs;
 use std::sync::{Arc, OnceLock, RwLock};
 
 use anyhow::{Context, Result};
@@ -273,10 +272,7 @@ impl SearchService {
     ) -> Result<Self> {
         let current = load_servable_generation(&config, generation)?;
 
-        Ok(Self {
-            config,
-            current: Arc::new(RwLock::new(current)),
-        })
+        Ok(Self::from_loaded_generation(config, current))
     }
 
     /// Opens a generation that the caller has already validated while holding its lease.
@@ -286,10 +282,14 @@ impl SearchService {
     ) -> Result<Self> {
         let current = load_validated_servable_generation(&config, generation)?;
 
-        Ok(Self {
+        Ok(Self::from_loaded_generation(config, current))
+    }
+
+    fn from_loaded_generation(config: Arc<AppConfig>, current: ServedGeneration) -> Self {
+        Self {
             config,
             current: Arc::new(RwLock::new(current)),
-        })
+        }
     }
 
     pub fn validate_leased_generation_structural(
@@ -299,7 +299,7 @@ impl SearchService {
         let index_store = IndexStore::new(&config.data.index_dir);
         index_store
             .open_structurally_valid_published_generation(generation.published_generation())
-            .context("failed to validate structurally complete generation")
+            .context("failed to validate structurally valid generation")
             .map(|_| ())
     }
 
@@ -318,15 +318,7 @@ impl SearchService {
         generation: &LeasedPublishedGeneration,
     ) -> Result<()> {
         let index_store = IndexStore::new(&config.data.index_dir);
-        let sidecar_path = index_store.seo_sidecar_path(generation.path());
-        let metadata = fs::metadata(&sidecar_path)
-            .with_context(|| format!("failed to read SEO sidecar metadata {sidecar_path}"))?;
-
-        if !metadata.is_file() {
-            anyhow::bail!("SEO sidecar is not a file {sidecar_path}");
-        }
-
-        Ok(())
+        index_store.require_seo_sidecar_file(generation.published_generation())
     }
 
     pub fn config(&self) -> &AppConfig {
@@ -1058,7 +1050,7 @@ fn load_servable_generation(
     } else {
         let index = index_store
             .open_structurally_valid_published_generation(generation.published_generation())
-            .context("failed to open structurally complete served generation")?;
+            .context("failed to open structurally valid served generation")?;
         (index, None)
     };
 
