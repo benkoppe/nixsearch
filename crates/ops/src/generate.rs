@@ -209,7 +209,7 @@ async fn build_and_publish_generation_with_policy(
             manifest: manifest.clone(),
         };
 
-        SeoFactsArtifact::write_derived(index_store, &published_generation, &index)?;
+        SeoFactsArtifact::write_derived(index_store, &published_generation)?;
         index_store.write_manifest(&generation_path, &manifest)?;
         index_store.write_integrity(&published_generation, true)?;
 
