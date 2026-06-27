@@ -19,7 +19,7 @@ use self::documents::{
 };
 use self::index::write_tantivy_index;
 use self::policy::{validate_generation_policy, validate_generation_success_requirements};
-use self::production::{TargetProductionDecision, produce_or_retain_target};
+use self::production::produce_or_retain_target;
 use self::publish::{
     IncompleteGenerationGuard, publish_completed_generation, write_generation_artifacts,
 };
@@ -59,14 +59,15 @@ pub(crate) async fn build_and_publish_generation_with_policy(
     let mut failed_refresh_targets = Vec::new();
 
     for target in targets {
+        let key = TargetKey::from(&target);
         match produce_or_retain_target(artifact_store, target, refresh_keys, policy, producer)
             .await?
         {
-            TargetProductionDecision::Produced(produced_target) => {
+            Some(produced_target) => {
                 consume_and_spool_target(artifact_store, &produced_target, &mut documents_builder)
                     .await?;
             }
-            TargetProductionDecision::Skipped { key } => {
+            None => {
                 failed_refresh_targets.push(key.clone());
                 skipped_targets.push(key);
             }
@@ -83,8 +84,7 @@ pub(crate) async fn build_and_publish_generation_with_policy(
     write_tantivy_index(index_store, generation.path(), &documents)?;
 
     let manifest = build_generation_manifest(&documents)?;
-    let _published_generation =
-        write_generation_artifacts(index_store, generation.path(), manifest)?;
+    write_generation_artifacts(index_store, generation.path(), manifest)?;
 
     generation.begin_publish();
     publish_completed_generation(index_store, generation.path(), documents.total_documents)?;

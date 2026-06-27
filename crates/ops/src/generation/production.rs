@@ -42,18 +42,13 @@ impl TargetProductionStatus {
     }
 }
 
-pub(crate) enum TargetProductionDecision {
-    Produced(Box<ProducedTarget>),
-    Skipped { key: TargetKey },
-}
-
 pub(crate) async fn produce_or_retain_target(
     artifact_store: &ArtifactStore,
     target: TargetRef,
     refresh_keys: &BTreeSet<TargetKey>,
     policy: GenerationFailurePolicy,
     producer: &(dyn TargetProducer + Send + Sync),
-) -> Result<TargetProductionDecision> {
+) -> Result<Option<ProducedTarget>> {
     let key = TargetKey::from(&target);
 
     if refresh_keys.contains(&key) {
@@ -68,7 +63,7 @@ pub(crate) async fn produce_or_retain_target(
                 )
                 .await?;
 
-                Ok(TargetProductionDecision::Produced(Box::new(produced)))
+                Ok(Some(produced))
             }
             Err(error) => match policy {
                 GenerationFailurePolicy::Strict => Err(error),
@@ -82,7 +77,7 @@ pub(crate) async fn produce_or_retain_target(
                                 "skipping target after bootstrap production failure: {error:#}"
                             );
 
-                            Ok(TargetProductionDecision::Skipped { key })
+                            Ok(None)
                         }
                     }
                 }
@@ -100,7 +95,7 @@ pub(crate) async fn produce_or_retain_target(
     )
     .await?;
 
-    Ok(TargetProductionDecision::Produced(Box::new(produced)))
+    Ok(Some(produced))
 }
 
 async fn verify_produced_target(

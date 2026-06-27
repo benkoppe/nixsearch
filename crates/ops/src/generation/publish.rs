@@ -44,7 +44,7 @@ pub(crate) fn write_generation_artifacts(
     index_store: &IndexStore,
     generation_path: &Utf8Path,
     manifest: IndexGenerationManifest,
-) -> Result<PublishedGeneration> {
+) -> Result<()> {
     let published_generation = PublishedGeneration {
         path: generation_path.to_owned(),
         manifest: manifest.clone(),
@@ -54,7 +54,7 @@ pub(crate) fn write_generation_artifacts(
     index_store.write_manifest(generation_path, &manifest)?;
     index_store.write_integrity(&published_generation, true)?;
 
-    Ok(published_generation)
+    Ok(())
 }
 
 pub(crate) fn publish_completed_generation(

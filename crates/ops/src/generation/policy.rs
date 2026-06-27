@@ -81,10 +81,6 @@ pub(crate) fn classify_bootstrap_produce_error(
         .chain()
         .find_map(|cause| cause.downcast_ref::<NixCommandFailure>())
     else {
-        if error.chain().any(|cause| cause.is::<std::io::Error>()) {
-            return ProduceFailureDisposition::Fatal;
-        }
-
         return ProduceFailureDisposition::Fatal;
     };
 
