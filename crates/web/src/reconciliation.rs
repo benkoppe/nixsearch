@@ -55,15 +55,8 @@ impl RequestGeneration {
         self.snapshot.manifest().generation_id.as_str()
     }
 
-    pub(crate) fn client_status(
-        &self,
-        client_generation_id: Option<&str>,
-    ) -> ClientGenerationStatus {
-        if client_generation_id == Some(self.generation_id()) {
-            ClientGenerationStatus::Current
-        } else {
-            ClientGenerationStatus::Changed
-        }
+    pub(crate) fn client_generation_changed(&self, client_generation_id: Option<&str>) -> bool {
+        client_generation_id != Some(self.generation_id())
     }
 
     pub(crate) fn stale_json_response(&self) -> Response {
@@ -72,18 +65,6 @@ impl RequestGeneration {
             Json(stale_generation_payload(self.generation_id())),
         )
             .into_response()
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ClientGenerationStatus {
-    Current,
-    Changed,
-}
-
-impl ClientGenerationStatus {
-    pub(crate) fn changed(self) -> bool {
-        matches!(self, Self::Changed)
     }
 }
 
@@ -105,13 +86,7 @@ fn stale_generation_payload(generation_id: &str) -> StaleGenerationPayload<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ClientGenerationStatus, stale_generation_payload};
-
-    #[test]
-    fn client_generation_status_reports_changed() {
-        assert!(!ClientGenerationStatus::Current.changed());
-        assert!(ClientGenerationStatus::Changed.changed());
-    }
+    use super::stale_generation_payload;
 
     #[test]
     fn stale_generation_payload_uses_existing_json_contract() {

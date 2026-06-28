@@ -231,10 +231,7 @@ pub async fn state_events(State(state): State<AppState>, headers: HeaderMap, uri
     let generation = RequestGeneration::reconcile(&state);
     let snapshot = generation.snapshot();
 
-    if generation
-        .client_status(query.generation_id.as_deref())
-        .changed()
-    {
+    if generation.client_generation_changed(query.generation_id.as_deref()) {
         return generation_change_response(
             &state,
             &target_uri,
@@ -659,10 +656,7 @@ pub async fn results_slice(
     let generation = RequestGeneration::reconcile(&state);
     let snapshot = generation.snapshot();
 
-    if generation
-        .client_status(query.generation_id.as_deref())
-        .changed()
-    {
+    if generation.client_generation_changed(query.generation_id.as_deref()) {
         return generation.stale_json_response();
     }
 
