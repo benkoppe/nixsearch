@@ -13,6 +13,7 @@ use nixsearch_core::artifact::ArtifactKind;
 use nixsearch_core::document::{DocText, OptionDoc, PackageDoc, SearchDocument};
 use nixsearch_core::ingest::IngestContext;
 use nixsearch_core::source_link::{Declaration, SourceLinkConfig};
+use nixsearch_core::target::RefRole;
 
 pub const SOURCE_FIXTURES: &str = "fixtures";
 pub const SOURCE_NIXOS: &str = "nixos";
@@ -187,7 +188,7 @@ pub fn app_config(index_dir: impl AsRef<Utf8Path>) -> AppConfig {
                 default_ref: Some(REF_SMALL.to_owned()),
                 refs: vec![RefConfig {
                     id: REF_SMALL.to_owned(),
-                    artifact_only: false,
+                    role: RefRole::Search,
                     source_links: Some(SourceLinkConfig::Github {
                         owner: "example".to_owned(),
                         repo: "repo".to_owned(),
@@ -209,7 +210,7 @@ pub fn app_config(index_dir: impl AsRef<Utf8Path>) -> AppConfig {
 pub fn existing_file_ref_config(id: &str) -> RefConfig {
     RefConfig {
         id: id.to_owned(),
-        artifact_only: false,
+        role: RefRole::Search,
         producer: ProducerConfig::ExistingFile {
             path: PathBuf::from("unused.json"),
             artifact: ArtifactKind::OptionsJson,

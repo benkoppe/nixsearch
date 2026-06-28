@@ -43,6 +43,7 @@ mod tests {
     use tempfile::{TempDir, tempdir};
 
     use nixsearch_core::artifact::ArtifactKind;
+    use nixsearch_core::target::RefRole;
 
     use crate::manifest::{
         IndexGenerationManifest, IndexTargetManifest, canonical_generation_id,
@@ -68,6 +69,8 @@ mod tests {
                 source: SOURCE_FIXTURES.to_owned(),
                 ref_id: REF_SMALL.to_owned(),
                 artifact_kind: ArtifactKind::OptionsJson,
+                target_role: RefRole::Search,
+                indexes_search_documents: true,
                 document_count,
                 artifact_hash: None,
                 revision: None,
@@ -475,6 +478,8 @@ mod tests {
                 source: SOURCE_FIXTURES.to_owned(),
                 ref_id: REF_SMALL.to_owned(),
                 artifact_kind: ArtifactKind::OptionsJson,
+                target_role: RefRole::Search,
+                indexes_search_documents: true,
                 document_count: 10,
                 artifact_hash: Some("abc123".into()),
                 revision: None,
@@ -804,7 +809,7 @@ mod tests {
         let generation = store.create_generation_path().unwrap();
 
         let missing_id = serde_json::json!({
-            "schema_version": 1,
+            "schema_version": 5,
             "generated_at": "1970-01-01T00:00:00Z",
             "document_count": 10,
             "targets": [
@@ -812,8 +817,11 @@ mod tests {
                     "source": SOURCE_FIXTURES,
                     "ref_id": REF_SMALL,
                     "artifact_kind": "options-json",
+                    "target_role": "search",
+                    "indexes_search_documents": true,
                     "document_count": 10,
-                    "artifact_hash": "abc123"
+                    "artifact_hash": "abc123",
+                    "revision": null
                 }
             ]
         });
@@ -841,6 +849,8 @@ mod tests {
                 source: SOURCE_FIXTURES.to_owned(),
                 ref_id: REF_SMALL.to_owned(),
                 artifact_kind: ArtifactKind::OptionsJson,
+                target_role: RefRole::Search,
+                indexes_search_documents: true,
                 document_count: 10,
                 artifact_hash: Some("abc123".into()),
                 revision: None,
@@ -872,6 +882,8 @@ mod tests {
                 source: SOURCE_FIXTURES.to_owned(),
                 ref_id: REF_SMALL.to_owned(),
                 artifact_kind: ArtifactKind::OptionsJson,
+                target_role: RefRole::Search,
+                indexes_search_documents: true,
                 document_count: 10,
                 artifact_hash: Some("abc123".into()),
                 revision: None,
@@ -898,6 +910,8 @@ mod tests {
                 source: SOURCE_FIXTURES.to_owned(),
                 ref_id: REF_SMALL.to_owned(),
                 artifact_kind: ArtifactKind::FlakeInfoJson,
+                target_role: RefRole::ArtifactOnly,
+                indexes_search_documents: false,
                 document_count: 1,
                 artifact_hash: None,
                 revision: None,
@@ -908,7 +922,7 @@ mod tests {
 
         let error = store.write_manifest(&generation, &manifest).unwrap_err();
 
-        assert!(format!("{error:#}").contains("artifact-only"));
+        assert!(format!("{error:#}").contains("non-indexing"));
     }
 
     #[test]
@@ -918,7 +932,7 @@ mod tests {
         let generation = store.create_generation_path().unwrap();
 
         let invalid = serde_json::json!({
-            "schema_version": 1,
+            "schema_version": 5,
             "generated_at": "1970-01-01T00:00:00Z",
             "generation_id": "sha256:wrong",
             "document_count": 10,
@@ -927,8 +941,11 @@ mod tests {
                     "source": SOURCE_FIXTURES,
                     "ref_id": REF_SMALL,
                     "artifact_kind": "options-json",
+                    "target_role": "search",
+                    "indexes_search_documents": true,
                     "document_count": 10,
-                    "artifact_hash": "abc123"
+                    "artifact_hash": "abc123",
+                    "revision": null
                 }
             ]
         });

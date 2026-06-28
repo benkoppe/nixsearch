@@ -3,6 +3,7 @@ use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
 use nixsearch_core::artifact::ArtifactKind;
+use nixsearch_core::target::{RefRole, TargetCapabilities};
 
 use crate::schema::INDEX_SCHEMA_VERSION;
 
@@ -48,9 +49,33 @@ pub struct IndexTargetManifest {
     pub source: String,
     pub ref_id: String,
     pub artifact_kind: ArtifactKind,
+    pub target_role: RefRole,
+    pub indexes_search_documents: bool,
     pub document_count: usize,
     pub artifact_hash: Option<String>,
     pub revision: Option<String>,
+}
+
+impl IndexTargetManifest {
+    pub fn new(
+        source: impl Into<String>,
+        ref_id: impl Into<String>,
+        artifact_kind: ArtifactKind,
+        target_role: RefRole,
+        document_count: usize,
+    ) -> Self {
+        Self {
+            source: source.into(),
+            ref_id: ref_id.into(),
+            artifact_kind,
+            target_role,
+            indexes_search_documents: TargetCapabilities::new(target_role, artifact_kind)
+                .indexes_search_documents(),
+            document_count,
+            artifact_hash: None,
+            revision: None,
+        }
+    }
 }
 
 pub fn canonical_generation_id(manifest: &IndexGenerationManifest) -> Result<String> {
@@ -105,6 +130,8 @@ struct CanonicalTargetManifest {
     source: String,
     ref_id: String,
     artifact_kind: &'static str,
+    target_role: &'static str,
+    indexes_search_documents: bool,
     document_count: usize,
     artifact_hash: Option<String>,
     revision: Option<String>,
@@ -118,6 +145,8 @@ fn canonical_manifest_bytes(manifest: &IndexGenerationManifest) -> Result<Vec<u8
             source: target.source.clone(),
             ref_id: target.ref_id.clone(),
             artifact_kind: target.artifact_kind.as_str(),
+            target_role: target.target_role.as_str(),
+            indexes_search_documents: target.indexes_search_documents,
             document_count: target.document_count,
             artifact_hash: target.artifact_hash.clone(),
             revision: target.revision.clone(),
@@ -129,6 +158,8 @@ fn canonical_manifest_bytes(manifest: &IndexGenerationManifest) -> Result<Vec<u8
             left.source.as_str(),
             left.ref_id.as_str(),
             left.artifact_kind,
+            left.target_role,
+            left.indexes_search_documents,
             left.document_count,
             left.artifact_hash.is_some(),
             left.artifact_hash.as_deref().unwrap_or(""),
@@ -139,6 +170,8 @@ fn canonical_manifest_bytes(manifest: &IndexGenerationManifest) -> Result<Vec<u8
                 right.source.as_str(),
                 right.ref_id.as_str(),
                 right.artifact_kind,
+                right.target_role,
+                right.indexes_search_documents,
                 right.document_count,
                 right.artifact_hash.is_some(),
                 right.artifact_hash.as_deref().unwrap_or(""),
@@ -160,6 +193,8 @@ fn canonical_manifest_bytes(manifest: &IndexGenerationManifest) -> Result<Vec<u8
 
 #[cfg(test)]
 mod tests {
+    use nixsearch_core::target::RefRole;
+
     use super::*;
 
     const SOURCE_FIXTURES: &str = "fixtures";
@@ -175,6 +210,8 @@ mod tests {
             source: SOURCE_FIXTURES.to_owned(),
             ref_id: REF_SMALL.to_owned(),
             artifact_kind,
+            target_role: RefRole::Search,
+            indexes_search_documents: true,
             document_count,
             artifact_hash: artifact_hash.map(str::to_owned),
             revision: revision.map(str::to_owned),
@@ -201,7 +238,7 @@ mod tests {
 
         assert_eq!(
             id,
-            "sha256:216cb02b23a778da8acc5f63b3722dc0d3ca535b04e27a7aa5e1b24922847bda"
+            "sha256:ab77557a0c8ea2be0896709443ab82324590761615215e0f53cd03d80877c45b"
         );
     }
 
@@ -274,7 +311,7 @@ mod tests {
 
         assert_eq!(
             json,
-            r#"{"generation_id_version":1,"schema_version":4,"document_count":1,"targets":[{"source":"fixtures","ref_id":"small","artifact_kind":"options-json","document_count":1,"artifact_hash":null,"revision":null}]}"#
+            r#"{"generation_id_version":1,"schema_version":5,"document_count":1,"targets":[{"source":"fixtures","ref_id":"small","artifact_kind":"options-json","target_role":"search","indexes_search_documents":true,"document_count":1,"artifact_hash":null,"revision":null}]}"#
         );
     }
 
@@ -287,7 +324,7 @@ mod tests {
 
         assert_eq!(
             manifest.generation_id,
-            "sha256:216cb02b23a778da8acc5f63b3722dc0d3ca535b04e27a7aa5e1b24922847bda"
+            "sha256:ab77557a0c8ea2be0896709443ab82324590761615215e0f53cd03d80877c45b"
         );
     }
 

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use tantivy::schema::{Field, STORED, STRING, Schema, TEXT};
 
-pub const INDEX_SCHEMA_VERSION: u32 = 4;
+pub const INDEX_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Debug, Clone)]
 pub(crate) struct IndexFields {

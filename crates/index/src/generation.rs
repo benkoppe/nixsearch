@@ -5,6 +5,7 @@ use camino::Utf8Path;
 
 use nixsearch_core::artifact::ArtifactKind;
 use nixsearch_core::document::SearchDocument;
+use nixsearch_core::target::TargetCapabilities;
 
 use crate::annotation::EntryAnnotationIndex;
 use crate::manifest::{
@@ -86,12 +87,28 @@ pub fn validate_manifest_invariants(manifest: &IndexGenerationManifest) -> Resul
             );
         }
 
-        if !target.artifact_kind.indexes_search_documents() && target.document_count != 0 {
+        let expected_indexes_search_documents =
+            TargetCapabilities::new(target.target_role, target.artifact_kind)
+                .indexes_search_documents();
+        if target.indexes_search_documents != expected_indexes_search_documents {
             bail!(
-                "artifact-only index generation target {}/{}/{} cannot report indexed document_count {}",
+                "index generation target {}/{}/{} role {} has inconsistent indexes_search_documents {} (expected {})",
                 target.source,
                 target.ref_id,
                 target.artifact_kind.as_str(),
+                target.target_role.as_str(),
+                target.indexes_search_documents,
+                expected_indexes_search_documents
+            );
+        }
+
+        if !target.indexes_search_documents && target.document_count != 0 {
+            bail!(
+                "non-indexing index generation target {}/{}/{} role {} cannot report indexed document_count {}",
+                target.source,
+                target.ref_id,
+                target.artifact_kind.as_str(),
+                target.target_role.as_str(),
                 target.document_count
             );
         }
@@ -253,6 +270,7 @@ mod tests {
     use time::OffsetDateTime;
 
     use nixsearch_core::artifact::ArtifactKind;
+    use nixsearch_core::target::{RefRole, TargetCapabilities};
 
     use crate::manifest::{IndexGenerationManifest, IndexTargetManifest, refresh_generation_id};
 
@@ -272,7 +290,7 @@ mod tests {
 
         let error = validate_manifest_invariants(&manifest).unwrap_err();
 
-        assert!(format!("{error:#}").contains("artifact-only"));
+        assert!(format!("{error:#}").contains("non-indexing"));
     }
 
     #[test]
@@ -323,10 +341,19 @@ mod tests {
     }
 
     fn target(artifact_kind: ArtifactKind, document_count: usize) -> IndexTargetManifest {
+        let target_role = if artifact_kind.indexed_document_kind().is_some() {
+            RefRole::Search
+        } else {
+            RefRole::ArtifactOnly
+        };
+
         IndexTargetManifest {
             source: SOURCE.to_owned(),
             ref_id: REF.to_owned(),
             artifact_kind,
+            target_role,
+            indexes_search_documents: TargetCapabilities::new(target_role, artifact_kind)
+                .indexes_search_documents(),
             document_count,
             artifact_hash: None,
             revision: None,

@@ -94,6 +94,7 @@ mod tests {
 
     use nixsearch_config::producer::ProducerConfig;
     use nixsearch_config::source::{RefConfig, SourceKind};
+    use nixsearch_core::target::RefRole;
     use nixsearch_store::{ArtifactMetadata, ArtifactMetadataInput, ArtifactRef, ArtifactStore};
 
     use super::*;
@@ -108,7 +109,11 @@ mod tests {
             strip_prefixes: Vec::new(),
             ref_config: RefConfig {
                 id: REF.to_owned(),
-                artifact_only: artifact_kind == ArtifactKind::FlakeInfoJson,
+                role: if artifact_kind == ArtifactKind::FlakeInfoJson {
+                    RefRole::ArtifactOnly
+                } else {
+                    RefRole::Search
+                },
                 producer: ProducerConfig::ExistingFile {
                     path: PathBuf::from("unused.json"),
                     artifact: artifact_kind,

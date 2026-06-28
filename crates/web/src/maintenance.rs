@@ -486,6 +486,7 @@ mod tests {
 
     use nixsearch_config::producer::ProducerConfig;
     use nixsearch_core::artifact::ArtifactKind;
+    use nixsearch_core::target::RefRole;
     use nixsearch_index::search::SearchIndex;
     use nixsearch_index::seo_sidecar::SeoFactsArtifact;
     use nixsearch_index::store::IndexStore;
@@ -833,6 +834,7 @@ mod tests {
             .get_mut(SOURCE_FIXTURES)
             .expect("fixture source exists")
             .refs[0];
+        ref_config.role = RefRole::ArtifactOnly;
         ref_config.producer = ProducerConfig::ExistingFile {
             path: PathBuf::from("unused.json"),
             artifact: ArtifactKind::FlakeInfoJson,
@@ -845,7 +847,8 @@ mod tests {
             [TargetKey::new(
                 SOURCE_FIXTURES,
                 REF_SMALL,
-                ArtifactKind::FlakeInfoJson
+                ArtifactKind::FlakeInfoJson,
+                RefRole::ArtifactOnly,
             )]
             .into()
         );

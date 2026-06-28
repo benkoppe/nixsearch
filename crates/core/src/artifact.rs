@@ -27,10 +27,6 @@ impl ArtifactKind {
         }
     }
 
-    pub fn indexes_search_documents(self) -> bool {
-        self.indexed_document_kind().is_some()
-    }
-
     pub fn indexed_document_kind(self) -> Option<DocumentKind> {
         match self {
             Self::OptionsJson => Some(DocumentKind::Option),

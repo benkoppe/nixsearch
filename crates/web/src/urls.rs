@@ -326,6 +326,7 @@ mod tests {
     use nixsearch_config::source::{RefConfig, SourceConfig, SourceKind};
     use nixsearch_core::artifact::ArtifactKind;
     use nixsearch_core::document::SearchDocument;
+    use nixsearch_core::target::RefRole;
     use nixsearch_index::annotation::SearchHitAnnotation;
     use nixsearch_test_support::{
         REF_SMALL, SOURCE_FIXTURES, app_config, ingest_context_for, package_doc_for,
@@ -336,7 +337,7 @@ mod tests {
     fn ref_config(id: &str) -> RefConfig {
         RefConfig {
             id: id.to_owned(),
-            artifact_only: false,
+            role: RefRole::Search,
             producer: ProducerConfig::ExistingFile {
                 path: PathBuf::from("unused.json"),
                 artifact: ArtifactKind::OptionsJson,

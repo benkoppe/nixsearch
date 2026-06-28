@@ -745,7 +745,12 @@ impl SearchService {
         }
 
         let source = self.config.sources.get(source_id)?;
+        let ref_config = source
+            .refs
+            .iter()
+            .find(|candidate| candidate.id == ref_id)?;
         if matches!(source.kind, SourceKind::Apps | SourceKind::Services)
+            || !ref_config.capabilities().is_public_seo_candidate()
             || !self.ref_allowed_to_be_indexed(source, ref_id)
         {
             return None;
@@ -1011,8 +1016,12 @@ impl SearchService {
         ref_id: &str,
     ) -> std::result::Result<Option<ConfiguredSearchTarget>, RequestResolutionError> {
         let ref_config = self.configured_ref(source_id, ref_id)?;
-        let artifact_kind = ref_config.producer.artifact_kind();
-        let Some(entry_kind) = artifact_kind.indexed_entry_kind() else {
+        if !ref_config.is_searchable() {
+            return Ok(None);
+        }
+
+        let artifact_kind = ref_config.artifact_kind();
+        let Some(entry_kind) = ref_config.indexed_entry_kind() else {
             return Ok(None);
         };
 
@@ -1115,6 +1124,7 @@ mod tests {
     use nixsearch_config::source::SourceKind;
     use nixsearch_core::artifact::ArtifactKind;
     use nixsearch_core::document::SearchDocument;
+    use nixsearch_core::target::RefRole;
     use nixsearch_index::manifest::{canonical_generation_id, refresh_generation_id};
     use nixsearch_index::search::{EntryFactsStatus, EntryLookupResult};
     use nixsearch_index::seo_sidecar::SeoFactsArtifact;
@@ -1179,6 +1189,11 @@ mod tests {
             .expect("fixture source exists");
 
         for ref_config in &mut source.refs {
+            ref_config.role = if artifact_kind.indexed_document_kind().is_some() {
+                RefRole::Search
+            } else {
+                RefRole::ArtifactOnly
+            };
             ref_config.producer = ProducerConfig::ExistingFile {
                 path: PathBuf::from("unused.json"),
                 artifact: artifact_kind,

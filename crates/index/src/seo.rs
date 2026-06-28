@@ -518,6 +518,7 @@ mod tests {
     use nixsearch_core::artifact::ArtifactKind;
     use nixsearch_core::document::{OptionDoc, PackageDoc, SearchDocument};
     use nixsearch_core::ingest::IngestContext;
+    use nixsearch_core::target::RefRole;
     use tempfile::tempdir;
 
     use crate::annotation::SearchHitAnnotation;
@@ -561,6 +562,8 @@ mod tests {
             source: SOURCE.to_owned(),
             ref_id: REF.to_owned(),
             artifact_kind,
+            target_role: RefRole::Search,
+            indexes_search_documents: true,
             document_count,
             artifact_hash: None,
             revision: None,

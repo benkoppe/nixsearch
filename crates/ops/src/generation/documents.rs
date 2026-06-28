@@ -55,6 +55,8 @@ impl SpooledDocumentSetBuilder {
             source: produced_target.target.source_id.clone(),
             ref_id: produced_target.target.ref_config.id.clone(),
             artifact_kind: produced_target.produced.artifact_ref.kind,
+            target_role: produced_target.target.ref_config.role,
+            indexes_search_documents: produced_target.target.indexes_search_documents(),
             document_count: documents.len(),
             artifact_hash: Some(produced_target.verified_metadata.content_hash.clone()),
             revision: produced_target.verified_metadata.revision.clone(),
@@ -97,12 +99,16 @@ pub(crate) async fn consume_and_spool_target(
     produced_target: &ProducedTarget,
     builder: &mut SpooledDocumentSetBuilder,
 ) -> Result<()> {
-    let documents = consume_target(
-        artifact_store,
-        &produced_target.target,
-        &produced_target.produced,
-    )
-    .await?;
+    let documents = if produced_target.target.indexes_search_documents() {
+        consume_target(
+            artifact_store,
+            &produced_target.target,
+            &produced_target.produced,
+        )
+        .await?
+    } else {
+        Vec::new()
+    };
 
     builder.append_target_documents(produced_target, &documents)
 }

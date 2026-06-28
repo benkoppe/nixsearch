@@ -95,16 +95,15 @@ impl AppConfig {
         for (ref_set_id, ref_set) in &self.ref_sets {
             validate_id("ref set id", ref_set_id)?;
 
-            if ref_set.refs.is_empty()
-                && self.sources.values().any(SourceConfig::has_searchable_refs)
+            if ref_set.refs.is_empty() && self.sources.values().any(SourceConfig::has_ref_set_refs)
             {
                 return Err(ConfigError::Validation(format!(
-                    "ref_sets.{ref_set_id} must cover every searchable source"
+                    "ref_sets.{ref_set_id} must cover every ref-set eligible source"
                 )));
             }
 
             for (source_id, source) in &self.sources {
-                if source.has_searchable_refs() && !ref_set.refs.contains_key(source_id) {
+                if source.has_ref_set_refs() && !ref_set.refs.contains_key(source_id) {
                     return Err(ConfigError::Validation(format!(
                         "ref_sets.{ref_set_id} is missing source {source_id:?}"
                     )));
@@ -118,9 +117,9 @@ impl AppConfig {
                     ))
                 })?;
 
-                if !source.has_searchable_refs() {
+                if !source.has_ref_set_refs() {
                     return Err(ConfigError::Validation(format!(
-                        "ref_sets.{ref_set_id} contains artifact-only source {source_id:?}"
+                        "ref_sets.{ref_set_id} contains source {source_id:?} with no ref-set eligible refs"
                     )));
                 }
 
@@ -139,9 +138,9 @@ impl AppConfig {
                         )));
                     }
 
-                    if source.searchable_ref(ref_id).is_none() {
+                    if source.ref_allowed_in_ref_set(ref_id).is_none() {
                         return Err(ConfigError::Validation(format!(
-                            "ref_sets.{ref_set_id}.{source_id} contains unknown ref {ref_id:?} or ref is not searchable"
+                            "ref_sets.{ref_set_id}.{source_id} contains unknown ref {ref_id:?} or ref cannot appear in ref sets"
                         )));
                     }
                 }

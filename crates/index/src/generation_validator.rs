@@ -165,6 +165,7 @@ mod tests {
     use nixsearch_core::artifact::ArtifactKind;
     use nixsearch_core::document::{OptionDoc, SearchDocument};
     use nixsearch_core::ingest::IngestContext;
+    use nixsearch_core::target::RefRole;
 
     use crate::annotation::EntryAnnotationIndex;
     use crate::manifest::{IndexGenerationManifest, IndexTargetManifest};
@@ -213,6 +214,8 @@ mod tests {
                 source: SOURCE_FIXTURES.to_owned(),
                 ref_id: REF_SMALL.to_owned(),
                 artifact_kind: ArtifactKind::OptionsJson,
+                target_role: RefRole::Search,
+                indexes_search_documents: true,
                 document_count: 1,
                 artifact_hash: None,
                 revision: None,

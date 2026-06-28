@@ -5,6 +5,7 @@ use anyhow::{Context, Result, bail};
 use nixsearch_config::app::{AppConfig, ResolvedSearchScope};
 use nixsearch_config::source::{RefConfig, SourceConfig, SourceKind};
 use nixsearch_core::artifact::ArtifactKind;
+use nixsearch_core::target::{RefRole, TargetCapabilities};
 use nixsearch_index::manifest::IndexTargetManifest;
 use nixsearch_index::store::IndexStore;
 use nixsearch_store::ArtifactRef;
@@ -17,11 +18,30 @@ pub struct TargetRef {
     pub ref_config: RefConfig,
 }
 
+impl TargetRef {
+    pub fn artifact_kind(&self) -> ArtifactKind {
+        self.ref_config.artifact_kind()
+    }
+
+    pub fn capabilities(&self) -> TargetCapabilities {
+        self.ref_config.capabilities()
+    }
+
+    pub fn is_artifact_only(&self) -> bool {
+        self.capabilities().is_artifact_only()
+    }
+
+    pub fn indexes_search_documents(&self) -> bool {
+        self.capabilities().indexes_search_documents()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TargetKey {
     pub source: String,
     pub ref_id: String,
     pub artifact_kind: ArtifactKind,
+    pub target_role: RefRole,
 }
 
 impl TargetKey {
@@ -29,11 +49,13 @@ impl TargetKey {
         source: impl Into<String>,
         ref_id: impl Into<String>,
         artifact_kind: ArtifactKind,
+        target_role: RefRole,
     ) -> Self {
         Self {
             source: source.into(),
             ref_id: ref_id.into(),
             artifact_kind,
+            target_role,
         }
     }
 
@@ -45,7 +67,8 @@ impl TargetKey {
         Self::new(
             source_id,
             ref_config.id.clone(),
-            ref_config.producer.artifact_kind(),
+            ref_config.artifact_kind(),
+            ref_config.role,
         )
     }
 }
@@ -62,6 +85,7 @@ impl From<&IndexTargetManifest> for TargetKey {
             target.source.clone(),
             target.ref_id.clone(),
             target.artifact_kind,
+            target.target_role,
         )
     }
 }
@@ -70,10 +94,11 @@ impl std::fmt::Display for TargetKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{}/{}/{}",
+            "{}/{}/{}:{}",
             self.source,
             self.ref_id,
-            self.artifact_kind.as_str()
+            self.artifact_kind.as_str(),
+            self.target_role.as_str()
         )
     }
 }
@@ -82,7 +107,7 @@ pub fn latest_artifact_ref_for_target(target: &TargetRef) -> ArtifactRef {
     ArtifactRef::latest(
         target.source_id.clone(),
         target.ref_config.id.clone(),
-        target.ref_config.producer.artifact_kind(),
+        target.artifact_kind(),
     )
 }
 
@@ -131,7 +156,10 @@ pub fn default_indexed_search_target_keys(config: &AppConfig) -> Result<BTreeSet
 
     Ok(target_keys
         .into_iter()
-        .filter(|target| target.artifact_kind.indexes_search_documents())
+        .filter(|target| {
+            TargetCapabilities::new(target.target_role, target.artifact_kind)
+                .indexes_search_documents()
+        })
         .collect())
 }
 
@@ -221,7 +249,7 @@ fn resolve_manifest_target(
             )
         })?;
 
-    let expected_artifact_kind = ref_config.producer.artifact_kind();
+    let expected_artifact_kind = ref_config.artifact_kind();
     if manifest_target.artifact_kind != expected_artifact_kind {
         bail!(
             "current index manifest target {}/{}/{} no longer matches configured producer kind {}; run unfiltered `nixsearch update` to refresh all configured refs",
@@ -229,6 +257,19 @@ fn resolve_manifest_target(
             manifest_target.ref_id,
             manifest_target.artifact_kind.as_str(),
             expected_artifact_kind.as_str()
+        );
+    }
+
+    if manifest_target.target_role != ref_config.role
+        || manifest_target.indexes_search_documents != ref_config.indexes_search_documents()
+    {
+        bail!(
+            "current index manifest target {}/{}/{} role {} no longer matches configured role {}; run unfiltered `nixsearch update` to refresh all configured refs",
+            manifest_target.source,
+            manifest_target.ref_id,
+            manifest_target.artifact_kind.as_str(),
+            manifest_target.target_role.as_str(),
+            ref_config.role.as_str()
         );
     }
 

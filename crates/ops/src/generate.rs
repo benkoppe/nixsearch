@@ -97,6 +97,7 @@ mod tests {
     use nixsearch_config::producer::ProducerConfig;
     use nixsearch_config::source::{RefConfig, SourceKind};
     use nixsearch_core::artifact::ArtifactKind;
+    use nixsearch_core::target::RefRole;
     use nixsearch_index::generation_validator::GenerationValidator;
     use nixsearch_index::seo_sidecar::SeoFactsArtifact;
     use nixsearch_index::store::PublishedGeneration;
@@ -185,10 +186,27 @@ mod tests {
             strip_prefixes: Vec::new(),
             ref_config: RefConfig {
                 id: REF.to_owned(),
-                artifact_only: true,
+                role: RefRole::ArtifactOnly,
                 producer: ProducerConfig::ExistingFile {
                     path: PathBuf::from("unused.json"),
                     artifact: ArtifactKind::FlakeInfoJson,
+                },
+                source_links: None,
+            },
+        }
+    }
+
+    fn artifact_only_options_target() -> TargetRef {
+        TargetRef {
+            source_id: SOURCE.to_owned(),
+            source_kind: SourceKind::Options,
+            strip_prefixes: Vec::new(),
+            ref_config: RefConfig {
+                id: REF.to_owned(),
+                role: RefRole::ArtifactOnly,
+                producer: ProducerConfig::ExistingFile {
+                    path: PathBuf::from("unused.json"),
+                    artifact: ArtifactKind::OptionsJson,
                 },
                 source_links: None,
             },
@@ -268,6 +286,32 @@ mod tests {
             .open_seo_complete_leased_generation(&leased)
             .unwrap();
         assert_eq!(complete.sidecar, sidecar);
+    }
+
+    #[tokio::test]
+    async fn generation_skips_document_consumption_for_artifact_only_search_artifacts() {
+        let tempdir = tempdir().unwrap();
+        let (index_store, artifact_store) = stores(&tempdir);
+        let target = artifact_only_options_target();
+
+        let result = build_with_mock(
+            &index_store,
+            &artifact_store,
+            target,
+            MockBehavior::Matching,
+        )
+        .await
+        .unwrap();
+
+        let manifest = index_store.read_manifest(&result.path).unwrap();
+        assert_eq!(manifest.document_count, 0);
+        assert_eq!(manifest.targets.len(), 1);
+
+        let manifest_target = &manifest.targets[0];
+        assert_eq!(manifest_target.artifact_kind, ArtifactKind::OptionsJson);
+        assert_eq!(manifest_target.target_role, RefRole::ArtifactOnly);
+        assert!(!manifest_target.indexes_search_documents);
+        assert_eq!(manifest_target.document_count, 0);
     }
 
     #[tokio::test]

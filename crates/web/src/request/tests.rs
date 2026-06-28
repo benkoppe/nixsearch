@@ -6,11 +6,12 @@ use nixsearch_config::app::{AppConfig, RefSetConfig};
 use nixsearch_config::producer::ProducerConfig;
 use nixsearch_config::source::{RefConfig, SourceConfig, SourceKind};
 use nixsearch_core::artifact::ArtifactKind;
+use nixsearch_core::target::RefRole;
 
 fn ref_config(id: &str) -> RefConfig {
     RefConfig {
         id: id.to_owned(),
-        artifact_only: false,
+        role: RefRole::Search,
         producer: ProducerConfig::ExistingFile {
             path: PathBuf::from("unused.json"),
             artifact: ArtifactKind::OptionsJson,

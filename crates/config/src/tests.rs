@@ -6,6 +6,7 @@ use tempfile::{TempDir, tempdir};
 
 use nixsearch_core::artifact::ArtifactKind;
 use nixsearch_core::source_link::SourceLinkConfig;
+use nixsearch_core::target::RefRole;
 
 use crate::app::AppConfig;
 use crate::producer::{DownloadCompression, EvalModuleConfig, ProducerConfig, ProducerKind};
@@ -445,7 +446,7 @@ fn mixed_source_kind_allows_any_producer_artifact_kind() {
         artifact = "packages-json"
 
         [sources.fixtures.refs.apps]
-        artifact_only = true
+        role = "artifact-only"
 
         [sources.fixtures.refs.apps.producer]
         type = "existing-file"
@@ -456,6 +457,107 @@ fn mixed_source_kind_allows_any_producer_artifact_kind() {
 
     assert_eq!(config.sources[FIXTURES_SOURCE].kind, SourceKind::Mixed);
     assert_eq!(config.sources[FIXTURES_SOURCE].refs.len(), 3);
+}
+
+#[test]
+fn artifact_only_options_ref_is_not_searchable_and_has_no_default_ref() {
+    let config = load_toml(
+        r#"
+        [sources.fixtures]
+        kind = "options"
+
+        [sources.fixtures.refs.small]
+        role = "artifact-only"
+
+        [sources.fixtures.refs.small.producer]
+        type = "existing-file"
+        path = "fixtures/search-small/options.json"
+        artifact = "options-json"
+        "#,
+    );
+
+    let source = &config.sources[FIXTURES_SOURCE];
+    let ref_config = &source.refs[0];
+    assert_eq!(ref_config.role, RefRole::ArtifactOnly);
+    assert!(!ref_config.is_searchable());
+    assert!(!ref_config.can_appear_in_ref_set());
+    assert!(!ref_config.indexes_search_documents());
+    assert_eq!(source.default_ref, None);
+}
+
+#[test]
+fn index_only_options_ref_indexes_documents_but_is_not_searchable() {
+    let config = load_toml(
+        r#"
+        [sources.fixtures]
+        kind = "options"
+
+        [sources.fixtures.refs.small]
+        role = "index-only"
+
+        [sources.fixtures.refs.small.producer]
+        type = "existing-file"
+        path = "fixtures/search-small/options.json"
+        artifact = "options-json"
+        "#,
+    );
+
+    let source = &config.sources[FIXTURES_SOURCE];
+    let ref_config = &source.refs[0];
+    assert_eq!(ref_config.role, RefRole::IndexOnly);
+    assert!(!ref_config.is_searchable());
+    assert!(!ref_config.can_appear_in_ref_set());
+    assert!(ref_config.indexes_search_documents());
+    assert_eq!(source.default_ref, None);
+}
+
+#[test]
+fn rejects_search_role_for_non_indexable_artifact_kind() {
+    let error = load_toml_error(
+        r#"
+        [sources.fixtures]
+        kind = "mixed"
+
+        [sources.fixtures.refs.apps]
+        role = "search"
+
+        [sources.fixtures.refs.apps.producer]
+        type = "existing-file"
+        path = "fixtures/search-small/flake-info.json"
+        artifact = "flake-info-json"
+        "#,
+    );
+
+    assert_error_contains(&error, "role search requires an artifact kind");
+    assert_error_contains(&error, "flake-info-json");
+}
+
+#[test]
+fn rejects_ref_set_ref_that_cannot_appear_in_ref_sets() {
+    let error = load_toml_error(
+        r#"
+        [ref_sets.unstable]
+        fixtures = ["small"]
+
+        [sources.fixtures]
+        kind = "options"
+
+        [sources.fixtures.refs.small]
+        role = "artifact-only"
+
+        [sources.fixtures.refs.small.producer]
+        type = "existing-file"
+        path = "fixtures/search-small/options.json"
+        artifact = "options-json"
+
+        [sources.fixtures.refs.stable.producer]
+        type = "existing-file"
+        path = "fixtures/search-small/options.json"
+        artifact = "options-json"
+        "#,
+    );
+
+    assert_error_contains(&error, "cannot appear in ref sets");
 }
 
 #[test]

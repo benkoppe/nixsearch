@@ -6,6 +6,7 @@
 use camino::{Utf8Path, Utf8PathBuf};
 use nixsearch_core::artifact::ArtifactKind;
 use nixsearch_core::document::SearchDocument;
+use nixsearch_core::target::{RefRole, TargetCapabilities};
 use nixsearch_index::annotation::EntryAnnotationIndex;
 use nixsearch_index::manifest::{IndexGenerationManifest, IndexTargetManifest};
 use nixsearch_index::search::SearchIndex;
@@ -47,6 +48,8 @@ pub fn publish_canonical_options_index_with_generated_at(
             source: SOURCE_FIXTURES.to_owned(),
             ref_id: REF_SMALL.to_owned(),
             artifact_kind: ArtifactKind::OptionsJson,
+            target_role: RefRole::Search,
+            indexes_search_documents: true,
             document_count: 4,
             artifact_hash: Some("fixture-options-hash".to_owned()),
             revision: Some("fixture-revision".to_owned()),
@@ -81,6 +84,8 @@ pub fn publish_canonical_mixed_index_with_generated_at(
                 source: SOURCE_FIXTURES.to_owned(),
                 ref_id: REF_SMALL.to_owned(),
                 artifact_kind: ArtifactKind::OptionsJson,
+                target_role: RefRole::Search,
+                indexes_search_documents: true,
                 document_count: options_count,
                 artifact_hash: Some("fixture-options-hash".to_owned()),
                 revision: Some("fixture-revision".to_owned()),
@@ -89,6 +94,8 @@ pub fn publish_canonical_mixed_index_with_generated_at(
                 source: SOURCE_FIXTURES.to_owned(),
                 ref_id: REF_SMALL.to_owned(),
                 artifact_kind: ArtifactKind::PackagesJson,
+                target_role: RefRole::Search,
+                indexes_search_documents: true,
                 document_count: packages_count,
                 artifact_hash: Some("fixture-packages-hash".to_owned()),
                 revision: Some("fixture-revision".to_owned()),
@@ -202,10 +209,19 @@ pub fn index_target(
     artifact_kind: ArtifactKind,
     document_count: usize,
 ) -> IndexTargetManifest {
+    let target_role = if artifact_kind.indexed_document_kind().is_some() {
+        RefRole::Search
+    } else {
+        RefRole::ArtifactOnly
+    };
+
     IndexTargetManifest {
         source: source.to_owned(),
         ref_id: ref_id.to_owned(),
         artifact_kind,
+        target_role,
+        indexes_search_documents: TargetCapabilities::new(target_role, artifact_kind)
+            .indexes_search_documents(),
         document_count,
         artifact_hash: None,
         revision: None,
