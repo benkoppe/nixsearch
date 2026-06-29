@@ -848,7 +848,10 @@ impl SearchDocument {
         }
 
         let expected_name_parts = NameParts::from_dotted(&common.name);
-        if common.name.trim().is_empty() || expected_name_parts.segments.is_empty() {
+        if common.name.trim().is_empty()
+            || common.name.split('.').any(str::is_empty)
+            || expected_name_parts.segments.is_empty()
+        {
             return Err(format!("document name is invalid for {}", common.id));
         }
 

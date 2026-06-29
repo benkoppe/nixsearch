@@ -110,8 +110,14 @@ pub fn validate_generation_id(manifest: &IndexGenerationManifest) -> Result<()> 
 
 pub fn validate_target_content_identity(manifest: &IndexGenerationManifest) -> Result<()> {
     for target in &manifest.targets {
-        if target.artifact_hash.as_deref().is_none_or(str::is_empty)
-            && target.revision.as_deref().is_none_or(str::is_empty)
+        if target
+            .artifact_hash
+            .as_deref()
+            .is_none_or(|value| value.trim().is_empty())
+            && target
+                .revision
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
         {
             bail!(
                 "index generation target {}/{}/{} has no content identity (artifact_hash or revision required)",

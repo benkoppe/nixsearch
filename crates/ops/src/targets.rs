@@ -176,12 +176,15 @@ pub fn target_coverage(
 ) -> Result<TargetCoverage> {
     let missing_configured_targets = missing_configured_target_keys(config, manifest);
     let default_targets = default_indexed_search_target_keys(config)?;
+    let indexed_targets = manifest
+        .targets
+        .iter()
+        .map(TargetKey::from)
+        .collect::<BTreeSet<_>>();
     let serves_default_scope = !default_targets.is_empty()
-        && manifest
-            .targets
+        && default_targets
             .iter()
-            .map(TargetKey::from)
-            .any(|target| default_targets.contains(&target));
+            .all(|target| indexed_targets.contains(target));
 
     Ok(TargetCoverage {
         missing_configured_targets,

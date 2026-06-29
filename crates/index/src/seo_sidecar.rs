@@ -23,6 +23,7 @@ pub struct ManifestCheckedSeoFacts {
 
 impl ManifestCheckedSeoFacts {
     pub fn new(sidecar: SeoSidecar, manifest: &IndexGenerationManifest) -> Result<Self> {
+        validate_supplied_manifest(manifest)?;
         sidecar.validate_for_manifest(manifest)?;
 
         Ok(Self { sidecar })
@@ -59,6 +60,7 @@ impl IndexVerifiedSeoFacts {
         manifest: &IndexGenerationManifest,
         index: &SearchIndex,
     ) -> Result<Self> {
+        validate_supplied_manifest(manifest)?;
         sidecar.validate_for_index(manifest, index)?;
 
         Ok(Self { sidecar })

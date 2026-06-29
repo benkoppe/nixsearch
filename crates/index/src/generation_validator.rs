@@ -8,7 +8,6 @@ use crate::generation::{
 };
 use crate::integrity::{self as generation_integrity, GenerationIntegrityPaths};
 use crate::manifest::{validate_generation_id, validate_index_schema_version};
-use crate::search::SearchIndex;
 use crate::seo_sidecar::SeoFactsArtifact;
 use crate::store::{IndexStore, LeasedPublishedGeneration, PublishedGeneration};
 
@@ -28,19 +27,11 @@ impl GenerationValidator {
     ) -> Result<StructurallyVerifiedGeneration> {
         validate_supplied_manifest(&generation.manifest)?;
 
-        if self.validate_integrity(generation, false).is_ok() {
-            let index_path = self.store.index_path(&generation.path);
-            let index = SearchIndex::open(&index_path)
-                .with_context(|| format!("failed to open search index {index_path}"))?;
-            let seo_sidecar = SeoFactsArtifact::derive_from_index(&generation.manifest, &index)?;
-
-            return Ok(StructurallyVerifiedGeneration {
-                index,
-                scan: crate::generation::GenerationScan {
-                    document_count: generation.manifest.document_count,
-                    seo_sidecar,
-                },
-            });
+        if let Err(error) = self.validate_integrity(generation, false) {
+            tracing::debug!(
+                generation = %generation.path,
+                "generation integrity metadata did not validate before structural scan: {error:#}"
+            );
         }
 
         open_structurally_verified_generation(
@@ -56,20 +47,11 @@ impl GenerationValidator {
         validate_supplied_manifest(&generation.manifest)?;
 
         let sidecar = SeoFactsArtifact::read_manifest_checked(generation)?;
-        if self.validate_integrity(generation, true).is_ok() {
-            let index_path = self.store.index_path(&generation.path);
-            let index = SearchIndex::open(&index_path)
-                .with_context(|| format!("failed to open search index {index_path}"))?;
-            let scan = crate::generation::GenerationScan {
-                document_count: generation.manifest.document_count,
-                seo_sidecar: sidecar.sidecar().clone(),
-            };
-
-            return Ok(SeoVerifiedGeneration {
-                index,
-                sidecar: sidecar.into_index_verified_after_matching_scan(),
-                scan,
-            });
+        if let Err(error) = self.validate_integrity(generation, true) {
+            tracing::debug!(
+                generation = %generation.path,
+                "generation integrity metadata did not validate before SEO scan: {error:#}"
+            );
         }
 
         open_seo_verified_generation(

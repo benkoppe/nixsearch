@@ -52,12 +52,11 @@ pub(super) fn inspect(args: ConfigArgs) -> Result<()> {
     let seo_verification = config
         .public_seo_enabled()
         .then(|| SearchService::verify_leased_generation_seo(&config, &generation));
-    let validation = if let Some(seo_verification) = seo_verification {
-        seo_verification
-    } else {
-        structural_verification
-    };
-    let serving_ready = validation.is_ok();
+    let seo_verified = seo_verification.as_ref().is_some_and(Result::is_ok);
+    let serving_ready = structural_verified
+        && seo_verification
+            .as_ref()
+            .is_none_or(std::result::Result::is_ok);
     let manifest = generation.manifest();
 
     println!("current index");
@@ -71,7 +70,7 @@ pub(super) fn inspect(args: ConfigArgs) -> Result<()> {
     println!(
         "  seo_verified = {}",
         if config.public_seo_enabled() {
-            yes_no(serving_ready)
+            yes_no(seo_verified)
         } else {
             "not-required"
         }
@@ -93,7 +92,10 @@ pub(super) fn inspect(args: ConfigArgs) -> Result<()> {
         }
     }
 
-    validation.context("current index generation is not servable")?;
+    structural_verification.context("current index generation is not structurally valid")?;
+    if let Some(seo_verification) = seo_verification {
+        seo_verification.context("current index generation is not SEO valid")?;
+    }
 
     Ok(())
 }

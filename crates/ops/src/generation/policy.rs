@@ -117,6 +117,7 @@ fn is_remote_nix_ref(source_ref: &str) -> bool {
         || source_ref.starts_with("git+https://")
         || source_ref.starts_with("git+http://")
         || source_ref.starts_with("git+ssh://")
+        || source_ref.starts_with("git+git://")
         || source_ref.starts_with("https://")
         || source_ref.starts_with("http://")
         || source_ref.starts_with("ssh://")

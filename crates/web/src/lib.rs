@@ -2383,7 +2383,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ensure_current_generation_keeps_existing_generation_when_default_scope_is_served() {
+    async fn ensure_current_generation_rebuilds_when_default_scope_is_incomplete() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         let published_path = publish_canonical_options_index(&index_dir);
@@ -2394,8 +2394,8 @@ mod tests {
         let generation = ensure_current_generation(&config).await.unwrap();
 
         assert!(generation.path.exists());
-        assert_eq!(generation.path, published_path);
-        assert_eq!(generation.manifest.targets.len(), 1);
+        assert_ne!(generation.path, published_path);
+        assert_eq!(generation.manifest.targets.len(), 2);
         assert!(
             generation
                 .manifest
@@ -2404,7 +2404,7 @@ mod tests {
                 .any(|target| target.source == SOURCE_FIXTURES && target.ref_id == REF_SMALL)
         );
         assert!(
-            !generation
+            generation
                 .manifest
                 .targets
                 .iter()
@@ -2412,7 +2412,7 @@ mod tests {
         );
 
         let store = IndexStore::new(&index_dir);
-        assert_eq!(store.current_path().unwrap(), published_path);
+        assert_eq!(store.current_path().unwrap(), generation.path);
     }
 
     #[tokio::test]

@@ -2119,6 +2119,7 @@ dependencies = [
  "tantivy",
  "tempfile",
  "time",
+ "tracing",
 ]
 
 [[package]]
