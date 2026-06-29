@@ -27,12 +27,8 @@ impl GenerationValidator {
     ) -> Result<StructurallyVerifiedGeneration> {
         validate_supplied_manifest(&generation.manifest)?;
 
-        if let Err(error) = self.validate_integrity(generation, false) {
-            tracing::debug!(
-                generation = %generation.path,
-                "generation integrity metadata did not validate before structural scan: {error:#}"
-            );
-        }
+        self.validate_integrity(generation, false)
+            .context("failed to validate generation integrity metadata")?;
 
         open_structurally_verified_generation(
             &self.store.index_path(&generation.path),
@@ -47,12 +43,8 @@ impl GenerationValidator {
         validate_supplied_manifest(&generation.manifest)?;
 
         let sidecar = SeoFactsArtifact::read_manifest_checked(generation)?;
-        if let Err(error) = self.validate_integrity(generation, true) {
-            tracing::debug!(
-                generation = %generation.path,
-                "generation integrity metadata did not validate before SEO scan: {error:#}"
-            );
-        }
+        self.validate_integrity(generation, true)
+            .context("failed to validate generation integrity metadata")?;
 
         open_seo_verified_generation(
             &self.store.index_path(&generation.path),

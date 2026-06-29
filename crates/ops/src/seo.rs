@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 
 use nixsearch_config::app::AppConfig;
+use nixsearch_index::generation::open_structurally_verified_generation;
 use nixsearch_index::generation_validator::GenerationValidator;
 use nixsearch_index::seo_sidecar::{ManifestCheckedSeoFacts, SeoFactsArtifact};
 use nixsearch_index::store::{IndexStore, PublishedGeneration};
@@ -56,7 +57,10 @@ pub fn repair_current_seo_sidecar_under_lock(
         });
     }
 
-    let structural = match validator.open_structurally_verified_published_generation(&candidate) {
+    let structural = match open_structurally_verified_generation(
+        &index_store.index_path(&candidate.path),
+        &candidate.manifest,
+    ) {
         Ok(structural) => structural,
         Err(error) => {
             return Ok(SeoSidecarRepairOutcome::Unrepairable {

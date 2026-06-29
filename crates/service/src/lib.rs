@@ -1784,12 +1784,12 @@ mod tests {
 
         let config = Arc::new(multi_ref_app_config_with_public_url(&index_dir));
         let error = SearchService::open_current(Arc::clone(&config)).unwrap_err();
-        assert!(format!("{error:#}").contains("SEO sidecar facts do not match indexed documents"));
+        assert!(format!("{error:#}").contains("SEO sidecar integrity metadata does not match"));
 
         let leased = leased_generation(&index_dir, generation.path, manifest);
         let error = SearchService::verify_leased_generation_seo(&config, &leased).unwrap_err();
 
-        assert!(format!("{error:#}").contains("SEO sidecar facts do not match indexed documents"));
+        assert!(format!("{error:#}").contains("SEO sidecar integrity metadata does not match"));
     }
 
     #[test]
@@ -1896,7 +1896,7 @@ mod tests {
         let config = Arc::new(app_config(&index_dir));
         let error = SearchService::open_current(config).unwrap_err();
 
-        assert!(format!("{error:#}").contains("indexed document count mismatch"));
+        assert!(format!("{error:#}").contains("integrity metadata does not match"));
     }
 
     #[test]
@@ -2619,7 +2619,7 @@ mod tests {
         let error = service.reconcile_current_generation().unwrap_err();
         let snapshot = service.snapshot();
 
-        assert!(format!("{error:#}").contains("SEO sidecar facts do not match indexed documents"));
+        assert!(format!("{error:#}").contains("SEO sidecar integrity metadata does not match"));
         assert_ne!(snapshot.path(), next_generation.path);
         assert!(Arc::ptr_eq(&before, &service.current_index()));
         assert!(service.sitemap_candidates(&snapshot).is_ok());
@@ -2631,7 +2631,7 @@ mod tests {
         );
         let error = SearchService::verify_leased_generation_seo(&config, &leased).unwrap_err();
 
-        assert!(format!("{error:#}").contains("SEO sidecar facts do not match indexed documents"));
+        assert!(format!("{error:#}").contains("SEO sidecar integrity metadata does not match"));
     }
 
     #[test]

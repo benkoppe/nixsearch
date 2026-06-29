@@ -99,8 +99,18 @@ pub(crate) fn validate_integrity(
     let expected = build_integrity(manifest_generation_id, paths, seo_sidecar_required)?;
     let actual = read_integrity(&paths.integrity_path)?;
 
-    if actual != expected {
+    if actual.schema_version != expected.schema_version
+        || actual.manifest_generation_id != expected.manifest_generation_id
+        || actual.manifest_hash != expected.manifest_hash
+        || actual.index_fingerprint != expected.index_fingerprint
+    {
         anyhow::bail!("index generation integrity metadata does not match generation files");
+    }
+
+    if seo_sidecar_required && actual.seo_sidecar_hash != expected.seo_sidecar_hash {
+        anyhow::bail!(
+            "index generation SEO sidecar integrity metadata does not match generation files"
+        );
     }
 
     Ok(())
