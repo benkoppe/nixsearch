@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -9,7 +8,7 @@ use tower_http::trace::TraceLayer;
 
 use nixsearch_config::app::AppConfig;
 use nixsearch_index::store::{IndexStore, PublishedGeneration};
-use nixsearch_ops::targets::{TargetKey, default_indexed_search_target_keys};
+use nixsearch_ops::targets::{TargetCoverage, TargetKey, target_coverage};
 use nixsearch_ops::{cleanup, generate, lock, seo};
 use nixsearch_service::{SearchService, ServingGenerationPolicy};
 
@@ -60,7 +59,7 @@ pub async fn serve(config: AppConfig) -> Result<()> {
     let search = SearchService::from_leased_generation_with_policy(
         Arc::clone(&config),
         leased_generation,
-        ServingGenerationPolicy::lazy_public_seo_for_config(&config),
+        ServingGenerationPolicy::lazy_for_config(&config),
     )?;
     let generation = search.snapshot().to_published_generation();
 
@@ -108,7 +107,7 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<PublishedGenera
     if config.public_seo_enabled()
         && matches!(
             assess_current_generation_for_startup(config, &index_store),
-            Ok(StartupGenerationAssessment::Invalid { .. })
+            Ok(StartupGenerationAssessment::SeoSidecarUnavailable { .. })
         )
     {
         match repair_current_generation(config).await {
@@ -123,13 +122,13 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<PublishedGenera
 
     match assess_current_generation_for_startup(config, &index_store) {
         Ok(StartupGenerationAssessment::Ready(current)) => {
-            if current.missing_targets.is_empty() {
+            if current.missing_targets().is_empty() {
                 return Ok(current.generation);
             }
 
-            if current.serves_default_scope {
+            if current.serves_default_scope() {
                 tracing::warn!(
-                    missing = %format_target_keys(&current.missing_targets),
+                    missing = %format_target_keys(current.missing_targets()),
                     "current index is missing configured targets but still serves a default search scope; startup will continue"
                 );
 
@@ -141,11 +140,14 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<PublishedGenera
             }
 
             tracing::info!(
-                missing = %format_target_keys(&current.missing_targets),
+                missing = %format_target_keys(current.missing_targets()),
                 "current index is missing configured targets needed for default search; bootstrap enabled, rebuilding index"
             );
         }
-        Ok(StartupGenerationAssessment::Invalid { generation, error }) => {
+        Ok(
+            StartupGenerationAssessment::StructurallyInvalid { generation, error }
+            | StartupGenerationAssessment::SeoSidecarUnavailable { generation, error },
+        ) => {
             if !config.server.bootstrap {
                 return Err(error).with_context(|| {
                     format!(
@@ -197,7 +199,7 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<PublishedGenera
 
     match assess_current_generation_for_startup(config, &index_store) {
         Ok(StartupGenerationAssessment::Ready(current)) => {
-            if current.missing_targets.is_empty() || current.serves_default_scope {
+            if current.missing_targets().is_empty() || current.serves_default_scope() {
                 tracing::info!(
                     "current index was created by another process while waiting for lock"
                 );
@@ -206,11 +208,14 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<PublishedGenera
 
             tracing::warn!(
                 generation = %current.generation.path,
-                missing = %format_target_keys(&current.missing_targets),
+                missing = %format_target_keys(current.missing_targets()),
                 "current index still does not serve a default search scope after acquiring lock; rebuilding"
             );
         }
-        Ok(StartupGenerationAssessment::Invalid { generation, error }) => {
+        Ok(
+            StartupGenerationAssessment::StructurallyInvalid { generation, error }
+            | StartupGenerationAssessment::SeoSidecarUnavailable { generation, error },
+        ) => {
             tracing::warn!(
                 generation = %generation.path,
                 "current index generation is still invalid after acquiring lock; rebuilding it: {error:#}"
@@ -243,14 +248,14 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<PublishedGenera
 
             Ok(current.generation)
         }
-        StartupGenerationAssessment::Invalid { generation, error } => {
-            Err(error).with_context(|| {
+        StartupGenerationAssessment::StructurallyInvalid { generation, error }
+        | StartupGenerationAssessment::SeoSidecarUnavailable { generation, error } => Err(error)
+            .with_context(|| {
                 format!(
                     "bootstrap published index generation {} but it is not startup-ready",
                     generation.path
                 )
-            })
-        }
+            }),
         StartupGenerationAssessment::Missing => {
             bail!("bootstrap completed without publishing a current index")
         }
@@ -292,14 +297,27 @@ async fn repair_current_generation(config: &AppConfig) -> Result<()> {
 
 struct StartupAcceptedGeneration {
     generation: PublishedGeneration,
-    missing_targets: BTreeSet<TargetKey>,
-    serves_default_scope: bool,
+    coverage: TargetCoverage,
+}
+
+impl StartupAcceptedGeneration {
+    fn missing_targets(&self) -> &std::collections::BTreeSet<TargetKey> {
+        &self.coverage.missing_configured_targets
+    }
+
+    fn serves_default_scope(&self) -> bool {
+        self.coverage.serves_default_scope
+    }
 }
 
 enum StartupGenerationAssessment {
     Missing,
     Ready(StartupAcceptedGeneration),
-    Invalid {
+    StructurallyInvalid {
+        generation: PublishedGeneration,
+        error: anyhow::Error,
+    },
+    SeoSidecarUnavailable {
         generation: PublishedGeneration,
         error: anyhow::Error,
     },
@@ -315,7 +333,7 @@ fn assess_current_generation_for_startup(
     let published = generation.to_published_generation();
 
     if let Err(error) = SearchService::verify_leased_generation_structural(config, &generation) {
-        return Ok(StartupGenerationAssessment::Invalid {
+        return Ok(StartupGenerationAssessment::StructurallyInvalid {
             generation: published,
             error,
         });
@@ -325,41 +343,20 @@ fn assess_current_generation_for_startup(
         && let Err(error) =
             SearchService::verify_leased_generation_seo_sidecar_present(config, &generation)
     {
-        return Ok(StartupGenerationAssessment::Invalid {
+        return Ok(StartupGenerationAssessment::SeoSidecarUnavailable {
             generation: published,
             error,
         });
     }
 
-    let missing_targets = maintenance::missing_configured_targets(config, generation.manifest());
-    let serves_default_scope = !missing_targets.is_empty()
-        && generation_serves_default_scope(config, generation.published_generation())?;
+    let coverage = target_coverage(config, generation.manifest())?;
 
     Ok(StartupGenerationAssessment::Ready(
         StartupAcceptedGeneration {
             generation: published,
-            missing_targets,
-            serves_default_scope,
+            coverage,
         },
     ))
-}
-
-fn generation_serves_default_scope(
-    config: &AppConfig,
-    generation: &PublishedGeneration,
-) -> Result<bool> {
-    let default_targets = default_indexed_search_target_keys(config)?;
-
-    if default_targets.is_empty() {
-        return Ok(false);
-    }
-
-    Ok(generation
-        .manifest
-        .targets
-        .iter()
-        .map(TargetKey::from)
-        .any(|target| default_targets.contains(&target)))
 }
 
 fn format_target_keys<'a>(targets: impl IntoIterator<Item = &'a TargetKey>) -> String {
@@ -2291,7 +2288,7 @@ mod tests {
         let search = SearchService::from_leased_generation_with_policy(
             Arc::clone(&config),
             leased_generation,
-            ServingGenerationPolicy::lazy_public_seo_for_config(&config),
+            ServingGenerationPolicy::lazy_for_config(&config),
         )
         .unwrap();
 
@@ -2314,7 +2311,7 @@ mod tests {
         let search = SearchService::from_leased_generation_with_policy(
             Arc::clone(&config),
             leased_generation,
-            ServingGenerationPolicy::lazy_public_seo_for_config(&config),
+            ServingGenerationPolicy::lazy_for_config(&config),
         )
         .unwrap();
         let app = app_router(AppState { config, search });

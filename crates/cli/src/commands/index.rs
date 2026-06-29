@@ -15,6 +15,10 @@ use crate::args::{ConfigArgs, SelectionArgs};
 
 use super::load_required_config;
 
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}
+
 pub(super) async fn rebuild(args: SelectionArgs) -> Result<()> {
     let config = load_required_config(&args.config)?;
     let update_lock = acquire_update_lock(&config.data.index_dir)?;
@@ -63,22 +67,16 @@ pub(super) fn inspect(args: ConfigArgs) -> Result<()> {
     println!("  generation_id = {}", manifest.generation_id);
     println!("  documents = {}", manifest.document_count);
     println!("  targets = {}", manifest.targets.len());
-    println!(
-        "  structurally_verified = {}",
-        if structural_verified { "yes" } else { "no" }
-    );
+    println!("  structurally_verified = {}", yes_no(structural_verified));
     println!(
         "  seo_verified = {}",
         if config.public_seo_enabled() {
-            if serving_ready { "yes" } else { "no" }
+            yes_no(serving_ready)
         } else {
             "not-required"
         }
     );
-    println!(
-        "  serving_ready = {}",
-        if serving_ready { "yes" } else { "no" }
-    );
+    println!("  serving_ready = {}", yes_no(serving_ready));
 
     for target in &manifest.targets {
         println!(

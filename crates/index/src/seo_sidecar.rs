@@ -37,11 +37,11 @@ impl ManifestCheckedSeoFacts {
     }
 
     #[cfg(test)]
-    pub(crate) fn from_manifest_checked_unchecked(sidecar: SeoSidecar) -> Self {
+    pub(crate) fn from_manifest_assumed_checked(sidecar: SeoSidecar) -> Self {
         Self { sidecar }
     }
 
-    pub(crate) fn into_index_verified_unchecked(self) -> IndexVerifiedSeoFacts {
+    pub(crate) fn into_index_verified_after_matching_scan(self) -> IndexVerifiedSeoFacts {
         IndexVerifiedSeoFacts {
             sidecar: self.sidecar,
         }
@@ -72,7 +72,7 @@ impl IndexVerifiedSeoFacts {
         self.sidecar
     }
 
-    pub(crate) fn from_index_derived_unchecked(sidecar: SeoSidecar) -> Self {
+    pub(crate) fn from_index_derived_facts(sidecar: SeoSidecar) -> Self {
         Self { sidecar }
     }
 }
@@ -147,7 +147,7 @@ impl SeoFactsArtifact {
 
         Self::write_serialized(&generation_path, &path, &sidecar)?;
 
-        Ok(IndexVerifiedSeoFacts::from_index_derived_unchecked(sidecar))
+        Ok(IndexVerifiedSeoFacts::from_index_derived_facts(sidecar))
     }
 
     pub fn write_manifest_checked_without_index_validation(
@@ -353,7 +353,7 @@ mod tests {
             manifest: old_schema_manifest(0),
         };
         let sidecar = SeoSidecarAccumulator::new().into_sidecar_for_manifest(&generation.manifest);
-        let sidecar = IndexVerifiedSeoFacts::from_index_derived_unchecked(sidecar);
+        let sidecar = IndexVerifiedSeoFacts::from_index_derived_facts(sidecar);
 
         let error =
             SeoFactsArtifact::write_index_verified(&store, &generation, &sidecar).unwrap_err();
@@ -370,7 +370,7 @@ mod tests {
             manifest: old_schema_manifest(0),
         };
         let sidecar = SeoSidecarAccumulator::new().into_sidecar_for_manifest(&generation.manifest);
-        let sidecar = ManifestCheckedSeoFacts::from_manifest_checked_unchecked(sidecar);
+        let sidecar = ManifestCheckedSeoFacts::from_manifest_assumed_checked(sidecar);
 
         let error = SeoFactsArtifact::write_manifest_checked_without_index_validation(
             &store,
@@ -425,7 +425,7 @@ mod tests {
             path: generation,
             manifest,
         };
-        let sidecar = ManifestCheckedSeoFacts::from_manifest_checked_unchecked(sidecar);
+        let sidecar = ManifestCheckedSeoFacts::from_manifest_assumed_checked(sidecar);
         let error = SeoFactsArtifact::write_manifest_checked_without_index_validation(
             &store,
             &generation,

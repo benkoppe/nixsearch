@@ -6,7 +6,7 @@ use nixsearch_config::app::{AppConfig, ResolvedSearchScope};
 use nixsearch_config::source::{RefConfig, SourceConfig, SourceKind};
 use nixsearch_core::artifact::ArtifactKind;
 use nixsearch_core::target::{RefRole, TargetCapabilities};
-use nixsearch_index::manifest::IndexTargetManifest;
+use nixsearch_index::manifest::{IndexGenerationManifest, IndexTargetManifest};
 use nixsearch_index::store::IndexStore;
 use nixsearch_store::ArtifactRef;
 
@@ -90,6 +90,12 @@ impl From<&IndexTargetManifest> for TargetKey {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetCoverage {
+    pub missing_configured_targets: BTreeSet<TargetKey>,
+    pub serves_default_scope: bool,
+}
+
 impl std::fmt::Display for TargetKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -145,6 +151,42 @@ pub fn select_targets(
     }
 
     Ok(targets)
+}
+
+pub fn missing_configured_target_keys(
+    config: &AppConfig,
+    manifest: &IndexGenerationManifest,
+) -> BTreeSet<TargetKey> {
+    let indexed_targets = manifest
+        .targets
+        .iter()
+        .map(TargetKey::from)
+        .collect::<BTreeSet<_>>();
+
+    all_targets(config)
+        .iter()
+        .map(TargetKey::from)
+        .filter(|target| !indexed_targets.contains(target))
+        .collect()
+}
+
+pub fn target_coverage(
+    config: &AppConfig,
+    manifest: &IndexGenerationManifest,
+) -> Result<TargetCoverage> {
+    let missing_configured_targets = missing_configured_target_keys(config, manifest);
+    let default_targets = default_indexed_search_target_keys(config)?;
+    let serves_default_scope = !default_targets.is_empty()
+        && manifest
+            .targets
+            .iter()
+            .map(TargetKey::from)
+            .any(|target| default_targets.contains(&target));
+
+    Ok(TargetCoverage {
+        missing_configured_targets,
+        serves_default_scope,
+    })
 }
 
 pub fn default_indexed_search_target_keys(config: &AppConfig) -> Result<BTreeSet<TargetKey>> {

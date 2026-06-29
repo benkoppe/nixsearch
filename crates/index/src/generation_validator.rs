@@ -67,7 +67,7 @@ impl GenerationValidator {
 
             return Ok(SeoVerifiedGeneration {
                 index,
-                sidecar: sidecar.into_index_verified_unchecked(),
+                sidecar: sidecar.into_index_verified_after_matching_scan(),
                 scan,
             });
         }

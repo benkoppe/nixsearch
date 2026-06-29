@@ -60,7 +60,7 @@ pub fn open_seo_verified_generation(
 
     Ok(SeoVerifiedGeneration {
         index: verified.index,
-        sidecar: sidecar.into_index_verified_unchecked(),
+        sidecar: sidecar.into_index_verified_after_matching_scan(),
         scan: verified.scan,
     })
 }

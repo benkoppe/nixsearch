@@ -8,7 +8,7 @@ use time::OffsetDateTime;
 use nixsearch_config::app::AppConfig;
 use nixsearch_index::manifest::IndexGenerationManifest;
 use nixsearch_index::store::{IndexStore, PublishedGeneration};
-use nixsearch_ops::targets::{TargetKey, all_targets};
+use nixsearch_ops::targets::{TargetKey, all_targets, missing_configured_target_keys};
 use nixsearch_ops::{cleanup, generate, lock, seo};
 use nixsearch_service::{ReconcileReport, SearchService};
 
@@ -444,17 +444,7 @@ pub(crate) fn missing_configured_targets(
     config: &AppConfig,
     manifest: &IndexGenerationManifest,
 ) -> BTreeSet<TargetKey> {
-    let indexed_targets = manifest
-        .targets
-        .iter()
-        .map(TargetKey::from)
-        .collect::<BTreeSet<_>>();
-
-    all_targets(config)
-        .iter()
-        .map(TargetKey::from)
-        .filter(|target| !indexed_targets.contains(target))
-        .collect()
+    missing_configured_target_keys(config, manifest)
 }
 
 pub(crate) fn has_configured_targets(config: &AppConfig) -> bool {

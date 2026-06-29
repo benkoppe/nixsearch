@@ -149,7 +149,7 @@ pub struct ServingGenerationPolicy {
 }
 
 impl ServingGenerationPolicy {
-    pub fn for_config(config: &AppConfig) -> Self {
+    pub fn eager_for_config(config: &AppConfig) -> Self {
         Self {
             seo: if config.public_seo_enabled() {
                 ServingSeoPolicy::EagerVerified
@@ -159,7 +159,7 @@ impl ServingGenerationPolicy {
         }
     }
 
-    pub fn lazy_public_seo_for_config(config: &AppConfig) -> Self {
+    pub fn lazy_for_config(config: &AppConfig) -> Self {
         Self {
             seo: if config.public_seo_enabled() {
                 ServingSeoPolicy::LazyVerifiedOnUse
@@ -307,7 +307,7 @@ impl SearchService {
         config: Arc<AppConfig>,
         generation: LeasedPublishedGeneration,
     ) -> Result<Self> {
-        let policy = ServingGenerationPolicy::for_config(&config);
+        let policy = ServingGenerationPolicy::eager_for_config(&config);
         Self::from_leased_generation_with_policy(config, generation, policy)
     }
 
@@ -433,7 +433,7 @@ impl SearchService {
             return Ok(ReconcileOutcome::Superseded);
         }
 
-        let policy = ServingGenerationPolicy::for_config(&self.config);
+        let policy = ServingGenerationPolicy::eager_for_config(&self.config);
         let loaded =
             load_servable_generation(&self.config, generation, policy).with_context(|| {
                 format!("failed to load published index generation {candidate_path}")
@@ -1815,7 +1815,7 @@ mod tests {
         let service = SearchService::from_leased_generation_with_policy(
             Arc::clone(&config),
             leased,
-            super::ServingGenerationPolicy::lazy_public_seo_for_config(&config),
+            super::ServingGenerationPolicy::lazy_for_config(&config),
         )
         .unwrap();
         let snapshot = service.snapshot();
