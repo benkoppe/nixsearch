@@ -37,11 +37,11 @@ pub(super) async fn update(args: SelectionArgs) -> Result<()> {
              run unfiltered `nixsearch update` to refresh all configured refs"
         })?;
         let complete = GenerationValidator::new(index_store.clone())
-            .open_structurally_complete_published_generation(
+            .open_structurally_verified_published_generation(
                 leased_generation.published_generation(),
             )
             .with_context(|| {
-                "partial update requires a structurally complete current index generation; \
+                "partial update requires a structurally verified current index generation; \
                  run unfiltered `nixsearch update` to refresh all configured refs"
             })?;
         let retained_generation =

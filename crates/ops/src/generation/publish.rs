@@ -50,7 +50,7 @@ pub(crate) fn write_generation_artifacts(
         manifest: manifest.clone(),
     };
 
-    SeoFactsArtifact::write_derived(index_store, &published_generation)?;
+    SeoFactsArtifact::write_derived_index_verified(index_store, &published_generation)?;
     index_store.write_manifest(generation_path, &manifest)?;
     index_store.write_integrity(&published_generation, true)?;
 

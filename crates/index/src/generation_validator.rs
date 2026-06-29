@@ -3,8 +3,8 @@ use std::fs;
 use anyhow::{Context, Result};
 
 use crate::generation::{
-    SeoCompleteGeneration, StructurallyCompleteGeneration, open_seo_complete_generation,
-    open_structurally_complete_generation, validate_manifest_invariants,
+    SeoVerifiedGeneration, StructurallyVerifiedGeneration, open_seo_verified_generation,
+    open_structurally_verified_generation, validate_manifest_invariants,
 };
 use crate::integrity::{self as generation_integrity, GenerationIntegrityPaths};
 use crate::manifest::{validate_generation_id, validate_index_schema_version};
@@ -22,10 +22,10 @@ impl GenerationValidator {
         Self { store }
     }
 
-    pub fn open_structurally_complete_published_generation(
+    pub fn open_structurally_verified_published_generation(
         &self,
         generation: &PublishedGeneration,
-    ) -> Result<StructurallyCompleteGeneration> {
+    ) -> Result<StructurallyVerifiedGeneration> {
         validate_supplied_manifest(&generation.manifest)?;
 
         if self.validate_integrity(generation, false).is_ok() {
@@ -34,7 +34,7 @@ impl GenerationValidator {
                 .with_context(|| format!("failed to open search index {index_path}"))?;
             let seo_sidecar = SeoFactsArtifact::derive_from_index(&generation.manifest, &index)?;
 
-            return Ok(StructurallyCompleteGeneration {
+            return Ok(StructurallyVerifiedGeneration {
                 index,
                 scan: crate::generation::GenerationScan {
                     document_count: generation.manifest.document_count,
@@ -43,71 +43,71 @@ impl GenerationValidator {
             });
         }
 
-        open_structurally_complete_generation(
+        open_structurally_verified_generation(
             &self.store.index_path(&generation.path),
             &generation.manifest,
         )
     }
 
-    pub fn open_seo_complete_published_generation(
+    pub fn open_seo_verified_published_generation(
         &self,
         generation: &PublishedGeneration,
-    ) -> Result<SeoCompleteGeneration> {
+    ) -> Result<SeoVerifiedGeneration> {
         validate_supplied_manifest(&generation.manifest)?;
 
-        let sidecar = SeoFactsArtifact::read(generation)?;
+        let sidecar = SeoFactsArtifact::read_manifest_checked(generation)?;
         if self.validate_integrity(generation, true).is_ok() {
             let index_path = self.store.index_path(&generation.path);
             let index = SearchIndex::open(&index_path)
                 .with_context(|| format!("failed to open search index {index_path}"))?;
             let scan = crate::generation::GenerationScan {
                 document_count: generation.manifest.document_count,
-                seo_sidecar: sidecar.clone(),
+                seo_sidecar: sidecar.sidecar().clone(),
             };
 
-            return Ok(SeoCompleteGeneration {
+            return Ok(SeoVerifiedGeneration {
                 index,
-                sidecar,
+                sidecar: sidecar.into_index_verified_unchecked(),
                 scan,
             });
         }
 
-        open_seo_complete_generation(
+        open_seo_verified_generation(
             &self.store.index_path(&generation.path),
             &generation.manifest,
             sidecar,
         )
-        .context("failed to validate SEO-complete generation")
+        .context("failed to validate SEO-verified generation")
     }
 
-    pub fn open_seo_complete_leased_generation(
+    pub fn open_seo_verified_leased_generation(
         &self,
         generation: &LeasedPublishedGeneration,
-    ) -> Result<SeoCompleteGeneration> {
-        self.open_seo_complete_published_generation(generation.published_generation())
+    ) -> Result<SeoVerifiedGeneration> {
+        self.open_seo_verified_published_generation(generation.published_generation())
     }
 
     /// Validates a published generation without acquiring a generation lease.
     ///
     /// Callers must already prevent concurrent deletion, for example by holding the
     /// update lock. Request and startup paths should use leased validation instead.
-    pub fn validate_seo_complete_published_generation_unleased(
+    pub fn validate_seo_verified_published_generation_unleased(
         &self,
         generation: &PublishedGeneration,
     ) -> Result<()> {
-        self.open_seo_complete_published_generation(generation)
+        self.open_seo_verified_published_generation(generation)
             .map(|_| ())
     }
 
-    pub fn validate_seo_complete_leased_generation(
+    pub fn validate_seo_verified_leased_generation(
         &self,
         generation: &LeasedPublishedGeneration,
     ) -> Result<()> {
-        self.open_seo_complete_leased_generation(generation)
+        self.open_seo_verified_leased_generation(generation)
             .map(|_| ())
     }
 
-    pub fn require_seo_sidecar_file(&self, generation: &PublishedGeneration) -> Result<()> {
+    pub fn require_seo_sidecar_file_present(&self, generation: &PublishedGeneration) -> Result<()> {
         validate_supplied_manifest(&generation.manifest)?;
 
         let path = SeoFactsArtifact::path(&generation.path);
@@ -164,7 +164,7 @@ mod tests {
     use crate::manifest::{IndexGenerationManifest, IndexTargetManifest};
     use crate::search::SearchIndex;
     use crate::seo::SeoSidecarAccumulator;
-    use crate::seo_sidecar::SeoFactsArtifact;
+    use crate::seo_sidecar::{IndexVerifiedSeoFacts, SeoFactsArtifact};
     use crate::store::{IndexStore, PublishedGeneration};
 
     use super::GenerationValidator;
@@ -224,7 +224,9 @@ mod tests {
             manifest,
         };
 
-        SeoFactsArtifact::write(store, &generation, &sidecar).unwrap();
+        let verified_sidecar =
+            IndexVerifiedSeoFacts::new(sidecar, &generation.manifest, &index).unwrap();
+        SeoFactsArtifact::write_index_verified(store, &generation, &verified_sidecar).unwrap();
         store
             .write_manifest(&generation.path, &generation.manifest)
             .unwrap();
@@ -239,7 +241,7 @@ mod tests {
         let generation = publish_one_option_generation(&store);
 
         let complete = GenerationValidator::new(store)
-            .open_structurally_complete_published_generation(&generation)
+            .open_structurally_verified_published_generation(&generation)
             .unwrap();
 
         assert_eq!(complete.scan.document_count, 1);

@@ -15,8 +15,8 @@ use nixsearch_index::search::{
     EntryFacts, EntryLookup, EntryLookupResult, SearchIndex, SearchOptions, SearchResult,
     SearchScope,
 };
-use nixsearch_index::seo::{SeoEntryFacts, SeoSidecar};
-use nixsearch_index::seo_sidecar::SeoFactsArtifact;
+use nixsearch_index::seo::SeoEntryFacts;
+use nixsearch_index::seo_sidecar::{IndexVerifiedSeoFacts, SeoFactsArtifact};
 use nixsearch_index::store::{IndexStore, LeasedPublishedGeneration, PublishedGeneration};
 
 #[derive(Debug)]
@@ -36,7 +36,7 @@ impl Clone for SearchService {
 
 #[derive(Clone)]
 struct LazySeoFacts {
-    value: Arc<OnceLock<Arc<SeoSidecar>>>,
+    value: Arc<OnceLock<Arc<IndexVerifiedSeoFacts>>>,
 }
 
 impl LazySeoFacts {
@@ -46,7 +46,7 @@ impl LazySeoFacts {
         }
     }
 
-    fn loaded(seo_facts: SeoSidecar) -> Self {
+    fn loaded(seo_facts: IndexVerifiedSeoFacts) -> Self {
         let lazy = Self::unloaded();
         let _ = lazy.value.set(Arc::new(seo_facts));
         lazy
@@ -56,16 +56,12 @@ impl LazySeoFacts {
         &self,
         generation: &PublishedGeneration,
         index: &SearchIndex,
-    ) -> SeoFactsResult<Arc<SeoSidecar>> {
+    ) -> SeoFactsResult<Arc<IndexVerifiedSeoFacts>> {
         if let Some(loaded) = self.value.get() {
             return Ok(Arc::clone(loaded));
         }
 
-        let loaded = SeoFactsArtifact::read(generation)
-            .and_then(|sidecar| {
-                sidecar.validate_for_index(&generation.manifest, index)?;
-                Ok(sidecar)
-            })
+        let loaded = SeoFactsArtifact::read_index_verified(generation, index)
             .map(Arc::new)
             .map_err(|error| {
                 tracing::warn!(
@@ -137,6 +133,40 @@ impl ServedGenerationSnapshot {
 
     pub fn to_published_generation(&self) -> PublishedGeneration {
         self.generation.to_published_generation()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServingSeoPolicy {
+    Disabled,
+    EagerVerified,
+    LazyVerifiedOnUse,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServingGenerationPolicy {
+    pub seo: ServingSeoPolicy,
+}
+
+impl ServingGenerationPolicy {
+    pub fn for_config(config: &AppConfig) -> Self {
+        Self {
+            seo: if config.public_seo_enabled() {
+                ServingSeoPolicy::EagerVerified
+            } else {
+                ServingSeoPolicy::Disabled
+            },
+        }
+    }
+
+    pub fn lazy_public_seo_for_config(config: &AppConfig) -> Self {
+        Self {
+            seo: if config.public_seo_enabled() {
+                ServingSeoPolicy::LazyVerifiedOnUse
+            } else {
+                ServingSeoPolicy::Disabled
+            },
+        }
     }
 }
 
@@ -277,17 +307,16 @@ impl SearchService {
         config: Arc<AppConfig>,
         generation: LeasedPublishedGeneration,
     ) -> Result<Self> {
-        let current = load_servable_generation(&config, generation)?;
-
-        Ok(Self::from_loaded_generation(config, current))
+        let policy = ServingGenerationPolicy::for_config(&config);
+        Self::from_leased_generation_with_policy(config, generation, policy)
     }
 
-    /// Opens a generation that the caller has already validated while holding its lease.
-    pub fn from_validated_leased_generation(
+    pub fn from_leased_generation_with_policy(
         config: Arc<AppConfig>,
         generation: LeasedPublishedGeneration,
+        policy: ServingGenerationPolicy,
     ) -> Result<Self> {
-        let current = load_validated_servable_generation(&config, generation)?;
+        let current = load_servable_generation(&config, generation, policy)?;
 
         Ok(Self::from_loaded_generation(config, current))
     }
@@ -299,33 +328,33 @@ impl SearchService {
         }
     }
 
-    pub fn validate_leased_generation_structural(
+    pub fn verify_leased_generation_structural(
         config: &AppConfig,
         generation: &LeasedPublishedGeneration,
     ) -> Result<()> {
         let validator = GenerationValidator::new(IndexStore::new(&config.data.index_dir));
         validator
-            .open_structurally_complete_published_generation(generation.published_generation())
-            .context("failed to validate structurally complete generation")
+            .open_structurally_verified_published_generation(generation.published_generation())
+            .context("failed to validate structurally verified generation")
             .map(|_| ())
     }
 
-    pub fn validate_leased_generation_seo_complete(
+    pub fn verify_leased_generation_seo(
         config: &AppConfig,
         generation: &LeasedPublishedGeneration,
     ) -> Result<()> {
         let validator = GenerationValidator::new(IndexStore::new(&config.data.index_dir));
         validator
-            .validate_seo_complete_leased_generation(generation)
-            .context("failed to validate SEO-complete generation")
+            .validate_seo_verified_leased_generation(generation)
+            .context("failed to validate SEO-verified generation")
     }
 
-    pub fn validate_leased_generation_seo_sidecar_present(
+    pub fn verify_leased_generation_seo_sidecar_present(
         config: &AppConfig,
         generation: &LeasedPublishedGeneration,
     ) -> Result<()> {
         let validator = GenerationValidator::new(IndexStore::new(&config.data.index_dir));
-        validator.require_seo_sidecar_file(generation.published_generation())
+        validator.require_seo_sidecar_file_present(generation.published_generation())
     }
 
     pub fn config(&self) -> &AppConfig {
@@ -404,9 +433,11 @@ impl SearchService {
             return Ok(ReconcileOutcome::Superseded);
         }
 
-        let loaded = load_servable_generation(&self.config, generation).with_context(|| {
-            format!("failed to load published index generation {candidate_path}")
-        })?;
+        let policy = ServingGenerationPolicy::for_config(&self.config);
+        let loaded =
+            load_servable_generation(&self.config, generation, policy).with_context(|| {
+                format!("failed to load published index generation {candidate_path}")
+            })?;
 
         let mut current = self
             .current
@@ -691,7 +722,7 @@ impl SearchService {
         }
 
         let seo_facts = self.seo_facts_for_snapshot(snapshot)?;
-        Ok(seo_facts.entries.iter().any(|entry| {
+        Ok(seo_facts.sidecar().entries.iter().any(|entry| {
             entry.source == common.source.as_str()
                 && entry.ref_id == common.ref_id.as_str()
                 && entry.name == common.name.as_str()
@@ -713,7 +744,7 @@ impl SearchService {
             return Ok(false);
         };
 
-        Ok(seo_facts.entries.iter().any(|entry| {
+        Ok(seo_facts.sidecar().entries.iter().any(|entry| {
             entry.source == source_id
                 && entry.ref_id == ref_id
                 && entry_is_unique_eligible_for_configured_kind(entry, &document_kind)
@@ -727,7 +758,7 @@ impl SearchService {
         let seo_facts = self.seo_facts_for_snapshot(snapshot)?;
         let mut candidates = Vec::new();
 
-        for entry in &seo_facts.entries {
+        for entry in &seo_facts.sidecar().entries {
             let Some(document_kind) = self.configured_served_document_kind_for_seo(
                 snapshot,
                 &entry.source,
@@ -750,7 +781,7 @@ impl SearchService {
     fn seo_facts_for_snapshot(
         &self,
         snapshot: &ServedGenerationSnapshot,
-    ) -> SeoFactsResult<Arc<SeoSidecar>> {
+    ) -> SeoFactsResult<Arc<IndexVerifiedSeoFacts>> {
         let seo_facts = snapshot.seo_facts.as_ref().ok_or(SeoFactsUnavailable)?;
 
         seo_facts.get_or_load(snapshot.published_generation(), &snapshot.index)
@@ -1072,37 +1103,33 @@ fn search_scope_for_target(target: ConfiguredSearchTarget) -> SearchScope {
 fn load_servable_generation(
     config: &AppConfig,
     generation: LeasedPublishedGeneration,
+    policy: ServingGenerationPolicy,
 ) -> Result<ServedGeneration> {
     let index_store = IndexStore::new(&config.data.index_dir);
     let validator = GenerationValidator::new(index_store);
-    let (index, seo_facts) = if config.public_seo_enabled() {
-        let complete = validator
-            .open_seo_complete_leased_generation(&generation)
-            .context("failed to open SEO-complete served generation")?;
-        (complete.index, Some(LazySeoFacts::loaded(complete.sidecar)))
-    } else {
-        let complete = validator
-            .open_structurally_complete_published_generation(generation.published_generation())
-            .context("failed to open structurally complete served generation")?;
-        (complete.index, None)
+    let (index, seo_facts) = match policy.seo {
+        ServingSeoPolicy::Disabled => {
+            let verified = validator
+                .open_structurally_verified_published_generation(generation.published_generation())
+                .context("failed to open structurally verified served generation")?;
+            (verified.index, None)
+        }
+        ServingSeoPolicy::EagerVerified => {
+            let verified = validator
+                .open_seo_verified_leased_generation(&generation)
+                .context("failed to open SEO-verified served generation")?;
+            (verified.index, Some(LazySeoFacts::loaded(verified.sidecar)))
+        }
+        ServingSeoPolicy::LazyVerifiedOnUse => {
+            let verified = validator
+                .open_structurally_verified_published_generation(generation.published_generation())
+                .context("failed to open structurally verified served generation")?;
+            validator
+                .require_seo_sidecar_file_present(generation.published_generation())
+                .context("failed to require SEO sidecar file for lazy SEO serving")?;
+            (verified.index, Some(LazySeoFacts::unloaded()))
+        }
     };
-
-    Ok(ServedGeneration {
-        generation,
-        index: Arc::new(index),
-        seo_facts,
-    })
-}
-
-fn load_validated_servable_generation(
-    config: &AppConfig,
-    generation: LeasedPublishedGeneration,
-) -> Result<ServedGeneration> {
-    let index_store = IndexStore::new(&config.data.index_dir);
-    let index_path = index_store.index_path(generation.path());
-    let index = SearchIndex::open(&index_path)
-        .with_context(|| format!("failed to open search index {index_path}"))?;
-    let seo_facts = config.public_seo_enabled().then(LazySeoFacts::unloaded);
 
     Ok(ServedGeneration {
         generation,
@@ -1748,7 +1775,9 @@ mod tests {
             path,
             manifest: manifest.clone(),
         };
-        let mut sidecar = SeoFactsArtifact::read(&generation).unwrap();
+        let mut sidecar = SeoFactsArtifact::read_manifest_checked(&generation)
+            .unwrap()
+            .into_sidecar();
 
         sidecar.entries[0].name = "not-real".to_owned();
         write_raw_seo_sidecar(&store, &generation, &sidecar);
@@ -1758,8 +1787,7 @@ mod tests {
         assert!(format!("{error:#}").contains("SEO sidecar facts do not match indexed documents"));
 
         let leased = leased_generation(&index_dir, generation.path, manifest);
-        let error =
-            SearchService::validate_leased_generation_seo_complete(&config, &leased).unwrap_err();
+        let error = SearchService::verify_leased_generation_seo(&config, &leased).unwrap_err();
 
         assert!(format!("{error:#}").contains("SEO sidecar facts do not match indexed documents"));
     }
@@ -1775,14 +1803,21 @@ mod tests {
             path,
             manifest: manifest.clone(),
         };
-        let mut sidecar = SeoFactsArtifact::read(&generation).unwrap();
+        let mut sidecar = SeoFactsArtifact::read_manifest_checked(&generation)
+            .unwrap()
+            .into_sidecar();
 
         sidecar.entries[0].name = "not-real".to_owned();
         write_raw_seo_sidecar(&store, &generation, &sidecar);
 
         let config = Arc::new(multi_ref_app_config_with_public_url(&index_dir));
         let leased = leased_generation(&index_dir, generation.path, manifest);
-        let service = SearchService::from_validated_leased_generation(config, leased).unwrap();
+        let service = SearchService::from_leased_generation_with_policy(
+            Arc::clone(&config),
+            leased,
+            super::ServingGenerationPolicy::lazy_public_seo_for_config(&config),
+        )
+        .unwrap();
         let snapshot = service.snapshot();
         let document = option_doc_for(
             &ingest_context_for(SOURCE_FIXTURES, REF_SMALL),
@@ -1811,7 +1846,9 @@ mod tests {
             path,
             manifest: manifest.clone(),
         };
-        let mut sidecar = SeoFactsArtifact::read(&generation).unwrap();
+        let mut sidecar = SeoFactsArtifact::read_manifest_checked(&generation)
+            .unwrap()
+            .into_sidecar();
         let mut forged_manifest = manifest;
 
         forged_manifest.document_count += 1;
@@ -2573,7 +2610,9 @@ mod tests {
             path: next_path,
             manifest: next_manifest,
         };
-        let mut sidecar = SeoFactsArtifact::read(&next_generation).unwrap();
+        let mut sidecar = SeoFactsArtifact::read_manifest_checked(&next_generation)
+            .unwrap()
+            .into_sidecar();
         sidecar.entries[0].name = "not-real".to_owned();
         write_raw_seo_sidecar(&store, &next_generation, &sidecar);
 
@@ -2590,8 +2629,7 @@ mod tests {
             next_generation.path.clone(),
             next_generation.manifest.clone(),
         );
-        let error =
-            SearchService::validate_leased_generation_seo_complete(&config, &leased).unwrap_err();
+        let error = SearchService::verify_leased_generation_seo(&config, &leased).unwrap_err();
 
         assert!(format!("{error:#}").contains("SEO sidecar facts do not match indexed documents"));
     }
@@ -2723,7 +2761,9 @@ mod tests {
         service.reconcile_current_generation().unwrap();
         let observed_current = service.snapshot().to_published_generation();
 
-        let mut sidecar = SeoFactsArtifact::read(&old_generation).unwrap();
+        let mut sidecar = SeoFactsArtifact::read_manifest_checked(&old_generation)
+            .unwrap()
+            .into_sidecar();
         sidecar.entries[0].name = "not-real".to_owned();
         write_raw_seo_sidecar(&store, &old_generation, &sidecar);
         let stale = store

@@ -42,11 +42,18 @@ pub(super) fn inspect(args: ConfigArgs) -> Result<()> {
     let index_store = IndexStore::new(&config.data.index_dir);
 
     let generation = index_store.current_leased_generation()?;
-    let validation = if config.public_seo_enabled() {
-        SearchService::validate_leased_generation_seo_complete(&config, &generation)
+    let structural_verification =
+        SearchService::verify_leased_generation_structural(&config, &generation);
+    let structural_verified = structural_verification.is_ok();
+    let seo_verification = config
+        .public_seo_enabled()
+        .then(|| SearchService::verify_leased_generation_seo(&config, &generation));
+    let validation = if let Some(seo_verification) = seo_verification {
+        seo_verification
     } else {
-        SearchService::validate_leased_generation_structural(&config, &generation)
+        structural_verification
     };
+    let serving_ready = validation.is_ok();
     let manifest = generation.manifest();
 
     println!("current index");
@@ -57,8 +64,20 @@ pub(super) fn inspect(args: ConfigArgs) -> Result<()> {
     println!("  documents = {}", manifest.document_count);
     println!("  targets = {}", manifest.targets.len());
     println!(
-        "  servable = {}",
-        if validation.is_ok() { "yes" } else { "no" }
+        "  structurally_verified = {}",
+        if structural_verified { "yes" } else { "no" }
+    );
+    println!(
+        "  seo_verified = {}",
+        if config.public_seo_enabled() {
+            if serving_ready { "yes" } else { "no" }
+        } else {
+            "not-required"
+        }
+    );
+    println!(
+        "  serving_ready = {}",
+        if serving_ready { "yes" } else { "no" }
     );
 
     for target in &manifest.targets {

@@ -202,7 +202,7 @@ async fn run_seo_sidecar_repair(config: &AppConfig) -> MaintenanceOutcome {
 
     match seo::repair_current_seo_sidecar_under_lock(config, &update_lock) {
         Ok(
-            seo::SeoSidecarRepairOutcome::AlreadySeoComplete { .. }
+            seo::SeoSidecarRepairOutcome::AlreadySeoVerified { .. }
             | seo::SeoSidecarRepairOutcome::Repaired { .. }
             | seo::SeoSidecarRepairOutcome::SupersededBeforeRepair
             | seo::SeoSidecarRepairOutcome::SupersededAfterRepair,
@@ -412,7 +412,7 @@ fn current_generation_status(
         });
     }
 
-    if let Err(error) = SearchService::validate_leased_generation_structural(config, &generation) {
+    if let Err(error) = SearchService::verify_leased_generation_structural(config, &generation) {
         return Ok(CurrentGenerationStatus::Invalid {
             generation: published,
             error,
@@ -420,8 +420,7 @@ fn current_generation_status(
     }
 
     if config.public_seo_enabled()
-        && let Err(error) =
-            SearchService::validate_leased_generation_seo_complete(config, &generation)
+        && let Err(error) = SearchService::verify_leased_generation_seo(config, &generation)
     {
         return Ok(CurrentGenerationStatus::Invalid {
             generation: published,

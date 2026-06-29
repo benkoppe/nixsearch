@@ -2,14 +2,14 @@ use anyhow::{Context, Result};
 
 use nixsearch_config::app::AppConfig;
 use nixsearch_index::generation_validator::GenerationValidator;
-use nixsearch_index::seo_sidecar::SeoFactsArtifact;
+use nixsearch_index::seo_sidecar::{ManifestCheckedSeoFacts, SeoFactsArtifact};
 use nixsearch_index::store::{IndexStore, PublishedGeneration};
 
 use crate::lock::UpdateLock;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SeoSidecarRepairOutcome {
-    AlreadySeoComplete {
+    AlreadySeoVerified {
         generation: PublishedGeneration,
     },
     Repaired {
@@ -39,15 +39,15 @@ pub fn repair_current_seo_sidecar_under_lock(
     };
 
     if validator
-        .validate_seo_complete_published_generation_unleased(&candidate)
+        .validate_seo_verified_published_generation_unleased(&candidate)
         .is_ok()
     {
-        return Ok(SeoSidecarRepairOutcome::AlreadySeoComplete {
+        return Ok(SeoSidecarRepairOutcome::AlreadySeoVerified {
             generation: candidate,
         });
     }
 
-    let structural = match validator.open_structurally_complete_published_generation(&candidate) {
+    let structural = match validator.open_structurally_verified_published_generation(&candidate) {
         Ok(structural) => structural,
         Err(error) => {
             return Ok(SeoSidecarRepairOutcome::Unrepairable {
@@ -61,10 +61,21 @@ pub fn repair_current_seo_sidecar_under_lock(
         return Ok(SeoSidecarRepairOutcome::SupersededBeforeRepair);
     }
 
-    let sidecar = structural.scan.seo_sidecar;
-    if let Err(error) =
-        SeoFactsArtifact::write_without_index_validation(&index_store, &candidate, &sidecar)
-    {
+    let sidecar =
+        match ManifestCheckedSeoFacts::new(structural.scan.seo_sidecar, &candidate.manifest) {
+            Ok(sidecar) => sidecar,
+            Err(error) => {
+                return Ok(SeoSidecarRepairOutcome::RepairFailed {
+                    generation: candidate,
+                    error: format!("{error:#}"),
+                });
+            }
+        };
+    if let Err(error) = SeoFactsArtifact::write_manifest_checked_without_index_validation(
+        &index_store,
+        &candidate,
+        &sidecar,
+    ) {
         return Ok(SeoSidecarRepairOutcome::RepairFailed {
             generation: candidate,
             error: format!("{error:#}"),
@@ -83,7 +94,7 @@ pub fn repair_current_seo_sidecar_under_lock(
     }
 
     validator
-        .validate_seo_complete_published_generation_unleased(&candidate)
+        .validate_seo_verified_published_generation_unleased(&candidate)
         .context("repaired SEO sidecar did not validate")?;
 
     Ok(SeoSidecarRepairOutcome::Repaired {
@@ -134,7 +145,7 @@ mod tests {
         assert!(SeoFactsArtifact::path(&path).exists());
         assert!(store.integrity_path(&path).exists());
         GenerationValidator::new(store)
-            .validate_seo_complete_published_generation_unleased(&generation)
+            .validate_seo_verified_published_generation_unleased(&generation)
             .unwrap();
     }
 }

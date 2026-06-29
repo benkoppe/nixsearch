@@ -286,7 +286,7 @@ fn prune_index_generations(config: &AppConfig, report: &mut CleanupReport) {
         {
             if is_current {
                 report.warnings.push(format!(
-                    "current index generation {canonical} is structurally complete but SEO-degraded; preserving rollback generations"
+                    "current index generation {canonical} is structurally verified but SEO-degraded; preserving rollback generations"
                 ));
             } else {
                 complete.push(CompleteGeneration {
@@ -350,7 +350,7 @@ fn current_generation_is_valid_for_cleanup(
     path: &Utf8Path,
 ) -> bool {
     if config.public_seo_enabled() {
-        seo_complete_generation_manifest(index_store, validator, path).is_some()
+        seo_verified_generation_manifest(index_store, validator, path).is_some()
     } else {
         structurally_complete_generation_manifest(index_store, validator, path).is_some()
     }
@@ -363,7 +363,7 @@ fn structurally_complete_generation_manifest(
 ) -> Option<IndexGenerationManifest> {
     let manifest = index_store.read_manifest(path).ok()?;
     validator
-        .open_structurally_complete_published_generation(&PublishedGeneration {
+        .open_structurally_verified_published_generation(&PublishedGeneration {
             path: path.to_owned(),
             manifest: manifest.clone(),
         })
@@ -371,14 +371,14 @@ fn structurally_complete_generation_manifest(
     Some(manifest)
 }
 
-fn seo_complete_generation_manifest(
+fn seo_verified_generation_manifest(
     index_store: &IndexStore,
     validator: &GenerationValidator,
     path: &Utf8Path,
 ) -> Option<IndexGenerationManifest> {
     let manifest = index_store.read_manifest(path).ok()?;
     validator
-        .validate_seo_complete_published_generation_unleased(&PublishedGeneration {
+        .validate_seo_verified_published_generation_unleased(&PublishedGeneration {
             path: path.to_owned(),
             manifest: manifest.clone(),
         })

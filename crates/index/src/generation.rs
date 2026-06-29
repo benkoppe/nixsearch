@@ -13,16 +13,16 @@ use crate::manifest::{
 };
 use crate::search::{IndexedSearchDocument, SearchIndex};
 use crate::seo::SeoSidecar;
-use crate::seo_sidecar::SeoFactsArtifact;
+use crate::seo_sidecar::{IndexVerifiedSeoFacts, ManifestCheckedSeoFacts, SeoFactsArtifact};
 
-pub struct StructurallyCompleteGeneration {
+pub struct StructurallyVerifiedGeneration {
     pub index: SearchIndex,
     pub scan: GenerationScan,
 }
 
-pub struct SeoCompleteGeneration {
+pub struct SeoVerifiedGeneration {
     pub index: SearchIndex,
-    pub sidecar: SeoSidecar,
+    pub sidecar: IndexVerifiedSeoFacts,
     pub scan: GenerationScan,
 }
 
@@ -32,10 +32,10 @@ pub struct GenerationScan {
     pub seo_sidecar: SeoSidecar,
 }
 
-pub fn open_structurally_complete_generation(
+pub fn open_structurally_verified_generation(
     path: &Utf8Path,
     manifest: &IndexGenerationManifest,
-) -> Result<StructurallyCompleteGeneration> {
+) -> Result<StructurallyVerifiedGeneration> {
     validate_index_schema_version(manifest).context("failed to validate index schema version")?;
     validate_manifest_invariants(manifest)?;
     validate_generation_id(manifest).context("failed to validate index generation manifest id")?;
@@ -44,28 +44,24 @@ pub fn open_structurally_complete_generation(
         SearchIndex::open(path).with_context(|| format!("failed to open search index {path}"))?;
     let scan = scan_generation(&index, manifest)?;
 
-    Ok(StructurallyCompleteGeneration { index, scan })
+    Ok(StructurallyVerifiedGeneration { index, scan })
 }
 
-pub fn open_seo_complete_generation(
+pub fn open_seo_verified_generation(
     path: &Utf8Path,
     manifest: &IndexGenerationManifest,
-    sidecar: SeoSidecar,
-) -> Result<SeoCompleteGeneration> {
-    let complete = open_structurally_complete_generation(path, manifest)?;
+    sidecar: ManifestCheckedSeoFacts,
+) -> Result<SeoVerifiedGeneration> {
+    let verified = open_structurally_verified_generation(path, manifest)?;
 
-    sidecar
-        .validate_for_manifest(manifest)
-        .context("failed to validate SEO sidecar against manifest")?;
-
-    if sidecar != complete.scan.seo_sidecar {
+    if sidecar.sidecar() != &verified.scan.seo_sidecar {
         bail!("SEO sidecar facts do not match indexed documents");
     }
 
-    Ok(SeoCompleteGeneration {
-        index: complete.index,
-        sidecar,
-        scan: complete.scan,
+    Ok(SeoVerifiedGeneration {
+        index: verified.index,
+        sidecar: sidecar.into_index_verified_unchecked(),
+        scan: verified.scan,
     })
 }
 
@@ -274,7 +270,7 @@ mod tests {
 
     use crate::manifest::{IndexGenerationManifest, IndexTargetManifest, refresh_generation_id};
 
-    use super::{open_structurally_complete_generation, validate_manifest_invariants};
+    use super::{open_structurally_verified_generation, validate_manifest_invariants};
 
     const SOURCE: &str = "fixtures";
     const REF: &str = "small";
@@ -332,7 +328,7 @@ mod tests {
         manifest.schema_version = 2;
         refresh_generation_id(&mut manifest).unwrap();
 
-        let error = match open_structurally_complete_generation(&path, &manifest) {
+        let error = match open_structurally_verified_generation(&path, &manifest) {
             Ok(_) => panic!("expected unsupported schema error"),
             Err(error) => error,
         };

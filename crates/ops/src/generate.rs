@@ -317,16 +317,15 @@ mod tests {
             path: result.path,
             manifest: manifest.clone(),
         };
-        let sidecar = SeoFactsArtifact::read(&published_generation).unwrap();
-        sidecar.validate_for_manifest(&manifest).unwrap();
-        assert!(sidecar.refs.is_empty());
-        assert!(sidecar.entries.is_empty());
+        let sidecar = SeoFactsArtifact::read_manifest_checked(&published_generation).unwrap();
+        assert!(sidecar.sidecar().refs.is_empty());
+        assert!(sidecar.sidecar().entries.is_empty());
 
         let leased = index_store.current_leased_generation().unwrap();
         let complete = GenerationValidator::new(index_store.clone())
-            .open_seo_complete_leased_generation(&leased)
+            .open_seo_verified_leased_generation(&leased)
             .unwrap();
-        assert_eq!(complete.sidecar, sidecar);
+        assert_eq!(complete.sidecar.sidecar(), sidecar.sidecar());
     }
 
     #[tokio::test]
@@ -408,7 +407,7 @@ mod tests {
 
         let current = index_store.current_leased_generation().unwrap();
         let complete = GenerationValidator::new(index_store.clone())
-            .open_structurally_complete_published_generation(current.published_generation())
+            .open_structurally_verified_published_generation(current.published_generation())
             .unwrap();
         let retained = RetainedGeneration::from_index(current.manifest(), &complete.index).unwrap();
 

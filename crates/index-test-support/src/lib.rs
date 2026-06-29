@@ -164,7 +164,7 @@ pub fn publish_documents_with_manifest_targets(
         manifest: manifest.clone(),
     };
 
-    SeoFactsArtifact::write_derived(&store, &published_generation).unwrap();
+    SeoFactsArtifact::write_derived_index_verified(&store, &published_generation).unwrap();
     store.write_manifest(&generation, &manifest).unwrap();
     store.write_integrity(&published_generation, true).unwrap();
     store.publish(&generation).unwrap();

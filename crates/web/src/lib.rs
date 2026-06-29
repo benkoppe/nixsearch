@@ -8,11 +8,10 @@ use axum::routing::get;
 use tower_http::trace::TraceLayer;
 
 use nixsearch_config::app::AppConfig;
-use nixsearch_index::generation::validate_manifest_invariants;
 use nixsearch_index::store::{IndexStore, PublishedGeneration};
 use nixsearch_ops::targets::{TargetKey, default_indexed_search_target_keys};
 use nixsearch_ops::{cleanup, generate, lock, seo};
-use nixsearch_service::SearchService;
+use nixsearch_service::{SearchService, ServingGenerationPolicy};
 
 mod entry;
 mod handlers;
@@ -55,11 +54,14 @@ pub async fn serve(config: AppConfig) -> Result<()> {
     let index_store = IndexStore::new(&config.data.index_dir);
     let leased_generation = index_store
         .lease_published_generation(generation)
-        .context("failed to lease validated current index generation")?;
+        .context("failed to lease startup-accepted current index generation")?;
 
     let config = Arc::new(config);
-    let search =
-        SearchService::from_validated_leased_generation(Arc::clone(&config), leased_generation)?;
+    let search = SearchService::from_leased_generation_with_policy(
+        Arc::clone(&config),
+        leased_generation,
+        ServingGenerationPolicy::lazy_public_seo_for_config(&config),
+    )?;
     let generation = search.snapshot().to_published_generation();
 
     log_startup_maintenance_state(&config, &generation);
@@ -105,8 +107,8 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<PublishedGenera
 
     if config.public_seo_enabled()
         && matches!(
-            validated_current_generation(config, &index_store),
-            Ok(CurrentGenerationValidation::Invalid { .. })
+            assess_current_generation_for_startup(config, &index_store),
+            Ok(StartupGenerationAssessment::Invalid { .. })
         )
     {
         match repair_current_generation(config).await {
@@ -119,8 +121,8 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<PublishedGenera
         }
     }
 
-    match validated_current_generation(config, &index_store) {
-        Ok(CurrentGenerationValidation::Valid(current)) => {
+    match assess_current_generation_for_startup(config, &index_store) {
+        Ok(StartupGenerationAssessment::Ready(current)) => {
             if current.missing_targets.is_empty() {
                 return Ok(current.generation);
             }
@@ -143,7 +145,7 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<PublishedGenera
                 "current index is missing configured targets needed for default search; bootstrap enabled, rebuilding index"
             );
         }
-        Ok(CurrentGenerationValidation::Invalid { generation, error }) => {
+        Ok(StartupGenerationAssessment::Invalid { generation, error }) => {
             if !config.server.bootstrap {
                 return Err(error).with_context(|| {
                     format!(
@@ -155,10 +157,10 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<PublishedGenera
 
             tracing::warn!(
                 generation = %generation.path,
-                "current index generation cannot be validated; bootstrap will rebuild it: {error:#}"
+                "current index generation is not startup-ready; bootstrap will rebuild it: {error:#}"
             );
         }
-        Ok(CurrentGenerationValidation::Missing) => {}
+        Ok(StartupGenerationAssessment::Missing) => {}
         Err(error) => {
             if !config.server.bootstrap {
                 return Err(error).context(
@@ -193,8 +195,8 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<PublishedGenera
         .await
         .context("failed to join maintenance lock task")??;
 
-    match validated_current_generation(config, &index_store) {
-        Ok(CurrentGenerationValidation::Valid(current)) => {
+    match assess_current_generation_for_startup(config, &index_store) {
+        Ok(StartupGenerationAssessment::Ready(current)) => {
             if current.missing_targets.is_empty() || current.serves_default_scope {
                 tracing::info!(
                     "current index was created by another process while waiting for lock"
@@ -208,13 +210,13 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<PublishedGenera
                 "current index still does not serve a default search scope after acquiring lock; rebuilding"
             );
         }
-        Ok(CurrentGenerationValidation::Invalid { generation, error }) => {
+        Ok(StartupGenerationAssessment::Invalid { generation, error }) => {
             tracing::warn!(
                 generation = %generation.path,
                 "current index generation is still invalid after acquiring lock; rebuilding it: {error:#}"
             );
         }
-        Ok(CurrentGenerationValidation::Missing) => {}
+        Ok(StartupGenerationAssessment::Missing) => {}
         Err(error) => {
             tracing::warn!(
                 "current index generation is still unreadable after acquiring lock; rebuilding it: {error:#}"
@@ -234,22 +236,22 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<PublishedGenera
         );
     }
 
-    match validated_current_generation(config, &index_store)? {
-        CurrentGenerationValidation::Valid(current) => {
+    match assess_current_generation_for_startup(config, &index_store)? {
+        StartupGenerationAssessment::Ready(current) => {
             let report = cleanup::cleanup_under_lock(config, &update_lock).await?;
             cleanup::log_report(&report);
 
             Ok(current.generation)
         }
-        CurrentGenerationValidation::Invalid { generation, error } => {
+        StartupGenerationAssessment::Invalid { generation, error } => {
             Err(error).with_context(|| {
                 format!(
-                    "bootstrap published index generation {} but it cannot be validated",
+                    "bootstrap published index generation {} but it is not startup-ready",
                     generation.path
                 )
             })
         }
-        CurrentGenerationValidation::Missing => {
+        StartupGenerationAssessment::Missing => {
             bail!("bootstrap completed without publishing a current index")
         }
     }
@@ -260,9 +262,9 @@ async fn repair_current_generation(config: &AppConfig) -> Result<()> {
     tokio::task::spawn_blocking(move || {
         let update_lock = lock::acquire_update_lock(&config.data.index_dir)?;
         match seo::repair_current_seo_sidecar_under_lock(&config, &update_lock)? {
-            seo::SeoSidecarRepairOutcome::AlreadySeoComplete { generation }
+            seo::SeoSidecarRepairOutcome::AlreadySeoVerified { generation }
             | seo::SeoSidecarRepairOutcome::Repaired { generation } => {
-                tracing::info!(generation = %generation.path, "current generation is SEO-complete");
+                tracing::info!(generation = %generation.path, "current generation is SEO-verified");
             }
             seo::SeoSidecarRepairOutcome::MissingCurrent => {
                 tracing::debug!(
@@ -288,50 +290,42 @@ async fn repair_current_generation(config: &AppConfig) -> Result<()> {
     .context("failed to join SEO sidecar repair task")?
 }
 
-struct ValidatedCurrentGeneration {
+struct StartupAcceptedGeneration {
     generation: PublishedGeneration,
     missing_targets: BTreeSet<TargetKey>,
     serves_default_scope: bool,
 }
 
-enum CurrentGenerationValidation {
+enum StartupGenerationAssessment {
     Missing,
-    Valid(ValidatedCurrentGeneration),
+    Ready(StartupAcceptedGeneration),
     Invalid {
         generation: PublishedGeneration,
         error: anyhow::Error,
     },
 }
 
-fn validated_current_generation(
+fn assess_current_generation_for_startup(
     config: &AppConfig,
     index_store: &IndexStore,
-) -> Result<CurrentGenerationValidation> {
+) -> Result<StartupGenerationAssessment> {
     let Some(generation) = index_store.try_current_leased_generation()? else {
-        return Ok(CurrentGenerationValidation::Missing);
+        return Ok(StartupGenerationAssessment::Missing);
     };
     let published = generation.to_published_generation();
 
-    if let Err(error) = validate_manifest_invariants(generation.manifest()) {
-        return Ok(CurrentGenerationValidation::Invalid {
+    if let Err(error) = SearchService::verify_leased_generation_structural(config, &generation) {
+        return Ok(StartupGenerationAssessment::Invalid {
             generation: published,
-            error: error.context("failed to validate current index generation manifest invariants"),
-        });
-    }
-
-    let index_path = index_store.index_path(generation.path());
-    if !index_path.is_dir() {
-        return Ok(CurrentGenerationValidation::Invalid {
-            generation: published,
-            error: anyhow::anyhow!("missing search index directory {index_path}"),
+            error,
         });
     }
 
     if config.public_seo_enabled()
         && let Err(error) =
-            SearchService::validate_leased_generation_seo_sidecar_present(config, &generation)
+            SearchService::verify_leased_generation_seo_sidecar_present(config, &generation)
     {
-        return Ok(CurrentGenerationValidation::Invalid {
+        return Ok(StartupGenerationAssessment::Invalid {
             generation: published,
             error,
         });
@@ -341,8 +335,8 @@ fn validated_current_generation(
     let serves_default_scope = !missing_targets.is_empty()
         && generation_serves_default_scope(config, generation.published_generation())?;
 
-    Ok(CurrentGenerationValidation::Valid(
-        ValidatedCurrentGeneration {
+    Ok(StartupGenerationAssessment::Ready(
+        StartupAcceptedGeneration {
             generation: published,
             missing_targets,
             serves_default_scope,
@@ -437,7 +431,7 @@ mod tests {
         publish_canonical_options_index, publish_documents_with_manifest_targets,
         publish_fixture_options_index_for_refs,
     };
-    use nixsearch_service::SearchService;
+    use nixsearch_service::{SearchService, ServingGenerationPolicy};
     use nixsearch_test_support::{
         REF_SMALL, REF_STABLE, SOURCE_FIXTURES, TEST_PUBLIC_ORIGIN, app_config,
         app_config_with_extra_fixture_source, app_config_with_public_url, ingest_context_for,
@@ -2293,9 +2287,13 @@ mod tests {
         let generation = ensure_current_generation(&config).await.unwrap();
         let generation_path = generation.path.clone();
         let leased_generation = store.lease_published_generation(generation).unwrap();
-        let search =
-            SearchService::from_validated_leased_generation(Arc::new(config), leased_generation)
-                .unwrap();
+        let config = Arc::new(config);
+        let search = SearchService::from_leased_generation_with_policy(
+            Arc::clone(&config),
+            leased_generation,
+            ServingGenerationPolicy::lazy_public_seo_for_config(&config),
+        )
+        .unwrap();
 
         assert_eq!(store.current_path().unwrap(), generation_path);
         let snapshot = search.snapshot();
@@ -2313,9 +2311,12 @@ mod tests {
 
         let generation = ensure_current_generation(&config).await.unwrap();
         let leased_generation = store.lease_published_generation(generation).unwrap();
-        let search =
-            SearchService::from_validated_leased_generation(Arc::clone(&config), leased_generation)
-                .unwrap();
+        let search = SearchService::from_leased_generation_with_policy(
+            Arc::clone(&config),
+            leased_generation,
+            ServingGenerationPolicy::lazy_public_seo_for_config(&config),
+        )
+        .unwrap();
         let app = app_router(AppState { config, search });
 
         let (status, body) = request_body(app, "/fixtures/programs.git.enable").await;
