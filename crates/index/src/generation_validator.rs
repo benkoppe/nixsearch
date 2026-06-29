@@ -3,11 +3,13 @@ use std::fs;
 use anyhow::{Context, Result};
 
 use crate::generation::{
-    SeoVerifiedGeneration, StructurallyVerifiedGeneration, open_seo_verified_generation,
-    open_structurally_verified_generation, validate_manifest_invariants,
+    GenerationScan, SeoVerifiedGeneration, StructurallyVerifiedGeneration,
+    open_seo_verified_generation, open_structurally_verified_generation,
+    validate_manifest_invariants,
 };
 use crate::integrity::{self as generation_integrity, GenerationIntegrityPaths};
 use crate::manifest::{validate_generation_id, validate_index_schema_version};
+use crate::search::SearchIndex;
 use crate::seo_sidecar::SeoFactsArtifact;
 use crate::store::{IndexStore, LeasedPublishedGeneration, PublishedGeneration};
 
@@ -61,6 +63,48 @@ impl GenerationValidator {
         self.open_seo_verified_published_generation(generation.published_generation())
     }
 
+    /// Opens an index after validating its integrity attestation.
+    ///
+    /// This is the serving fast path: integrity metadata is written only after
+    /// generation publication/repair has performed the expensive structural
+    /// validation, so request and startup paths can avoid re-scanning every
+    /// document on each process start.
+    pub fn open_integrity_attested_published_index(
+        &self,
+        generation: &PublishedGeneration,
+        seo_sidecar_required: bool,
+    ) -> Result<SearchIndex> {
+        validate_supplied_manifest(&generation.manifest)?;
+
+        self.validate_integrity(generation, seo_sidecar_required)
+            .context("failed to validate generation integrity metadata")?;
+
+        let index_path = self.store.index_path(&generation.path);
+        SearchIndex::open(&index_path)
+            .with_context(|| format!("failed to open search index {index_path}"))
+    }
+
+    /// Opens an SEO-capable generation using its integrity attestation.
+    pub fn open_integrity_attested_seo_generation(
+        &self,
+        generation: &PublishedGeneration,
+    ) -> Result<SeoVerifiedGeneration> {
+        validate_supplied_manifest(&generation.manifest)?;
+
+        let sidecar = SeoFactsArtifact::read_manifest_checked(generation)?;
+        let index = self.open_integrity_attested_published_index(generation, true)?;
+        let scan = GenerationScan {
+            document_count: generation.manifest.document_count,
+            seo_sidecar: sidecar.sidecar().clone(),
+        };
+
+        Ok(SeoVerifiedGeneration {
+            index,
+            sidecar: sidecar.into_index_verified_after_matching_scan(),
+            scan,
+        })
+    }
+
     /// Validates a published generation without acquiring a generation lease.
     ///
     /// Callers must already prevent concurrent deletion, for example by holding the
@@ -69,7 +113,7 @@ impl GenerationValidator {
         &self,
         generation: &PublishedGeneration,
     ) -> Result<()> {
-        self.open_seo_verified_published_generation(generation)
+        self.open_integrity_attested_seo_generation(generation)
             .map(|_| ())
     }
 
@@ -77,7 +121,7 @@ impl GenerationValidator {
         &self,
         generation: &LeasedPublishedGeneration,
     ) -> Result<()> {
-        self.open_seo_verified_leased_generation(generation)
+        self.open_integrity_attested_seo_generation(generation.published_generation())
             .map(|_| ())
     }
 

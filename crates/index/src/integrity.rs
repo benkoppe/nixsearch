@@ -57,12 +57,14 @@ fn build_integrity(
     paths: &GenerationIntegrityPaths,
     seo_sidecar_required: bool,
 ) -> Result<GenerationIntegrity> {
-    let seo_sidecar_hash = match hash_file_if_present(&paths.seo_sidecar_path)? {
-        Some(hash) => Some(hash),
-        None if seo_sidecar_required => {
-            anyhow::bail!("SEO sidecar is required before writing generation integrity")
-        }
-        None => None,
+    let seo_sidecar_hash = if seo_sidecar_required {
+        Some(
+            hash_file_if_present(&paths.seo_sidecar_path)?.ok_or_else(|| {
+                anyhow::anyhow!("SEO sidecar is required before writing generation integrity")
+            })?,
+        )
+    } else {
+        None
     };
 
     Ok(GenerationIntegrity {

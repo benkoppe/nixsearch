@@ -1,8 +1,9 @@
 use anyhow::Result;
 use camino::{Utf8Path, Utf8PathBuf};
 
+use nixsearch_index::generation::open_structurally_verified_generation;
 use nixsearch_index::manifest::IndexGenerationManifest;
-use nixsearch_index::seo_sidecar::SeoFactsArtifact;
+use nixsearch_index::seo_sidecar::{ManifestCheckedSeoFacts, SeoFactsArtifact};
 use nixsearch_index::store::{IndexStore, PublishedGeneration};
 
 pub(crate) struct IncompleteGenerationGuard {
@@ -50,8 +51,19 @@ pub(crate) fn write_generation_artifacts(
         manifest: manifest.clone(),
     };
 
-    SeoFactsArtifact::write_derived_index_verified(index_store, &published_generation)?;
     index_store.write_manifest(generation_path, &manifest)?;
+
+    let structural = open_structurally_verified_generation(
+        &index_store.index_path(generation_path),
+        &published_generation.manifest,
+    )?;
+    let sidecar =
+        ManifestCheckedSeoFacts::new(structural.scan.seo_sidecar, &published_generation.manifest)?;
+    SeoFactsArtifact::write_manifest_checked_without_index_validation(
+        index_store,
+        &published_generation,
+        &sidecar,
+    )?;
     index_store.write_integrity(&published_generation, true)?;
 
     Ok(())

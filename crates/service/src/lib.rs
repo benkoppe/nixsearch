@@ -321,6 +321,22 @@ impl SearchService {
         Ok(Self::from_loaded_generation(config, current))
     }
 
+    /// Loads a generation that the caller has already checked against its
+    /// integrity attestation.
+    ///
+    /// This avoids repeating the expensive fingerprint validation during server
+    /// startup after `ensure_current_generation` has already accepted the same
+    /// generation.
+    pub fn from_integrity_attested_leased_generation_with_policy(
+        config: Arc<AppConfig>,
+        generation: LeasedPublishedGeneration,
+        policy: ServingGenerationPolicy,
+    ) -> Result<Self> {
+        let current = load_integrity_attested_servable_generation(&config, generation, policy)?;
+
+        Ok(Self::from_loaded_generation(config, current))
+    }
+
     fn from_loaded_generation(config: Arc<AppConfig>, current: ServedGeneration) -> Self {
         Self {
             config,
@@ -334,7 +350,7 @@ impl SearchService {
     ) -> Result<()> {
         let validator = GenerationValidator::new(IndexStore::new(&config.data.index_dir));
         validator
-            .open_structurally_verified_published_generation(generation.published_generation())
+            .open_integrity_attested_published_index(generation.published_generation(), false)
             .context("failed to validate structurally verified generation")
             .map(|_| ())
     }
@@ -1100,6 +1116,38 @@ fn search_scope_for_target(target: ConfiguredSearchTarget) -> SearchScope {
     }
 }
 
+fn load_integrity_attested_servable_generation(
+    config: &AppConfig,
+    generation: LeasedPublishedGeneration,
+    policy: ServingGenerationPolicy,
+) -> Result<ServedGeneration> {
+    if policy.seo == ServingSeoPolicy::EagerVerified {
+        return load_servable_generation(config, generation, policy);
+    }
+
+    let index_store = IndexStore::new(&config.data.index_dir);
+    let index_path = index_store.index_path(generation.path());
+    let index = SearchIndex::open(&index_path)
+        .with_context(|| format!("failed to open search index {index_path}"))?;
+    let seo_facts = match policy.seo {
+        ServingSeoPolicy::Disabled => None,
+        ServingSeoPolicy::EagerVerified => unreachable!("eager SEO policy returned above"),
+        ServingSeoPolicy::LazyVerifiedOnUse => {
+            let validator = GenerationValidator::new(index_store);
+            validator
+                .require_seo_sidecar_file_present(generation.published_generation())
+                .context("failed to require SEO sidecar file for lazy SEO serving")?;
+            Some(LazySeoFacts::unloaded())
+        }
+    };
+
+    Ok(ServedGeneration {
+        generation,
+        index: Arc::new(index),
+        seo_facts,
+    })
+}
+
 fn load_servable_generation(
     config: &AppConfig,
     generation: LeasedPublishedGeneration,
@@ -1109,25 +1157,25 @@ fn load_servable_generation(
     let validator = GenerationValidator::new(index_store);
     let (index, seo_facts) = match policy.seo {
         ServingSeoPolicy::Disabled => {
-            let verified = validator
-                .open_structurally_verified_published_generation(generation.published_generation())
+            let index = validator
+                .open_integrity_attested_published_index(generation.published_generation(), false)
                 .context("failed to open structurally verified served generation")?;
-            (verified.index, None)
+            (index, None)
         }
         ServingSeoPolicy::EagerVerified => {
             let verified = validator
-                .open_seo_verified_leased_generation(&generation)
+                .open_integrity_attested_seo_generation(generation.published_generation())
                 .context("failed to open SEO-verified served generation")?;
             (verified.index, Some(LazySeoFacts::loaded(verified.sidecar)))
         }
         ServingSeoPolicy::LazyVerifiedOnUse => {
-            let verified = validator
-                .open_structurally_verified_published_generation(generation.published_generation())
+            let index = validator
+                .open_integrity_attested_published_index(generation.published_generation(), false)
                 .context("failed to open structurally verified served generation")?;
             validator
                 .require_seo_sidecar_file_present(generation.published_generation())
                 .context("failed to require SEO sidecar file for lazy SEO serving")?;
-            (verified.index, Some(LazySeoFacts::unloaded()))
+            (index, Some(LazySeoFacts::unloaded()))
         }
     };
 

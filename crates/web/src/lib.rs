@@ -56,7 +56,7 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         .context("failed to lease startup-accepted current index generation")?;
 
     let config = Arc::new(config);
-    let search = SearchService::from_leased_generation_with_policy(
+    let search = SearchService::from_integrity_attested_leased_generation_with_policy(
         Arc::clone(&config),
         leased_generation,
         ServingGenerationPolicy::lazy_for_config(&config),
@@ -104,14 +104,18 @@ fn app_router(state: AppState) -> Router {
 async fn ensure_current_generation(config: &AppConfig) -> Result<PublishedGeneration> {
     let index_store = IndexStore::new(&config.data.index_dir);
 
+    let mut startup_assessment = assess_current_generation_for_startup(config, &index_store);
+
     if config.public_seo_enabled()
         && matches!(
-            assess_current_generation_for_startup(config, &index_store),
+            startup_assessment,
             Ok(StartupGenerationAssessment::SeoSidecarUnavailable { .. })
         )
     {
         match repair_current_generation(config).await {
-            Ok(()) => {}
+            Ok(()) => {
+                startup_assessment = assess_current_generation_for_startup(config, &index_store);
+            }
             Err(error) => {
                 tracing::warn!(
                     "failed to repair current generation before startup validation: {error:#}"
@@ -120,7 +124,7 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<PublishedGenera
         }
     }
 
-    match assess_current_generation_for_startup(config, &index_store) {
+    match startup_assessment {
         Ok(StartupGenerationAssessment::Ready(current)) => {
             if current.missing_targets().is_empty() {
                 return Ok(current.generation);
