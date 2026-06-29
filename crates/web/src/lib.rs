@@ -2303,6 +2303,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn direct_entry_with_unverified_lazy_sidecar_emits_noindex() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+        corrupt_current_seo_sidecar(&index_dir);
+        let store = IndexStore::new(&index_dir);
+        let config = Arc::new(app_config_with_public_url(&index_dir));
+
+        let generation = ensure_current_generation(&config).await.unwrap();
+        let leased_generation = store.lease_published_generation(generation).unwrap();
+        let search =
+            SearchService::from_validated_leased_generation(Arc::clone(&config), leased_generation)
+                .unwrap();
+        let app = app_router(AppState { config, search });
+
+        let (status, body) = request_body(app, "/fixtures/programs.git.enable").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("entry-page"));
+        assert_no_canonical(&body);
+        assert_has_robots(&body);
+    }
+
+    #[tokio::test]
     async fn ensure_current_generation_keeps_generation_with_missing_seo_sidecar() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));

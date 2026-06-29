@@ -670,19 +670,33 @@ impl SearchService {
         })
     }
 
-    pub fn document_ref_allowed_for_seo(
+    pub fn document_allowed_for_public_seo(
         &self,
         snapshot: &ServedGenerationSnapshot,
         document: &SearchDocument,
-    ) -> bool {
-        if !self.config.public_seo_enabled() || snapshot.seo_facts.is_none() {
-            return false;
+    ) -> SeoFactsResult<bool> {
+        if !self.config.public_seo_enabled() {
+            return Ok(false);
         }
 
         let common = document.common();
+        let Some(document_kind) =
+            self.configured_served_document_kind_for_seo(snapshot, &common.source, &common.ref_id)
+        else {
+            return Ok(false);
+        };
 
-        self.configured_served_document_kind_for_seo(snapshot, &common.source, &common.ref_id)
-            .is_some_and(|kind| &kind == document.kind())
+        if &document_kind != document.kind() {
+            return Ok(false);
+        }
+
+        let seo_facts = self.seo_facts_for_snapshot(snapshot)?;
+        Ok(seo_facts.entries.iter().any(|entry| {
+            entry.source == common.source.as_str()
+                && entry.ref_id == common.ref_id.as_str()
+                && entry.name == common.name.as_str()
+                && entry_is_unique_eligible_for_configured_kind(entry, &document_kind)
+        }))
     }
 
     pub fn source_has_indexable_entries(
@@ -1224,7 +1238,7 @@ mod tests {
         );
     }
 
-    fn assert_document_ref_allowed_for_seo(
+    fn assert_document_allowed_for_public_seo(
         config: AppConfig,
         document_source: &str,
         document_ref: &str,
@@ -1239,8 +1253,8 @@ mod tests {
         );
 
         assert_eq!(
-            service.document_ref_allowed_for_seo(&snapshot, &document),
-            expected
+            service.document_allowed_for_public_seo(&snapshot, &document),
+            Ok(expected)
         );
     }
 
@@ -1602,12 +1616,12 @@ mod tests {
     }
 
     #[test]
-    fn document_ref_allowed_for_seo_accepts_default_served_ref() {
+    fn document_allowed_for_public_seo_accepts_default_served_ref() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_index(&index_dir);
 
-        assert_document_ref_allowed_for_seo(
+        assert_document_allowed_for_public_seo(
             multi_ref_app_config_with_public_url(&index_dir),
             SOURCE_FIXTURES,
             REF_SMALL,
@@ -1616,12 +1630,12 @@ mod tests {
     }
 
     #[test]
-    fn document_ref_allowed_for_seo_rejects_non_default_ref() {
+    fn document_allowed_for_public_seo_rejects_non_default_ref() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_fixture_options_index_for_refs(&index_dir, &[REF_SMALL, REF_STABLE]);
 
-        assert_document_ref_allowed_for_seo(
+        assert_document_allowed_for_public_seo(
             multi_ref_app_config_with_public_url(&index_dir),
             SOURCE_FIXTURES,
             REF_STABLE,
@@ -1630,12 +1644,12 @@ mod tests {
     }
 
     #[test]
-    fn document_ref_allowed_for_seo_rejects_unserved_ref() {
+    fn document_allowed_for_public_seo_rejects_unserved_ref() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_index(&index_dir);
 
-        assert_document_ref_allowed_for_seo(
+        assert_document_allowed_for_public_seo(
             multi_ref_app_config_with_public_url(&index_dir),
             SOURCE_FIXTURES,
             REF_STABLE,
@@ -1644,12 +1658,12 @@ mod tests {
     }
 
     #[test]
-    fn document_ref_allowed_for_seo_rejects_unknown_source() {
+    fn document_allowed_for_public_seo_rejects_unknown_source() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_index(&index_dir);
 
-        assert_document_ref_allowed_for_seo(
+        assert_document_allowed_for_public_seo(
             multi_ref_app_config_with_public_url(&index_dir),
             "missing",
             REF_SMALL,
@@ -1658,7 +1672,7 @@ mod tests {
     }
 
     #[test]
-    fn document_ref_allowed_for_seo_rejects_app_and_service_sources() {
+    fn document_allowed_for_public_seo_rejects_app_and_service_sources() {
         for source_kind in [SourceKind::Apps, SourceKind::Services] {
             let tempdir = tempdir().unwrap();
             let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
@@ -1670,7 +1684,7 @@ mod tests {
                 .expect("fixture source exists")
                 .kind = source_kind;
 
-            assert_document_ref_allowed_for_seo(config, SOURCE_FIXTURES, REF_SMALL, false);
+            assert_document_allowed_for_public_seo(config, SOURCE_FIXTURES, REF_SMALL, false);
         }
     }
 
@@ -1770,9 +1784,18 @@ mod tests {
         let leased = leased_generation(&index_dir, generation.path, manifest);
         let service = SearchService::from_validated_leased_generation(config, leased).unwrap();
         let snapshot = service.snapshot();
+        let document = option_doc_for(
+            &ingest_context_for(SOURCE_FIXTURES, REF_SMALL),
+            "programs.git.enable",
+            "Git option.",
+        );
 
         assert_eq!(
             service.sitemap_candidates(&snapshot),
+            Err(SeoFactsUnavailable)
+        );
+        assert_eq!(
+            service.document_allowed_for_public_seo(&snapshot, &document),
             Err(SeoFactsUnavailable)
         );
     }

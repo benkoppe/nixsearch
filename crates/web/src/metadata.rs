@@ -216,10 +216,12 @@ fn page_index_metadata(
                 return noindex_metadata();
             }
 
-            if !state
-                .search
-                .document_ref_allowed_for_seo(served_generation, document)
-            {
+            if !matches!(
+                state
+                    .search
+                    .document_allowed_for_public_seo(served_generation, document),
+                Ok(true)
+            ) {
                 return noindex_metadata();
             }
 
