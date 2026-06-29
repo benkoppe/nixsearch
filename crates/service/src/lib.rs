@@ -52,12 +52,20 @@ impl LazySeoFacts {
         lazy
     }
 
-    fn get_or_load(&self, generation: &PublishedGeneration) -> SeoFactsResult<Arc<SeoSidecar>> {
+    fn get_or_load(
+        &self,
+        generation: &PublishedGeneration,
+        index: &SearchIndex,
+    ) -> SeoFactsResult<Arc<SeoSidecar>> {
         if let Some(loaded) = self.value.get() {
             return Ok(Arc::clone(loaded));
         }
 
         let loaded = SeoFactsArtifact::read(generation)
+            .and_then(|sidecar| {
+                sidecar.validate_for_index(&generation.manifest, index)?;
+                Ok(sidecar)
+            })
             .map(Arc::new)
             .map_err(|error| {
                 tracing::warn!(
@@ -731,7 +739,7 @@ impl SearchService {
     ) -> SeoFactsResult<Arc<SeoSidecar>> {
         let seo_facts = snapshot.seo_facts.as_ref().ok_or(SeoFactsUnavailable)?;
 
-        seo_facts.get_or_load(snapshot.published_generation())
+        seo_facts.get_or_load(snapshot.published_generation(), &snapshot.index)
     }
 
     fn ref_allowed_to_be_indexed(&self, source: &SourceConfig, ref_id: &str) -> bool {
@@ -1150,7 +1158,7 @@ mod tests {
 
     use super::{
         EntryRequest, ReconcileOutcome, ReconcileReport, RequestResolutionError, SearchRequest,
-        SearchService, ServiceError,
+        SearchService, SeoFactsUnavailable, ServiceError,
     };
 
     fn leased_generation(
@@ -1740,6 +1748,33 @@ mod tests {
             SearchService::validate_leased_generation_seo_complete(&config, &leased).unwrap_err();
 
         assert!(format!("{error:#}").contains("SEO sidecar facts do not match indexed documents"));
+    }
+
+    #[test]
+    fn lazily_loaded_sidecar_is_validated_against_index() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        let path = publish_canonical_index(&index_dir);
+        let store = IndexStore::new(&index_dir);
+        let manifest = store.read_manifest(&path).unwrap();
+        let generation = PublishedGeneration {
+            path,
+            manifest: manifest.clone(),
+        };
+        let mut sidecar = SeoFactsArtifact::read(&generation).unwrap();
+
+        sidecar.entries[0].name = "not-real".to_owned();
+        write_raw_seo_sidecar(&store, &generation, &sidecar);
+
+        let config = Arc::new(multi_ref_app_config_with_public_url(&index_dir));
+        let leased = leased_generation(&index_dir, generation.path, manifest);
+        let service = SearchService::from_validated_leased_generation(config, leased).unwrap();
+        let snapshot = service.snapshot();
+
+        assert_eq!(
+            service.sitemap_candidates(&snapshot),
+            Err(SeoFactsUnavailable)
+        );
     }
 
     #[test]
