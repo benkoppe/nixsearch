@@ -49,9 +49,7 @@ impl LazySeoFacts {
     }
 
     fn integrity_attested_unloaded() -> Self {
-        // The generation integrity file already binds the manifest, index, and
-        // SEO sidecar together, so serving paths can parse the sidecar without
-        // re-scanning the whole search index on first SEO use.
+        // Integrity metadata already binds the manifest, index, and SEO sidecar.
         Self {
             value: Arc::new(OnceLock::new()),
             integrity_attested: true,

@@ -227,9 +227,13 @@ fn load_sitemap_artifact(
         bail!("sitemap artifact origin does not match configured public origin");
     }
 
+    if manifest.root.file.as_str() != SITEMAP_ROOT_FILE {
+        bail!("sitemap artifact root file name is invalid");
+    }
     let root = validate_manifest_file(artifact_dir, &manifest.root)?;
     let mut shards = BTreeMap::new();
     for shard in manifest.shards {
+        validate_shard_manifest(&shard)?;
         let file = validate_manifest_file(
             artifact_dir,
             &SitemapArtifactFileManifest {
@@ -249,6 +253,20 @@ fn load_sitemap_artifact(
         root,
         shards,
     })
+}
+
+fn validate_shard_manifest(shard: &SitemapArtifactShardManifest) -> Result<()> {
+    let query = format!("shard={}", shard.query_value);
+    if sitemap_shard_number_from_query(Some(&query)).ok().flatten() != Some(shard.number) {
+        bail!("sitemap artifact shard query value does not match shard number");
+    }
+
+    let expected_file = sitemap_shard_file_name(&shard.query_value);
+    if shard.file.as_str() != expected_file {
+        bail!("sitemap artifact shard file name does not match query value");
+    }
+
+    Ok(())
 }
 
 fn validate_manifest_file(

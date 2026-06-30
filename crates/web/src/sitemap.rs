@@ -33,7 +33,6 @@ struct SitemapShard {
 pub(crate) struct SitemapShardInfo {
     pub(crate) number: usize,
     pub(crate) query_value: String,
-    pub(crate) byte_len: usize,
 }
 
 #[cfg(test)]
@@ -120,7 +119,6 @@ impl SitemapPlan {
             .map(|shard| SitemapShardInfo {
                 number: shard.number,
                 query_value: shard.query_value.clone(),
-                byte_len: shard.byte_len,
             })
             .collect()
     }
