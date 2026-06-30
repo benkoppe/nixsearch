@@ -12,6 +12,8 @@ use nixsearch_ops::targets::{TargetKey, all_targets, missing_configured_target_k
 use nixsearch_ops::{cleanup, generate, lock, seo};
 use nixsearch_service::{ReconcileReport, SearchService};
 
+use crate::sitemap_artifact::{self, SitemapArtifacts};
+
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const MANIFEST_ERROR_RETRY: Duration = Duration::from_secs(60);
 const MIN_LOCK_BUSY_RETRY: Duration = Duration::from_secs(60);
@@ -53,7 +55,12 @@ enum CurrentGenerationStatus {
     },
 }
 
-pub(crate) fn spawn(config: Arc<AppConfig>, search: SearchService) {
+pub(crate) fn spawn(
+    config: Arc<AppConfig>,
+    search: SearchService,
+    sitemap_artifacts: SitemapArtifacts,
+    cleanup_after_startup: bool,
+) {
     let interval = config
         .server
         .schedule
@@ -61,12 +68,29 @@ pub(crate) fn spawn(config: Arc<AppConfig>, search: SearchService) {
         .expect("schedule interval already validated");
 
     tokio::spawn(async move {
-        run_loop(config, search, interval).await;
+        run_loop(
+            config,
+            search,
+            sitemap_artifacts,
+            interval,
+            cleanup_after_startup,
+        )
+        .await;
     });
 }
 
-async fn run_loop(config: Arc<AppConfig>, search: SearchService, interval: Duration) {
+async fn run_loop(
+    config: Arc<AppConfig>,
+    search: SearchService,
+    sitemap_artifacts: SitemapArtifacts,
+    interval: Duration,
+    cleanup_after_startup: bool,
+) {
     let modes = regeneration_modes(&config);
+
+    if cleanup_after_startup {
+        run_cleanup_after_startup(&config).await;
+    }
 
     loop {
         let (generation, reloaded) = match search.reconcile_current_generation() {
@@ -96,7 +120,13 @@ async fn run_loop(config: Arc<AppConfig>, search: SearchService, interval: Durat
         };
 
         if reloaded {
-            run_cleanup_after_reload(&config).await;
+            if refresh_sitemap_artifact(&config, search.clone(), &sitemap_artifacts).await {
+                run_cleanup_after_reload(&config).await;
+            } else {
+                tracing::warn!(
+                    "skipping post-reload cleanup to preserve previous sitemap artifact"
+                );
+            }
         }
 
         if !modes.scheduled_enabled && !modes.recovery_enabled {
@@ -344,22 +374,63 @@ async fn run_locked_regeneration(
     }
 }
 
+async fn refresh_sitemap_artifact(
+    config: &Arc<AppConfig>,
+    search: SearchService,
+    sitemap_artifacts: &SitemapArtifacts,
+) -> bool {
+    if !config.public_seo_enabled() {
+        return true;
+    }
+
+    match sitemap_artifact::ensure_current_sitemap_artifact(Arc::clone(config), search).await {
+        Ok(artifact) => {
+            tracing::info!(
+                generation_id = artifact.generation_id(),
+                origin = artifact.origin(),
+                "prepared sitemap artifact for served generation"
+            );
+            sitemap_artifacts.set_current(artifact);
+            true
+        }
+        Err(error) => {
+            tracing::error!(
+                "failed to prepare sitemap artifact for served generation; continuing to serve previous sitemap artifact: {error:#}"
+            );
+            false
+        }
+    }
+}
+
+async fn run_cleanup_after_startup(config: &AppConfig) {
+    run_cleanup(config, "post-bootstrap").await;
+}
+
 async fn run_cleanup_after_reload(config: &AppConfig) {
+    run_cleanup(config, "post-reload").await;
+}
+
+async fn run_cleanup(config: &AppConfig, reason: &'static str) {
+    tracing::info!(reason, "running index cleanup in background");
+
     let update_lock = match lock::try_acquire_update_lock(&config.data.index_dir) {
         Ok(Some(update_lock)) => update_lock,
         Ok(None) => {
-            tracing::info!("index cleanup skipped; maintenance lock is held");
+            tracing::info!(reason, "index cleanup skipped; maintenance lock is held");
             return;
         }
         Err(error) => {
-            tracing::warn!("failed to acquire maintenance lock for cleanup: {error:#}");
+            tracing::warn!(
+                reason,
+                "failed to acquire maintenance lock for cleanup: {error:#}"
+            );
             return;
         }
     };
 
     match cleanup::cleanup_under_lock(config, &update_lock).await {
         Ok(report) => cleanup::log_report(&report),
-        Err(error) => tracing::warn!("index cleanup failed: {error:#}"),
+        Err(error) => tracing::warn!(reason, "index cleanup failed: {error:#}"),
     }
 
     drop(update_lock);

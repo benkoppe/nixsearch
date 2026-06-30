@@ -49,6 +49,26 @@ impl ManifestCheckedSeoFacts {
     }
 }
 
+/// SEO facts whose sidecar, manifest, and index are bound by generation integrity metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntegrityAttestedSeoFacts {
+    sidecar: ManifestCheckedSeoFacts,
+}
+
+impl IntegrityAttestedSeoFacts {
+    pub(crate) fn from_manifest_checked(sidecar: ManifestCheckedSeoFacts) -> Self {
+        Self { sidecar }
+    }
+
+    pub fn sidecar(&self) -> &SeoSidecar {
+        self.sidecar.sidecar()
+    }
+
+    pub fn into_sidecar(self) -> SeoSidecar {
+        self.sidecar.into_sidecar()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexVerifiedSeoFacts {
     sidecar: SeoSidecar,
@@ -72,6 +92,12 @@ impl IndexVerifiedSeoFacts {
 
     pub fn into_sidecar(self) -> SeoSidecar {
         self.sidecar
+    }
+
+    pub fn from_integrity_attested(sidecar: IntegrityAttestedSeoFacts) -> Self {
+        Self {
+            sidecar: sidecar.into_sidecar(),
+        }
     }
 
     pub(crate) fn from_index_derived_facts(sidecar: SeoSidecar) -> Self {

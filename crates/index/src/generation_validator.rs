@@ -10,7 +10,7 @@ use crate::generation::{
 use crate::integrity::{self as generation_integrity, GenerationIntegrityPaths};
 use crate::manifest::{validate_generation_id, validate_index_schema_version};
 use crate::search::SearchIndex;
-use crate::seo_sidecar::SeoFactsArtifact;
+use crate::seo_sidecar::{IndexVerifiedSeoFacts, IntegrityAttestedSeoFacts, SeoFactsArtifact};
 use crate::store::{IndexStore, LeasedPublishedGeneration, PublishedGeneration};
 
 #[derive(Debug, Clone)]
@@ -84,15 +84,29 @@ impl GenerationValidator {
             .with_context(|| format!("failed to open search index {index_path}"))
     }
 
+    /// Reads SEO facts after validating their generation integrity attestation.
+    pub fn read_integrity_attested_seo_facts(
+        &self,
+        generation: &PublishedGeneration,
+    ) -> Result<IntegrityAttestedSeoFacts> {
+        validate_supplied_manifest(&generation.manifest)?;
+
+        let sidecar = SeoFactsArtifact::read_manifest_checked(generation)?;
+        self.validate_integrity(generation, true)
+            .context("failed to validate generation integrity metadata")?;
+
+        Ok(IntegrityAttestedSeoFacts::from_manifest_checked(sidecar))
+    }
+
     /// Opens an SEO-capable generation using its integrity attestation.
     pub fn open_integrity_attested_seo_generation(
         &self,
         generation: &PublishedGeneration,
     ) -> Result<SeoVerifiedGeneration> {
-        validate_supplied_manifest(&generation.manifest)?;
-
-        let sidecar = SeoFactsArtifact::read_manifest_checked(generation)?;
-        let index = self.open_integrity_attested_published_index(generation, true)?;
+        let sidecar = self.read_integrity_attested_seo_facts(generation)?;
+        let index_path = self.store.index_path(&generation.path);
+        let index = SearchIndex::open(&index_path)
+            .with_context(|| format!("failed to open search index {index_path}"))?;
         let scan = GenerationScan {
             document_count: generation.manifest.document_count,
             seo_sidecar: sidecar.sidecar().clone(),
@@ -100,7 +114,7 @@ impl GenerationValidator {
 
         Ok(SeoVerifiedGeneration {
             index,
-            sidecar: sidecar.into_index_verified_after_matching_scan(),
+            sidecar: IndexVerifiedSeoFacts::from_integrity_attested(sidecar),
             scan,
         })
     }

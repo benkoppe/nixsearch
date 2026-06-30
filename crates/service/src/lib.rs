@@ -37,23 +37,34 @@ impl Clone for SearchService {
 #[derive(Clone)]
 struct LazySeoFacts {
     value: Arc<OnceLock<Arc<IndexVerifiedSeoFacts>>>,
+    integrity_attested: bool,
 }
 
 impl LazySeoFacts {
     fn unloaded() -> Self {
         Self {
             value: Arc::new(OnceLock::new()),
+            integrity_attested: false,
+        }
+    }
+
+    fn integrity_attested_unloaded() -> Self {
+        // Integrity metadata already binds the manifest, index, and SEO sidecar.
+        Self {
+            value: Arc::new(OnceLock::new()),
+            integrity_attested: true,
         }
     }
 
     fn loaded(seo_facts: IndexVerifiedSeoFacts) -> Self {
-        let lazy = Self::unloaded();
+        let lazy = Self::integrity_attested_unloaded();
         let _ = lazy.value.set(Arc::new(seo_facts));
         lazy
     }
 
     fn get_or_load(
         &self,
+        config: &AppConfig,
         generation: &PublishedGeneration,
         index: &SearchIndex,
     ) -> SeoFactsResult<Arc<IndexVerifiedSeoFacts>> {
@@ -61,7 +72,8 @@ impl LazySeoFacts {
             return Ok(Arc::clone(loaded));
         }
 
-        let loaded = SeoFactsArtifact::read_index_verified(generation, index)
+        let loaded = self
+            .load(config, generation, index)
             .map(Arc::new)
             .map_err(|error| {
                 tracing::warn!(
@@ -73,6 +85,21 @@ impl LazySeoFacts {
         let _ = self.value.set(Arc::clone(&loaded));
 
         Ok(self.value.get().map(Arc::clone).unwrap_or(loaded))
+    }
+
+    fn load(
+        &self,
+        config: &AppConfig,
+        generation: &PublishedGeneration,
+        index: &SearchIndex,
+    ) -> Result<IndexVerifiedSeoFacts> {
+        if self.integrity_attested {
+            let validator = GenerationValidator::new(IndexStore::new(&config.data.index_dir));
+            let sidecar = validator.read_integrity_attested_seo_facts(generation)?;
+            return Ok(IndexVerifiedSeoFacts::from_integrity_attested(sidecar));
+        }
+
+        SeoFactsArtifact::read_index_verified(generation, index)
     }
 }
 
@@ -800,7 +827,11 @@ impl SearchService {
     ) -> SeoFactsResult<Arc<IndexVerifiedSeoFacts>> {
         let seo_facts = snapshot.seo_facts.as_ref().ok_or(SeoFactsUnavailable)?;
 
-        seo_facts.get_or_load(snapshot.published_generation(), &snapshot.index)
+        seo_facts.get_or_load(
+            &self.config,
+            snapshot.published_generation(),
+            &snapshot.index,
+        )
     }
 
     fn ref_allowed_to_be_indexed(&self, source: &SourceConfig, ref_id: &str) -> bool {
@@ -1137,7 +1168,7 @@ fn load_integrity_attested_servable_generation(
             validator
                 .require_seo_sidecar_file_present(generation.published_generation())
                 .context("failed to require SEO sidecar file for lazy SEO serving")?;
-            Some(LazySeoFacts::unloaded())
+            Some(LazySeoFacts::integrity_attested_unloaded())
         }
     };
 

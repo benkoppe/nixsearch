@@ -10,7 +10,7 @@ use tower_http::trace::TraceLayer;
 use nixsearch_config::app::AppConfig;
 use nixsearch_index::store::{IndexStore, PublishedGeneration};
 use nixsearch_ops::targets::{TargetCoverage, TargetKey, target_coverage};
-use nixsearch_ops::{cleanup, generate, lock, seo};
+use nixsearch_ops::{generate, lock, seo};
 use nixsearch_service::{SearchService, ServingGenerationPolicy};
 
 mod entry;
@@ -24,6 +24,7 @@ mod request;
 mod robots;
 mod scripts;
 mod sitemap;
+mod sitemap_artifact;
 mod source_labels;
 mod templates;
 mod urls;
@@ -40,13 +41,14 @@ const RESULTS_SLICE_URL: &str = "/-/results/slice";
 struct AppState {
     config: Arc<AppConfig>,
     search: SearchService,
+    sitemap_artifacts: sitemap_artifact::SitemapArtifacts,
 }
 
 pub async fn serve(config: AppConfig) -> Result<()> {
     config.validate()?;
     log_public_seo_state(&config);
 
-    let generation = ensure_current_generation(&config).await?;
+    let startup_generation = prepare_startup_generation(&config).await?;
 
     let addr: SocketAddr =
         config.server.listen.parse().with_context(|| {
@@ -55,7 +57,7 @@ pub async fn serve(config: AppConfig) -> Result<()> {
 
     let index_store = IndexStore::new(&config.data.index_dir);
     let leased_generation = index_store
-        .lease_published_generation(generation)
+        .lease_published_generation(startup_generation.generation)
         .context("failed to lease startup-accepted current index generation")?;
 
     let config = Arc::new(config);
@@ -65,12 +67,29 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         ServingGenerationPolicy::lazy_for_config(&config),
     )?;
     let generation = search.snapshot().to_published_generation();
+    let sitemap_artifacts = sitemap_artifact::SitemapArtifacts::default();
+    if config.public_seo_enabled() {
+        let artifact =
+            sitemap_artifact::ensure_current_sitemap_artifact(Arc::clone(&config), search.clone())
+                .await
+                .context("failed to prepare startup sitemap artifact")?;
+        sitemap_artifacts.set_current(artifact);
+    }
 
     log_startup_maintenance_state(&config, &generation);
 
-    maintenance::spawn(Arc::clone(&config), search.clone());
+    maintenance::spawn(
+        Arc::clone(&config),
+        search.clone(),
+        sitemap_artifacts.clone(),
+        startup_generation.cleanup_after_startup,
+    );
 
-    let state = AppState { config, search };
+    let state = AppState {
+        config,
+        search,
+        sitemap_artifacts,
+    };
 
     let app = app_router(state).layer(TraceLayer::new_for_http());
 
@@ -108,7 +127,17 @@ fn app_router(state: AppState) -> Router {
         .with_state(state)
 }
 
+struct StartupGeneration {
+    generation: PublishedGeneration,
+    cleanup_after_startup: bool,
+}
+
+#[cfg(test)]
 async fn ensure_current_generation(config: &AppConfig) -> Result<PublishedGeneration> {
+    Ok(prepare_startup_generation(config).await?.generation)
+}
+
+async fn prepare_startup_generation(config: &AppConfig) -> Result<StartupGeneration> {
     let index_store = IndexStore::new(&config.data.index_dir);
 
     let mut startup_assessment = assess_current_generation_for_startup(config, &index_store);
@@ -134,7 +163,10 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<PublishedGenera
     match startup_assessment {
         Ok(StartupGenerationAssessment::Ready(current)) => {
             if current.missing_targets().is_empty() {
-                return Ok(current.generation);
+                return Ok(StartupGeneration {
+                    generation: current.generation,
+                    cleanup_after_startup: false,
+                });
             }
 
             if current.serves_default_scope() {
@@ -143,11 +175,17 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<PublishedGenera
                     "current index is missing configured targets but still serves a default search scope; startup will continue"
                 );
 
-                return Ok(current.generation);
+                return Ok(StartupGeneration {
+                    generation: current.generation,
+                    cleanup_after_startup: false,
+                });
             }
 
             if !config.server.bootstrap {
-                return Ok(current.generation);
+                return Ok(StartupGeneration {
+                    generation: current.generation,
+                    cleanup_after_startup: false,
+                });
             }
 
             tracing::info!(
@@ -214,7 +252,10 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<PublishedGenera
                 tracing::info!(
                     "current index was created by another process while waiting for lock"
                 );
-                return Ok(current.generation);
+                return Ok(StartupGeneration {
+                    generation: current.generation,
+                    cleanup_after_startup: false,
+                });
             }
 
             tracing::warn!(
@@ -254,10 +295,12 @@ async fn ensure_current_generation(config: &AppConfig) -> Result<PublishedGenera
 
     match assess_current_generation_for_startup(config, &index_store)? {
         StartupGenerationAssessment::Ready(current) => {
-            let report = cleanup::cleanup_under_lock(config, &update_lock).await?;
-            cleanup::log_report(&report);
+            drop(update_lock);
 
-            Ok(current.generation)
+            Ok(StartupGeneration {
+                generation: current.generation,
+                cleanup_after_startup: true,
+            })
         }
         StartupGenerationAssessment::StructurallyInvalid { generation, error }
         | StartupGenerationAssessment::SeoSidecarUnavailable { generation, error } => Err(error)
@@ -466,8 +509,22 @@ mod tests {
     fn test_app(config: AppConfig) -> Router {
         let config = Arc::new(config);
         let search = SearchService::open_current(Arc::clone(&config)).unwrap();
+        let sitemap_artifacts = crate::sitemap_artifact::SitemapArtifacts::default();
+        if config.public_seo_enabled() {
+            sitemap_artifacts.set_current(
+                crate::sitemap_artifact::ensure_current_sitemap_artifact_blocking(
+                    Arc::clone(&config),
+                    search.clone(),
+                )
+                .unwrap(),
+            );
+        }
 
-        app_router(AppState { config, search })
+        app_router(AppState {
+            config,
+            search,
+            sitemap_artifacts,
+        })
     }
 
     struct TestResponse {
@@ -2414,7 +2471,11 @@ mod tests {
             ServingGenerationPolicy::lazy_for_config(&config),
         )
         .unwrap();
-        let app = app_router(AppState { config, search });
+        let app = app_router(AppState {
+            config,
+            search,
+            sitemap_artifacts: crate::sitemap_artifact::SitemapArtifacts::default(),
+        });
 
         let (status, body) = request_body(app, "/fixtures/programs.git.enable").await;
 

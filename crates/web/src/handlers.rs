@@ -26,17 +26,14 @@ use crate::request::{
 };
 use crate::robots;
 use crate::scripts::datastar_script;
-use crate::sitemap::{
-    SitemapDocument, SitemapRenderError, protocol_sitemap_limits, render_sitemap_entrypoint,
-};
+use crate::sitemap::validate_sitemap_query;
+use crate::sitemap_artifact::SitemapArtifactLookupError;
 use crate::templates;
 use crate::templates::layout::{
     InitialReturnMetadata, ResultsContent, generation_change_script, head_metadata_script,
     modal_patch_script, results_patch_script,
 };
-use crate::urls::{
-    canonical_home_path, canonical_source_path, close_url_for_state, sitemap_candidate_path,
-};
+use crate::urls::close_url_for_state;
 
 pub async fn health() -> &'static str {
     "ok"
@@ -74,57 +71,26 @@ pub async fn robots_txt(State(state): State<AppState>, headers: HeaderMap, uri: 
     ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], body).into_response()
 }
 
-pub async fn sitemap_xml(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
+pub async fn sitemap_xml(State(state): State<AppState>, _headers: HeaderMap, uri: Uri) -> Response {
     if !state.config.public_seo_enabled() {
         return sitemaps_not_found().await;
     }
 
-    let urls = page_urls(state.config.as_ref(), &headers, &uri);
-    let generation = RequestGeneration::reconcile(&state);
-    let snapshot = generation.snapshot();
-
-    let mut paths = vec![canonical_home_path()];
-    if let Ok(candidates) = state.search.sitemap_candidates(snapshot) {
-        paths.extend(candidates.iter().map(sitemap_candidate_path));
-    }
-    for (source_id, source) in &state.config.sources {
-        let Some(ref_id) = source.default_ref.as_deref() else {
-            continue;
-        };
-        if state
-            .search
-            .source_has_indexable_entries(snapshot, source_id, ref_id)
-            .unwrap_or(false)
-        {
-            paths.push(canonical_source_path(&state.config, source_id, ref_id));
-        }
+    let raw_query = uri.query();
+    if validate_sitemap_query(raw_query).is_err() {
+        return sitemaps_not_found().await;
     }
 
-    let body = match render_sitemap_entrypoint(
-        &urls.origin,
-        paths,
-        uri.query(),
-        protocol_sitemap_limits(),
-    ) {
-        Ok(SitemapDocument::Urlset(body) | SitemapDocument::Index(body)) => body,
-        Err(
-            SitemapRenderError::MalformedQuery(_)
-            | SitemapRenderError::ShardNotAvailable
-            | SitemapRenderError::ShardOutOfRange,
-        ) => return sitemaps_not_found().await,
-        Err(
-            error @ (SitemapRenderError::IndexTooLarge | SitemapRenderError::NoRepresentableUrls),
-        ) => {
-            tracing::error!(?error, "failed to render protocol-compliant sitemap");
-            return sitemap_internal_error();
-        }
+    let Some(artifact) = state.sitemap_artifacts.current() else {
+        return sitemap_unavailable();
     };
 
-    (
-        [(header::CONTENT_TYPE, "application/xml; charset=utf-8")],
-        body,
-    )
-        .into_response()
+    match artifact.file_for_query(raw_query) {
+        Ok(file) => file.serve_response().await,
+        Err(
+            SitemapArtifactLookupError::MalformedQuery | SitemapArtifactLookupError::ShardNotFound,
+        ) => sitemaps_not_found().await,
+    }
 }
 
 pub async fn sitemaps_not_found() -> Response {
@@ -139,11 +105,14 @@ pub async fn sitemaps_not_found() -> Response {
     .await
 }
 
-fn sitemap_internal_error() -> Response {
+fn sitemap_unavailable() -> Response {
     (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-        "sitemap rendering failed",
+        StatusCode::SERVICE_UNAVAILABLE,
+        [
+            (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+            (header::RETRY_AFTER, "30"),
+        ],
+        "sitemap temporarily unavailable",
     )
         .into_response()
 }
