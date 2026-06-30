@@ -12,6 +12,8 @@ use nixsearch_ops::targets::{TargetKey, all_targets, missing_configured_target_k
 use nixsearch_ops::{cleanup, generate, lock, seo};
 use nixsearch_service::{ReconcileReport, SearchService};
 
+use crate::sitemap_artifact::{self, SitemapArtifacts};
+
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const MANIFEST_ERROR_RETRY: Duration = Duration::from_secs(60);
 const MIN_LOCK_BUSY_RETRY: Duration = Duration::from_secs(60);
@@ -53,7 +55,12 @@ enum CurrentGenerationStatus {
     },
 }
 
-pub(crate) fn spawn(config: Arc<AppConfig>, search: SearchService, cleanup_after_startup: bool) {
+pub(crate) fn spawn(
+    config: Arc<AppConfig>,
+    search: SearchService,
+    sitemap_artifacts: SitemapArtifacts,
+    cleanup_after_startup: bool,
+) {
     let interval = config
         .server
         .schedule
@@ -61,13 +68,21 @@ pub(crate) fn spawn(config: Arc<AppConfig>, search: SearchService, cleanup_after
         .expect("schedule interval already validated");
 
     tokio::spawn(async move {
-        run_loop(config, search, interval, cleanup_after_startup).await;
+        run_loop(
+            config,
+            search,
+            sitemap_artifacts,
+            interval,
+            cleanup_after_startup,
+        )
+        .await;
     });
 }
 
 async fn run_loop(
     config: Arc<AppConfig>,
     search: SearchService,
+    sitemap_artifacts: SitemapArtifacts,
     interval: Duration,
     cleanup_after_startup: bool,
 ) {
@@ -105,6 +120,7 @@ async fn run_loop(
         };
 
         if reloaded {
+            refresh_sitemap_artifact(&config, search.clone(), &sitemap_artifacts).await;
             run_cleanup_after_reload(&config).await;
         }
 
@@ -349,6 +365,32 @@ async fn run_locked_regeneration(
         Err(error) => {
             tracing::error!("index regeneration failed: {error:#}");
             MaintenanceOutcome::Failed
+        }
+    }
+}
+
+async fn refresh_sitemap_artifact(
+    config: &Arc<AppConfig>,
+    search: SearchService,
+    sitemap_artifacts: &SitemapArtifacts,
+) {
+    if !config.public_seo_enabled() {
+        return;
+    }
+
+    match sitemap_artifact::ensure_current_sitemap_artifact(Arc::clone(config), search).await {
+        Ok(artifact) => {
+            tracing::info!(
+                generation_id = artifact.generation_id(),
+                origin = artifact.origin(),
+                "prepared sitemap artifact for served generation"
+            );
+            sitemap_artifacts.set_current(artifact);
+        }
+        Err(error) => {
+            tracing::error!(
+                "failed to prepare sitemap artifact for served generation; continuing to serve previous sitemap artifact: {error:#}"
+            );
         }
     }
 }

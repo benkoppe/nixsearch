@@ -1,5 +1,5 @@
+use std::io::{self, Write};
 use std::ops::Range;
-use std::sync::{Arc, Mutex};
 
 const MAX_SITEMAP_URLS: usize = 50_000;
 const MAX_SITEMAP_BYTES: usize = 50 * 1024 * 1024;
@@ -30,6 +30,14 @@ struct SitemapShard {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SitemapShardInfo {
+    pub(crate) number: usize,
+    pub(crate) query_value: String,
+    pub(crate) byte_len: usize,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SitemapDocument {
     Urlset(String),
     Index(String),
@@ -52,6 +60,7 @@ pub(crate) enum SitemapQueryError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SitemapRenderError {
+    #[cfg(test)]
     MalformedQuery(SitemapQueryError),
     ShardNotAvailable,
     ShardOutOfRange,
@@ -59,56 +68,21 @@ pub(crate) enum SitemapRenderError {
     NoRepresentableUrls,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SitemapCacheKey {
-    generation_id: String,
-    origin: String,
+#[derive(Debug)]
+pub(crate) enum SitemapWriteError {
+    Render(SitemapRenderError),
+    Io(io::Error),
 }
 
-impl SitemapCacheKey {
-    pub(crate) fn new(generation_id: String, origin: String) -> Self {
-        Self {
-            generation_id,
-            origin,
-        }
+impl From<SitemapRenderError> for SitemapWriteError {
+    fn from(error: SitemapRenderError) -> Self {
+        Self::Render(error)
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub(crate) struct SitemapCache {
-    inner: Arc<Mutex<Option<CachedSitemapPlan>>>,
-}
-
-#[derive(Debug, Clone)]
-struct CachedSitemapPlan {
-    key: SitemapCacheKey,
-    plan: Arc<SitemapPlan>,
-}
-
-impl SitemapCache {
-    pub(crate) fn get_or_try_insert_with<E>(
-        &self,
-        key: SitemapCacheKey,
-        build: impl FnOnce() -> Result<SitemapPlan, E>,
-    ) -> Result<Arc<SitemapPlan>, E> {
-        let mut cached = self
-            .inner
-            .lock()
-            .expect("sitemap cache mutex should not be poisoned");
-
-        if let Some(cached) = cached.as_ref()
-            && cached.key == key
-        {
-            return Ok(Arc::clone(&cached.plan));
-        }
-
-        let plan = Arc::new(build()?);
-        *cached = Some(CachedSitemapPlan {
-            key,
-            plan: Arc::clone(&plan),
-        });
-
-        Ok(plan)
+impl From<io::Error> for SitemapWriteError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
     }
 }
 
@@ -117,7 +91,6 @@ pub(crate) struct SitemapPlan {
     origin: String,
     paths: Vec<String>,
     shards: Vec<SitemapShard>,
-    limits: SitemapLimits,
 }
 
 impl SitemapPlan {
@@ -130,37 +103,68 @@ impl SitemapPlan {
         paths.dedup();
         let paths = representable_sitemap_paths(&origin, paths, limits)?;
         let shards = shard_sitemap_paths(&origin, &paths, limits)?;
+        if shards.len() > 1 {
+            render_sitemap_index(&origin, &shards, limits)?;
+        }
 
         Ok(Self {
             origin,
             paths,
             shards,
-            limits,
         })
     }
 
+    pub(crate) fn shard_infos(&self) -> Vec<SitemapShardInfo> {
+        self.shards
+            .iter()
+            .map(|shard| SitemapShardInfo {
+                number: shard.number,
+                query_value: shard.query_value.clone(),
+                byte_len: shard.byte_len,
+            })
+            .collect()
+    }
+
+    pub(crate) fn write_root<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        if self.shards.len() == 1 {
+            self.write_urlset_for_shard(&self.shards[0], writer)
+        } else {
+            write_sitemap_index(&self.origin, &self.shards, writer)
+        }
+    }
+
+    pub(crate) fn write_shard<W: Write>(
+        &self,
+        number: usize,
+        writer: &mut W,
+    ) -> Result<(), SitemapWriteError> {
+        if self.shards.len() <= 1 {
+            return Err(SitemapRenderError::ShardNotAvailable.into());
+        }
+
+        let shard = self
+            .shards
+            .iter()
+            .find(|shard| shard.number == number)
+            .ok_or(SitemapRenderError::ShardOutOfRange)?;
+        self.write_urlset_for_shard(shard, writer)?;
+
+        Ok(())
+    }
+
+    #[cfg(test)]
     pub(crate) fn render(
         &self,
         raw_query: Option<&str>,
     ) -> Result<SitemapDocument, SitemapRenderError> {
         let query = parse_sitemap_query(raw_query).map_err(SitemapRenderError::MalformedQuery)?;
 
-        let sitemap_index = if self.shards.len() > 1 {
-            Some(render_sitemap_index(
-                &self.origin,
-                &self.shards,
-                self.limits,
-            )?)
-        } else {
-            None
-        };
-
         match query {
             SitemapQuery::EntryPoint if self.shards.len() == 1 => Ok(SitemapDocument::Urlset(
                 self.render_urlset_for_shard(&self.shards[0]),
             )),
             SitemapQuery::EntryPoint => Ok(SitemapDocument::Index(
-                sitemap_index.expect("multi-shard sitemap index is rendered"),
+                render_sitemap_index_from_shards(&self.origin, &self.shards)?,
             )),
             SitemapQuery::Shard(_) if self.shards.len() <= 1 => {
                 Err(SitemapRenderError::ShardNotAvailable)
@@ -174,12 +178,21 @@ impl SitemapPlan {
         }
     }
 
+    #[cfg(test)]
     fn render_urlset_for_shard(&self, shard: &SitemapShard) -> String {
         render_urlset_from_paths(
             &self.origin,
             &self.paths[shard.path_range.clone()],
             shard.byte_len,
         )
+    }
+
+    fn write_urlset_for_shard<W: Write>(
+        &self,
+        shard: &SitemapShard,
+        writer: &mut W,
+    ) -> io::Result<()> {
+        write_urlset_from_paths(&self.origin, &self.paths[shard.path_range.clone()], writer)
     }
 }
 
@@ -205,6 +218,15 @@ pub(crate) fn render_sitemap_entrypoint(
 
 pub(crate) fn validate_sitemap_query(raw_query: Option<&str>) -> Result<(), SitemapQueryError> {
     parse_sitemap_query(raw_query).map(|_| ())
+}
+
+pub(crate) fn sitemap_shard_number_from_query(
+    raw_query: Option<&str>,
+) -> Result<Option<usize>, SitemapQueryError> {
+    match parse_sitemap_query(raw_query)? {
+        SitemapQuery::EntryPoint => Ok(None),
+        SitemapQuery::Shard(number) => Ok(Some(number)),
+    }
 }
 
 fn parse_sitemap_query(raw_query: Option<&str>) -> Result<SitemapQuery, SitemapQueryError> {
@@ -306,6 +328,24 @@ fn push_loc_entry(output: &mut String, element: &str, origin: &str, path: &str) 
     output.push('>');
 }
 
+fn write_loc_entry<W: Write>(
+    output: &mut W,
+    element: &str,
+    origin: &str,
+    path: &str,
+) -> io::Result<()> {
+    output.write_all(b"<")?;
+    output.write_all(element.as_bytes())?;
+    output.write_all(b"><loc>")?;
+    let url = format!("{origin}{path}");
+    html_escape::encode_text_to_writer(&url, output)?;
+    output.write_all(b"</loc></")?;
+    output.write_all(element.as_bytes())?;
+    output.write_all(b">")?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 fn render_urlset_from_entries(entries: &[String]) -> String {
     let entries_len = entries.iter().map(String::len).sum();
@@ -318,6 +358,7 @@ fn render_urlset_from_entries(entries: &[String]) -> String {
     rendered
 }
 
+#[cfg(test)]
 fn render_urlset_from_paths(origin: &str, paths: &[String], byte_len: usize) -> String {
     let mut rendered = String::with_capacity(byte_len);
     rendered.push_str(&urlset_prefix());
@@ -326,6 +367,20 @@ fn render_urlset_from_paths(origin: &str, paths: &[String], byte_len: usize) -> 
     }
     rendered.push_str(SITEMAP_URLSET_CLOSE);
     rendered
+}
+
+fn write_urlset_from_paths<W: Write>(
+    origin: &str,
+    paths: &[String],
+    output: &mut W,
+) -> io::Result<()> {
+    output.write_all(urlset_prefix().as_bytes())?;
+    for path in paths {
+        write_loc_entry(output, "url", origin, path)?;
+    }
+    output.write_all(SITEMAP_URLSET_CLOSE.as_bytes())?;
+
+    Ok(())
 }
 
 fn render_sitemap_index_from_entries(entries: &[String]) -> String {
@@ -441,6 +496,23 @@ fn push_sitemap_shard(
     Ok(())
 }
 
+fn write_sitemap_index<W: Write>(
+    origin: &str,
+    shards: &[SitemapShard],
+    output: &mut W,
+) -> io::Result<()> {
+    output.write_all(sitemap_index_prefix().as_bytes())?;
+    for shard in shards {
+        let path = sitemap_shard_location_path_and_query(shard.number).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "invalid sitemap shard number")
+        })?;
+        write_loc_entry(output, "sitemap", origin, &path)?;
+    }
+    output.write_all(SITEMAP_INDEX_CLOSE.as_bytes())?;
+
+    Ok(())
+}
+
 fn render_sitemap_index(
     origin: &str,
     shards: &[SitemapShard],
@@ -454,19 +526,27 @@ fn render_sitemap_index(
         return Err(SitemapRenderError::IndexTooLarge);
     }
 
-    let entries = shards
-        .iter()
-        .map(|shard| {
-            render_index_entry(origin, shard.number).ok_or(SitemapRenderError::IndexTooLarge)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let rendered = render_sitemap_index_from_entries(&entries);
+    let rendered = render_sitemap_index_from_shards(origin, shards)?;
 
     if rendered.len() > limits.max_index_bytes {
         return Err(SitemapRenderError::IndexTooLarge);
     }
 
     Ok(rendered)
+}
+
+fn render_sitemap_index_from_shards(
+    origin: &str,
+    shards: &[SitemapShard],
+) -> Result<String, SitemapRenderError> {
+    let entries = shards
+        .iter()
+        .map(|shard| {
+            render_index_entry(origin, shard.number).ok_or(SitemapRenderError::IndexTooLarge)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(render_sitemap_index_from_entries(&entries))
 }
 
 fn urlset_prefix() -> String {

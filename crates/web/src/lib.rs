@@ -24,6 +24,7 @@ mod request;
 mod robots;
 mod scripts;
 mod sitemap;
+mod sitemap_artifact;
 mod source_labels;
 mod templates;
 mod urls;
@@ -40,7 +41,7 @@ const RESULTS_SLICE_URL: &str = "/-/results/slice";
 struct AppState {
     config: Arc<AppConfig>,
     search: SearchService,
-    sitemap_cache: sitemap::SitemapCache,
+    sitemap_artifacts: sitemap_artifact::SitemapArtifacts,
 }
 
 pub async fn serve(config: AppConfig) -> Result<()> {
@@ -66,19 +67,28 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         ServingGenerationPolicy::lazy_for_config(&config),
     )?;
     let generation = search.snapshot().to_published_generation();
+    let sitemap_artifacts = sitemap_artifact::SitemapArtifacts::default();
+    if config.public_seo_enabled() {
+        let artifact =
+            sitemap_artifact::ensure_current_sitemap_artifact(Arc::clone(&config), search.clone())
+                .await
+                .context("failed to prepare startup sitemap artifact")?;
+        sitemap_artifacts.set_current(artifact);
+    }
 
     log_startup_maintenance_state(&config, &generation);
 
     maintenance::spawn(
         Arc::clone(&config),
         search.clone(),
+        sitemap_artifacts.clone(),
         startup_generation.cleanup_after_startup,
     );
 
     let state = AppState {
         config,
         search,
-        sitemap_cache: crate::sitemap::SitemapCache::default(),
+        sitemap_artifacts,
     };
 
     let app = app_router(state).layer(TraceLayer::new_for_http());
@@ -499,11 +509,21 @@ mod tests {
     fn test_app(config: AppConfig) -> Router {
         let config = Arc::new(config);
         let search = SearchService::open_current(Arc::clone(&config)).unwrap();
+        let sitemap_artifacts = crate::sitemap_artifact::SitemapArtifacts::default();
+        if config.public_seo_enabled() {
+            sitemap_artifacts.set_current(
+                crate::sitemap_artifact::ensure_current_sitemap_artifact_blocking(
+                    Arc::clone(&config),
+                    search.clone(),
+                )
+                .unwrap(),
+            );
+        }
 
         app_router(AppState {
             config,
             search,
-            sitemap_cache: crate::sitemap::SitemapCache::default(),
+            sitemap_artifacts,
         })
     }
 
@@ -2454,7 +2474,7 @@ mod tests {
         let app = app_router(AppState {
             config,
             search,
-            sitemap_cache: crate::sitemap::SitemapCache::default(),
+            sitemap_artifacts: crate::sitemap_artifact::SitemapArtifacts::default(),
         });
 
         let (status, body) = request_body(app, "/fixtures/programs.git.enable").await;

@@ -79,14 +79,15 @@ fn page_urls_from_base(base: Url, path: &str, query: Option<&str>) -> PageUrls {
     page_urls_from_origin(origin, path, query)
 }
 
-fn origin_for_request(config: &AppConfig, _headers: &HeaderMap) -> String {
-    if let Some(public_url) = config.server.public_url.as_deref()
-        && let Ok(base) = Url::parse(public_url)
-    {
-        return origin_from_url(base);
-    }
+pub(crate) fn configured_public_origin(config: &AppConfig) -> Option<String> {
+    let public_url = config.server.public_url.as_deref()?;
+    let base = Url::parse(public_url).ok()?;
 
-    "http://localhost".to_owned()
+    Some(origin_from_url(base))
+}
+
+fn origin_for_request(config: &AppConfig, _headers: &HeaderMap) -> String {
+    configured_public_origin(config).unwrap_or_else(|| "http://localhost".to_owned())
 }
 
 fn page_urls_from_origin(origin: String, path: &str, query: Option<&str>) -> PageUrls {
