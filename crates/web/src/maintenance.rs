@@ -53,7 +53,7 @@ enum CurrentGenerationStatus {
     },
 }
 
-pub(crate) fn spawn(config: Arc<AppConfig>, search: SearchService) {
+pub(crate) fn spawn(config: Arc<AppConfig>, search: SearchService, cleanup_after_startup: bool) {
     let interval = config
         .server
         .schedule
@@ -61,12 +61,21 @@ pub(crate) fn spawn(config: Arc<AppConfig>, search: SearchService) {
         .expect("schedule interval already validated");
 
     tokio::spawn(async move {
-        run_loop(config, search, interval).await;
+        run_loop(config, search, interval, cleanup_after_startup).await;
     });
 }
 
-async fn run_loop(config: Arc<AppConfig>, search: SearchService, interval: Duration) {
+async fn run_loop(
+    config: Arc<AppConfig>,
+    search: SearchService,
+    interval: Duration,
+    cleanup_after_startup: bool,
+) {
     let modes = regeneration_modes(&config);
+
+    if cleanup_after_startup {
+        run_cleanup_after_startup(&config).await;
+    }
 
     loop {
         let (generation, reloaded) = match search.reconcile_current_generation() {
@@ -344,22 +353,35 @@ async fn run_locked_regeneration(
     }
 }
 
+async fn run_cleanup_after_startup(config: &AppConfig) {
+    run_cleanup(config, "post-bootstrap").await;
+}
+
 async fn run_cleanup_after_reload(config: &AppConfig) {
+    run_cleanup(config, "post-reload").await;
+}
+
+async fn run_cleanup(config: &AppConfig, reason: &'static str) {
+    tracing::info!(reason, "running index cleanup in background");
+
     let update_lock = match lock::try_acquire_update_lock(&config.data.index_dir) {
         Ok(Some(update_lock)) => update_lock,
         Ok(None) => {
-            tracing::info!("index cleanup skipped; maintenance lock is held");
+            tracing::info!(reason, "index cleanup skipped; maintenance lock is held");
             return;
         }
         Err(error) => {
-            tracing::warn!("failed to acquire maintenance lock for cleanup: {error:#}");
+            tracing::warn!(
+                reason,
+                "failed to acquire maintenance lock for cleanup: {error:#}"
+            );
             return;
         }
     };
 
     match cleanup::cleanup_under_lock(config, &update_lock).await {
         Ok(report) => cleanup::log_report(&report),
-        Err(error) => tracing::warn!("index cleanup failed: {error:#}"),
+        Err(error) => tracing::warn!(reason, "index cleanup failed: {error:#}"),
     }
 
     drop(update_lock);

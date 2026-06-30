@@ -37,17 +37,29 @@ impl Clone for SearchService {
 #[derive(Clone)]
 struct LazySeoFacts {
     value: Arc<OnceLock<Arc<IndexVerifiedSeoFacts>>>,
+    integrity_attested: bool,
 }
 
 impl LazySeoFacts {
     fn unloaded() -> Self {
         Self {
             value: Arc::new(OnceLock::new()),
+            integrity_attested: false,
+        }
+    }
+
+    fn integrity_attested_unloaded() -> Self {
+        // The generation integrity file already binds the manifest, index, and
+        // SEO sidecar together, so serving paths can parse the sidecar without
+        // re-scanning the whole search index on first SEO use.
+        Self {
+            value: Arc::new(OnceLock::new()),
+            integrity_attested: true,
         }
     }
 
     fn loaded(seo_facts: IndexVerifiedSeoFacts) -> Self {
-        let lazy = Self::unloaded();
+        let lazy = Self::integrity_attested_unloaded();
         let _ = lazy.value.set(Arc::new(seo_facts));
         lazy
     }
@@ -61,7 +73,8 @@ impl LazySeoFacts {
             return Ok(Arc::clone(loaded));
         }
 
-        let loaded = SeoFactsArtifact::read_index_verified(generation, index)
+        let loaded = self
+            .load(generation, index)
             .map(Arc::new)
             .map_err(|error| {
                 tracing::warn!(
@@ -73,6 +86,19 @@ impl LazySeoFacts {
         let _ = self.value.set(Arc::clone(&loaded));
 
         Ok(self.value.get().map(Arc::clone).unwrap_or(loaded))
+    }
+
+    fn load(
+        &self,
+        generation: &PublishedGeneration,
+        index: &SearchIndex,
+    ) -> Result<IndexVerifiedSeoFacts> {
+        if self.integrity_attested {
+            let sidecar = SeoFactsArtifact::read_manifest_checked(generation)?;
+            return Ok(IndexVerifiedSeoFacts::from_integrity_attested_manifest_checked(sidecar));
+        }
+
+        SeoFactsArtifact::read_index_verified(generation, index)
     }
 }
 
@@ -1137,7 +1163,7 @@ fn load_integrity_attested_servable_generation(
             validator
                 .require_seo_sidecar_file_present(generation.published_generation())
                 .context("failed to require SEO sidecar file for lazy SEO serving")?;
-            Some(LazySeoFacts::unloaded())
+            Some(LazySeoFacts::integrity_attested_unloaded())
         }
     };
 

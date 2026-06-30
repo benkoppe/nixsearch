@@ -74,6 +74,12 @@ impl IndexVerifiedSeoFacts {
         self.sidecar
     }
 
+    pub fn from_integrity_attested_manifest_checked(sidecar: ManifestCheckedSeoFacts) -> Self {
+        Self {
+            sidecar: sidecar.into_sidecar(),
+        }
+    }
+
     pub(crate) fn from_index_derived_facts(sidecar: SeoSidecar) -> Self {
         Self { sidecar }
     }

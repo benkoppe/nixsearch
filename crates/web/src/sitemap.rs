@@ -1,3 +1,6 @@
+use std::ops::Range;
+use std::sync::{Arc, Mutex};
+
 const MAX_SITEMAP_URLS: usize = 50_000;
 const MAX_SITEMAP_BYTES: usize = 50 * 1024 * 1024;
 const MAX_SITEMAP_INDEX_ENTRIES: usize = 50_000;
@@ -22,7 +25,7 @@ pub(crate) struct SitemapLimits {
 struct SitemapShard {
     number: usize,
     query_value: String,
-    entries: Vec<String>,
+    path_range: Range<usize>,
     byte_len: usize,
 }
 
@@ -56,6 +59,130 @@ pub(crate) enum SitemapRenderError {
     NoRepresentableUrls,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SitemapCacheKey {
+    generation_id: String,
+    origin: String,
+}
+
+impl SitemapCacheKey {
+    pub(crate) fn new(generation_id: String, origin: String) -> Self {
+        Self {
+            generation_id,
+            origin,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SitemapCache {
+    inner: Arc<Mutex<Option<CachedSitemapPlan>>>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedSitemapPlan {
+    key: SitemapCacheKey,
+    plan: Arc<SitemapPlan>,
+}
+
+impl SitemapCache {
+    pub(crate) fn get_or_try_insert_with<E>(
+        &self,
+        key: SitemapCacheKey,
+        build: impl FnOnce() -> Result<SitemapPlan, E>,
+    ) -> Result<Arc<SitemapPlan>, E> {
+        let mut cached = self
+            .inner
+            .lock()
+            .expect("sitemap cache mutex should not be poisoned");
+
+        if let Some(cached) = cached.as_ref()
+            && cached.key == key
+        {
+            return Ok(Arc::clone(&cached.plan));
+        }
+
+        let plan = Arc::new(build()?);
+        *cached = Some(CachedSitemapPlan {
+            key,
+            plan: Arc::clone(&plan),
+        });
+
+        Ok(plan)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SitemapPlan {
+    origin: String,
+    paths: Vec<String>,
+    shards: Vec<SitemapShard>,
+    limits: SitemapLimits,
+}
+
+impl SitemapPlan {
+    pub(crate) fn new(
+        origin: String,
+        mut paths: Vec<String>,
+        limits: SitemapLimits,
+    ) -> Result<Self, SitemapRenderError> {
+        paths.sort();
+        paths.dedup();
+        let paths = representable_sitemap_paths(&origin, paths, limits)?;
+        let shards = shard_sitemap_paths(&origin, &paths, limits)?;
+
+        Ok(Self {
+            origin,
+            paths,
+            shards,
+            limits,
+        })
+    }
+
+    pub(crate) fn render(
+        &self,
+        raw_query: Option<&str>,
+    ) -> Result<SitemapDocument, SitemapRenderError> {
+        let query = parse_sitemap_query(raw_query).map_err(SitemapRenderError::MalformedQuery)?;
+
+        let sitemap_index = if self.shards.len() > 1 {
+            Some(render_sitemap_index(
+                &self.origin,
+                &self.shards,
+                self.limits,
+            )?)
+        } else {
+            None
+        };
+
+        match query {
+            SitemapQuery::EntryPoint if self.shards.len() == 1 => Ok(SitemapDocument::Urlset(
+                self.render_urlset_for_shard(&self.shards[0]),
+            )),
+            SitemapQuery::EntryPoint => Ok(SitemapDocument::Index(
+                sitemap_index.expect("multi-shard sitemap index is rendered"),
+            )),
+            SitemapQuery::Shard(_) if self.shards.len() <= 1 => {
+                Err(SitemapRenderError::ShardNotAvailable)
+            }
+            SitemapQuery::Shard(number) => self
+                .shards
+                .iter()
+                .find(|shard| shard.number == number)
+                .map(|shard| SitemapDocument::Urlset(self.render_urlset_for_shard(shard)))
+                .ok_or(SitemapRenderError::ShardOutOfRange),
+        }
+    }
+
+    fn render_urlset_for_shard(&self, shard: &SitemapShard) -> String {
+        render_urlset_from_paths(
+            &self.origin,
+            &self.paths[shard.path_range.clone()],
+            shard.byte_len,
+        )
+    }
+}
+
 pub(crate) fn protocol_sitemap_limits() -> SitemapLimits {
     SitemapLimits {
         max_urlset_urls: MAX_SITEMAP_URLS,
@@ -65,37 +192,19 @@ pub(crate) fn protocol_sitemap_limits() -> SitemapLimits {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn render_sitemap_entrypoint(
     origin: &str,
-    mut paths: Vec<String>,
+    paths: Vec<String>,
     raw_query: Option<&str>,
     limits: SitemapLimits,
 ) -> Result<SitemapDocument, SitemapRenderError> {
-    let query = parse_sitemap_query(raw_query).map_err(SitemapRenderError::MalformedQuery)?;
-    paths.sort();
-    paths.dedup();
+    let plan = SitemapPlan::new(origin.to_owned(), paths, limits)?;
+    plan.render(raw_query)
+}
 
-    let shards = shard_sitemap_paths(origin, paths, limits)?;
-    let sitemap_index = if shards.len() > 1 {
-        Some(render_sitemap_index(origin, &shards, limits)?)
-    } else {
-        None
-    };
-
-    match query {
-        SitemapQuery::EntryPoint if shards.len() == 1 => Ok(SitemapDocument::Urlset(
-            render_urlset_from_entries(&shards[0].entries),
-        )),
-        SitemapQuery::EntryPoint => Ok(SitemapDocument::Index(
-            sitemap_index.expect("multi-shard sitemap index is rendered"),
-        )),
-        SitemapQuery::Shard(_) if shards.len() <= 1 => Err(SitemapRenderError::ShardNotAvailable),
-        SitemapQuery::Shard(number) => shards
-            .iter()
-            .find(|shard| shard.number == number)
-            .map(|shard| SitemapDocument::Urlset(render_urlset_from_entries(&shard.entries)))
-            .ok_or(SitemapRenderError::ShardOutOfRange),
-    }
+pub(crate) fn validate_sitemap_query(raw_query: Option<&str>) -> Result<(), SitemapQueryError> {
+    parse_sitemap_query(raw_query).map(|_| ())
 }
 
 fn parse_sitemap_query(raw_query: Option<&str>) -> Result<SitemapQuery, SitemapQueryError> {
@@ -154,6 +263,7 @@ fn sitemap_shard_location_path_and_query(number: usize) -> Option<String> {
         .map(|value| format!("/sitemap.xml?{SITEMAP_SHARD_QUERY_PARAM}={value}"))
 }
 
+#[cfg(test)]
 fn render_url_entry(origin: &str, path: &str) -> String {
     render_loc_entry("url", origin, path)
 }
@@ -165,33 +275,73 @@ fn render_index_entry(origin: &str, shard_number: usize) -> Option<String> {
 }
 
 fn render_loc_entry(element: &str, origin: &str, path: &str) -> String {
-    let url = format!("{origin}{path}");
-    let loc = html_escape::encode_text(&url);
-
-    format!("<{element}><loc>{loc}</loc></{element}>")
+    let mut rendered = String::with_capacity(render_loc_entry_len(element, origin, path));
+    push_loc_entry(&mut rendered, element, origin, path);
+    rendered
 }
 
+fn render_loc_entry_len(element: &str, origin: &str, path: &str) -> usize {
+    (2 * element.len()) + 16 + encoded_text_len(origin) + encoded_text_len(path)
+}
+
+fn encoded_text_len(value: &str) -> usize {
+    value.bytes().fold(0, |len, byte| {
+        len + match byte {
+            b'&' => "&amp;".len(),
+            b'<' => "&lt;".len(),
+            b'>' => "&gt;".len(),
+            _ => 1,
+        }
+    })
+}
+
+fn push_loc_entry(output: &mut String, element: &str, origin: &str, path: &str) {
+    output.push('<');
+    output.push_str(element);
+    output.push_str("><loc>");
+    let url = format!("{origin}{path}");
+    html_escape::encode_text_to_string(&url, output);
+    output.push_str("</loc></");
+    output.push_str(element);
+    output.push('>');
+}
+
+#[cfg(test)]
 fn render_urlset_from_entries(entries: &[String]) -> String {
-    format!(
-        "{}{}{}",
-        urlset_prefix(),
-        entries.iter().map(String::as_str).collect::<String>(),
-        SITEMAP_URLSET_CLOSE
-    )
+    let entries_len = entries.iter().map(String::len).sum();
+    let mut rendered = String::with_capacity(urlset_document_len(entries_len));
+    rendered.push_str(&urlset_prefix());
+    for entry in entries {
+        rendered.push_str(entry);
+    }
+    rendered.push_str(SITEMAP_URLSET_CLOSE);
+    rendered
+}
+
+fn render_urlset_from_paths(origin: &str, paths: &[String], byte_len: usize) -> String {
+    let mut rendered = String::with_capacity(byte_len);
+    rendered.push_str(&urlset_prefix());
+    for path in paths {
+        push_loc_entry(&mut rendered, "url", origin, path);
+    }
+    rendered.push_str(SITEMAP_URLSET_CLOSE);
+    rendered
 }
 
 fn render_sitemap_index_from_entries(entries: &[String]) -> String {
-    format!(
-        "{}{}{}",
-        sitemap_index_prefix(),
-        entries.iter().map(String::as_str).collect::<String>(),
-        SITEMAP_INDEX_CLOSE
-    )
+    let entries_len = entries.iter().map(String::len).sum();
+    let mut rendered = String::with_capacity(sitemap_index_document_len(entries_len));
+    rendered.push_str(&sitemap_index_prefix());
+    for entry in entries {
+        rendered.push_str(entry);
+    }
+    rendered.push_str(SITEMAP_INDEX_CLOSE);
+    rendered
 }
 
 fn shard_sitemap_paths(
     origin: &str,
-    paths: Vec<String>,
+    paths: &[String],
     limits: SitemapLimits,
 ) -> Result<Vec<SitemapShard>, SitemapRenderError> {
     if limits.max_urlset_urls == 0 || urlset_document_len(0) > limits.max_urlset_bytes {
@@ -199,46 +349,30 @@ fn shard_sitemap_paths(
     }
 
     let mut shards = Vec::new();
-    let mut entries = Vec::new();
+    let mut shard_start = 0;
+    let mut entries_count = 0;
     let mut entries_len = 0;
-    let mut skipped_entries = 0;
 
-    for path in paths {
-        let entry = render_url_entry(origin, &path);
-        let entry_len = entry.len();
+    for (path_index, path) in paths.iter().enumerate() {
+        let entry_len = render_loc_entry_len("url", origin, path);
 
-        if urlset_document_len(entry_len) > limits.max_urlset_bytes {
-            skipped_entries += 1;
-            tracing::warn!(
-                path = %path,
-                entry_bytes = entry_len,
-                max_urlset_bytes = limits.max_urlset_bytes,
-                "skipping sitemap URL entry that cannot fit in one sitemap document"
-            );
-            continue;
-        }
-
-        let next_count = entries.len() + 1;
+        let next_count = entries_count + 1;
         let next_len = urlset_document_len(entries_len + entry_len);
-        if !entries.is_empty()
+        if entries_count > 0
             && (next_count > limits.max_urlset_urls || next_len > limits.max_urlset_bytes)
         {
-            push_sitemap_shard(&mut shards, &mut entries, &mut entries_len)?;
+            push_sitemap_shard(&mut shards, shard_start..path_index, entries_len)?;
+            shard_start = path_index;
+            entries_count = 0;
+            entries_len = 0;
         }
 
+        entries_count += 1;
         entries_len += entry_len;
-        entries.push(entry);
     }
 
-    if !entries.is_empty() {
-        push_sitemap_shard(&mut shards, &mut entries, &mut entries_len)?;
-    }
-
-    if skipped_entries > 0 {
-        tracing::warn!(
-            skipped_entries,
-            "skipped sitemap URL entries that exceeded sitemap document size limits"
-        );
+    if entries_count > 0 {
+        push_sitemap_shard(&mut shards, shard_start..paths.len(), entries_len)?;
     }
 
     if shards.is_empty() {
@@ -248,10 +382,49 @@ fn shard_sitemap_paths(
     Ok(shards)
 }
 
+fn representable_sitemap_paths(
+    origin: &str,
+    mut paths: Vec<String>,
+    limits: SitemapLimits,
+) -> Result<Vec<String>, SitemapRenderError> {
+    if limits.max_urlset_urls == 0 || urlset_document_len(0) > limits.max_urlset_bytes {
+        return Err(SitemapRenderError::NoRepresentableUrls);
+    }
+
+    let mut skipped_entries = 0;
+    paths.retain(|path| {
+        let entry_len = render_loc_entry_len("url", origin, path);
+        let fits = urlset_document_len(entry_len) <= limits.max_urlset_bytes;
+        if !fits {
+            skipped_entries += 1;
+            tracing::warn!(
+                path = %path,
+                entry_bytes = entry_len,
+                max_urlset_bytes = limits.max_urlset_bytes,
+                "skipping sitemap URL entry that cannot fit in one sitemap document"
+            );
+        }
+        fits
+    });
+
+    if skipped_entries > 0 {
+        tracing::warn!(
+            skipped_entries,
+            "skipped sitemap URL entries that exceeded sitemap document size limits"
+        );
+    }
+
+    if paths.is_empty() {
+        return Err(SitemapRenderError::NoRepresentableUrls);
+    }
+
+    Ok(paths)
+}
+
 fn push_sitemap_shard(
     shards: &mut Vec<SitemapShard>,
-    entries: &mut Vec<String>,
-    entries_len: &mut usize,
+    path_range: Range<usize>,
+    entries_len: usize,
 ) -> Result<(), SitemapRenderError> {
     let number = shards.len() + 1;
     let Some(query_value) = sitemap_shard_query_value(number) else {
@@ -261,10 +434,9 @@ fn push_sitemap_shard(
     shards.push(SitemapShard {
         number,
         query_value,
-        entries: std::mem::take(entries),
-        byte_len: urlset_document_len(*entries_len),
+        path_range,
+        byte_len: urlset_document_len(entries_len),
     });
-    *entries_len = 0;
 
     Ok(())
 }
@@ -398,9 +570,10 @@ mod tests {
 
     #[test]
     fn shard_sitemap_paths_splits_by_url_count() {
+        let path_values = paths(&["/", "/a", "/b"]);
         let shards = shard_sitemap_paths(
             ORIGIN,
-            paths(&["/", "/a", "/b"]),
+            &path_values,
             limits(1, 1_000_000, 50_000, 1_000_000),
         )
         .unwrap();
@@ -418,9 +591,10 @@ mod tests {
         let one_entry_len = render_urlset_from_entries(std::slice::from_ref(&first)).len();
         let two_entry_len = render_urlset_from_entries(&[first, second]).len();
 
+        let path_values = paths(&["/a", "/b"]);
         let shards = shard_sitemap_paths(
             ORIGIN,
-            paths(&["/a", "/b"]),
+            &path_values,
             limits(50_000, two_entry_len - 1, 50_000, 1_000_000),
         )
         .unwrap();
@@ -447,8 +621,13 @@ mod tests {
 
     #[test]
     fn byte_accounting_matches_rendered_urlset_length() {
-        let shards = shard_sitemap_paths(ORIGIN, paths(&["/a", "/b"]), generous_limits()).unwrap();
-        let rendered = render_urlset_from_entries(&shards[0].entries);
+        let path_values = paths(&["/a", "/b"]);
+        let shards = shard_sitemap_paths(ORIGIN, &path_values, generous_limits()).unwrap();
+        let rendered = render_urlset_from_paths(
+            ORIGIN,
+            &path_values[shards[0].path_range.clone()],
+            shards[0].byte_len,
+        );
 
         assert_eq!(shards[0].byte_len, rendered.len());
     }
@@ -458,13 +637,15 @@ mod tests {
         let short_entry = render_url_entry(ORIGIN, "/ok");
         let short_document_len =
             render_urlset_from_entries(std::slice::from_ref(&short_entry)).len();
-        let shards = shard_sitemap_paths(
-            ORIGIN,
-            paths(&["/ok", "/this-path-is-too-long-to-fit"]),
-            limits(50_000, short_document_len, 50_000, 1_000_000),
-        )
-        .unwrap();
-        let rendered = render_urlset_from_entries(&shards[0].entries);
+        let rendered = document_body(
+            render_sitemap_entrypoint(
+                ORIGIN,
+                paths(&["/ok", "/this-path-is-too-long-to-fit"]),
+                None,
+                limits(50_000, short_document_len, 50_000, 1_000_000),
+            )
+            .unwrap(),
+        );
 
         assert!(rendered.contains("/ok"));
         assert!(!rendered.contains("this-path-is-too-long"));
@@ -472,34 +653,34 @@ mod tests {
 
     #[test]
     fn all_skipped_input_returns_no_representable_urls() {
-        assert_eq!(
-            shard_sitemap_paths(
-                ORIGIN,
+        assert!(matches!(
+            SitemapPlan::new(
+                ORIGIN.to_owned(),
                 paths(&["/too-long"]),
                 limits(50_000, urlset_document_len(0), 50_000, 1_000_000),
             ),
             Err(SitemapRenderError::NoRepresentableUrls)
-        );
+        ));
     }
 
     #[test]
     fn impossible_urlset_limits_return_no_representable_urls() {
-        assert_eq!(
-            shard_sitemap_paths(
-                ORIGIN,
+        assert!(matches!(
+            SitemapPlan::new(
+                ORIGIN.to_owned(),
                 paths(&["/"]),
                 limits(0, 1_000_000, 50_000, 1_000_000)
             ),
             Err(SitemapRenderError::NoRepresentableUrls)
-        );
-        assert_eq!(
-            shard_sitemap_paths(
-                ORIGIN,
+        ));
+        assert!(matches!(
+            SitemapPlan::new(
+                ORIGIN.to_owned(),
                 paths(&["/"]),
                 limits(50_000, urlset_document_len(0) - 1, 50_000, 1_000_000),
             ),
             Err(SitemapRenderError::NoRepresentableUrls)
-        );
+        ));
     }
 
     #[test]

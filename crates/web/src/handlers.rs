@@ -27,7 +27,8 @@ use crate::request::{
 use crate::robots;
 use crate::scripts::datastar_script;
 use crate::sitemap::{
-    SitemapDocument, SitemapRenderError, protocol_sitemap_limits, render_sitemap_entrypoint,
+    SitemapCacheKey, SitemapDocument, SitemapPlan, SitemapRenderError, protocol_sitemap_limits,
+    validate_sitemap_query,
 };
 use crate::templates;
 use crate::templates::layout::{
@@ -79,43 +80,61 @@ pub async fn sitemap_xml(State(state): State<AppState>, headers: HeaderMap, uri:
         return sitemaps_not_found().await;
     }
 
+    let raw_query = uri.query().map(str::to_owned);
+    if validate_sitemap_query(raw_query.as_deref()).is_err() {
+        return sitemaps_not_found().await;
+    }
+
     let urls = page_urls(state.config.as_ref(), &headers, &uri);
     let generation = RequestGeneration::reconcile(&state);
-    let snapshot = generation.snapshot();
+    let generation_id = generation.generation_id().to_owned();
+    let snapshot = generation.snapshot().clone();
+    let cache_key = SitemapCacheKey::new(generation_id, urls.origin.clone());
+    let config = state.config.clone();
+    let search = state.search.clone();
+    let sitemap_cache = state.sitemap_cache.clone();
+    let origin = urls.origin;
 
-    let mut paths = vec![canonical_home_path()];
-    if let Ok(candidates) = state.search.sitemap_candidates(snapshot) {
-        paths.extend(candidates.iter().map(sitemap_candidate_path));
-    }
-    for (source_id, source) in &state.config.sources {
-        let Some(ref_id) = source.default_ref.as_deref() else {
-            continue;
-        };
-        if state
-            .search
-            .source_has_indexable_entries(snapshot, source_id, ref_id)
-            .unwrap_or(false)
-        {
-            paths.push(canonical_source_path(&state.config, source_id, ref_id));
-        }
-    }
+    let render_result = tokio::task::spawn_blocking(move || {
+        let plan = sitemap_cache.get_or_try_insert_with(cache_key, || {
+            let mut paths = vec![canonical_home_path()];
+            if let Ok(candidates) = search.sitemap_candidates(&snapshot) {
+                paths.extend(candidates.iter().map(sitemap_candidate_path));
+            }
+            for (source_id, source) in &config.sources {
+                let Some(ref_id) = source.default_ref.as_deref() else {
+                    continue;
+                };
+                if search
+                    .source_has_indexable_entries(&snapshot, source_id, ref_id)
+                    .unwrap_or(false)
+                {
+                    paths.push(canonical_source_path(&config, source_id, ref_id));
+                }
+            }
 
-    let body = match render_sitemap_entrypoint(
-        &urls.origin,
-        paths,
-        uri.query(),
-        protocol_sitemap_limits(),
-    ) {
-        Ok(SitemapDocument::Urlset(body) | SitemapDocument::Index(body)) => body,
-        Err(
+            SitemapPlan::new(origin, paths, protocol_sitemap_limits())
+        })?;
+
+        plan.render(raw_query.as_deref())
+    })
+    .await;
+
+    let body = match render_result {
+        Ok(Ok(SitemapDocument::Urlset(body) | SitemapDocument::Index(body))) => body,
+        Ok(Err(
             SitemapRenderError::MalformedQuery(_)
             | SitemapRenderError::ShardNotAvailable
             | SitemapRenderError::ShardOutOfRange,
-        ) => return sitemaps_not_found().await,
-        Err(
+        )) => return sitemaps_not_found().await,
+        Ok(Err(
             error @ (SitemapRenderError::IndexTooLarge | SitemapRenderError::NoRepresentableUrls),
-        ) => {
+        )) => {
             tracing::error!(?error, "failed to render protocol-compliant sitemap");
+            return sitemap_internal_error();
+        }
+        Err(error) => {
+            tracing::error!(%error, "sitemap rendering task failed");
             return sitemap_internal_error();
         }
     };

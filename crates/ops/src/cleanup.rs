@@ -930,6 +930,7 @@ async fn run_nix_cleanup(
     fallback_args: &[&str],
 ) -> NixCleanupOutcome {
     let primary_command = command_display("nix", primary_args);
+    tracing::info!(operation, command = %primary_command, "starting Nix store cleanup");
 
     let primary = match Command::new("nix").args(primary_args).output().await {
         Ok(output) => output,
@@ -975,6 +976,8 @@ async fn run_nix_cleanup(
     }
 
     let fallback_command = command_display("nix-store", fallback_args);
+    tracing::info!(operation, command = %fallback_command, "retrying Nix store cleanup with legacy command");
+
     match Command::new("nix-store").args(fallback_args).output().await {
         Ok(output) => NixCleanupOutcome {
             operation,
