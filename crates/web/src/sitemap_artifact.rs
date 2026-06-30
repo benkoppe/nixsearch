@@ -18,7 +18,7 @@ use nixsearch_service::{SearchService, ServedGenerationSnapshot};
 use crate::origin::configured_public_origin;
 use crate::sitemap::{
     SitemapPlan, SitemapRenderError, SitemapWriteError, protocol_sitemap_limits,
-    sitemap_shard_number_from_query,
+    sitemap_shard_number_from_query, sitemap_shard_query_value,
 };
 use crate::urls::{canonical_home_path, canonical_source_path, sitemap_candidate_path};
 
@@ -256,8 +256,7 @@ fn load_sitemap_artifact(
 }
 
 fn validate_shard_manifest(shard: &SitemapArtifactShardManifest) -> Result<()> {
-    let query = format!("shard={}", shard.query_value);
-    if sitemap_shard_number_from_query(Some(&query)).ok().flatten() != Some(shard.number) {
+    if sitemap_shard_query_value(shard.number).as_deref() != Some(shard.query_value.as_str()) {
         bail!("sitemap artifact shard query value does not match shard number");
     }
 

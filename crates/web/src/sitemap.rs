@@ -5,12 +5,13 @@ const MAX_SITEMAP_URLS: usize = 50_000;
 const MAX_SITEMAP_BYTES: usize = 50 * 1024 * 1024;
 const MAX_SITEMAP_INDEX_ENTRIES: usize = 50_000;
 const MAX_SITEMAP_INDEX_BYTES: usize = 50 * 1024 * 1024;
-const SITEMAP_XML_NAMESPACE: &str = "http://www.sitemaps.org/schemas/sitemap/0.9";
 const SITEMAP_SHARD_QUERY_PARAM: &str = "shard";
+const SITEMAP_SHARD_QUERY_PREFIX: &str = "shard=";
 const SITEMAP_SHARD_WIDTH: usize = 5;
 const SITEMAP_MAX_SHARD_NUMBER: usize = 99_999;
-const SITEMAP_XML_DECLARATION: &str = r#"<?xml version="1.0" encoding="UTF-8"?>"#;
+const SITEMAP_URLSET_PREFIX: &str = r#"<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">"#;
 const SITEMAP_URLSET_CLOSE: &str = "</urlset>";
+const SITEMAP_INDEX_PREFIX: &str = r#"<?xml version="1.0" encoding="UTF-8"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">"#;
 const SITEMAP_INDEX_CLOSE: &str = "</sitemapindex>";
 
 #[derive(Debug, Clone, Copy)]
@@ -232,21 +233,20 @@ fn parse_sitemap_query(raw_query: Option<&str>) -> Result<SitemapQuery, SitemapQ
         return Ok(SitemapQuery::EntryPoint);
     };
 
-    let shard_prefix = format!("{SITEMAP_SHARD_QUERY_PARAM}=");
     let shard_count = raw_query
         .split('&')
-        .filter(|part| part.starts_with(&shard_prefix))
+        .filter(|part| part.starts_with(SITEMAP_SHARD_QUERY_PREFIX))
         .count();
 
     if shard_count > 1 {
         return Err(SitemapQueryError::DuplicateShard);
     }
 
-    if raw_query.contains('&') || !raw_query.starts_with(&shard_prefix) {
+    if raw_query.contains('&') || !raw_query.starts_with(SITEMAP_SHARD_QUERY_PREFIX) {
         return Err(SitemapQueryError::UnknownQuery);
     }
 
-    let value = &raw_query[shard_prefix.len()..];
+    let value = &raw_query[SITEMAP_SHARD_QUERY_PREFIX.len()..];
     let number = parse_sitemap_shard_query_value(value)?;
 
     Ok(SitemapQuery::Shard(number))
@@ -272,7 +272,7 @@ fn parse_sitemap_shard_query_value(value: &str) -> Result<usize, SitemapQueryErr
     Ok(number)
 }
 
-fn sitemap_shard_query_value(number: usize) -> Option<String> {
+pub(crate) fn sitemap_shard_query_value(number: usize) -> Option<String> {
     (1..=SITEMAP_MAX_SHARD_NUMBER)
         .contains(&number)
         .then(|| format!("{number:0SITEMAP_SHARD_WIDTH$}"))
@@ -348,7 +348,7 @@ fn write_loc_entry<W: Write>(
 fn render_urlset_from_entries(entries: &[String]) -> String {
     let entries_len = entries.iter().map(String::len).sum();
     let mut rendered = String::with_capacity(urlset_document_len(entries_len));
-    rendered.push_str(&urlset_prefix());
+    rendered.push_str(SITEMAP_URLSET_PREFIX);
     for entry in entries {
         rendered.push_str(entry);
     }
@@ -359,7 +359,7 @@ fn render_urlset_from_entries(entries: &[String]) -> String {
 #[cfg(test)]
 fn render_urlset_from_paths(origin: &str, paths: &[String], byte_len: usize) -> String {
     let mut rendered = String::with_capacity(byte_len);
-    rendered.push_str(&urlset_prefix());
+    rendered.push_str(SITEMAP_URLSET_PREFIX);
     for path in paths {
         push_loc_entry(&mut rendered, "url", origin, path);
     }
@@ -372,7 +372,7 @@ fn write_urlset_from_paths<W: Write>(
     paths: &[String],
     output: &mut W,
 ) -> io::Result<()> {
-    output.write_all(urlset_prefix().as_bytes())?;
+    output.write_all(SITEMAP_URLSET_PREFIX.as_bytes())?;
     for path in paths {
         write_loc_entry(output, "url", origin, path)?;
     }
@@ -384,7 +384,7 @@ fn write_urlset_from_paths<W: Write>(
 fn render_sitemap_index_from_entries(entries: &[String]) -> String {
     let entries_len = entries.iter().map(String::len).sum();
     let mut rendered = String::with_capacity(sitemap_index_document_len(entries_len));
-    rendered.push_str(&sitemap_index_prefix());
+    rendered.push_str(SITEMAP_INDEX_PREFIX);
     for entry in entries {
         rendered.push_str(entry);
     }
@@ -499,7 +499,7 @@ fn write_sitemap_index<W: Write>(
     shards: &[SitemapShard],
     output: &mut W,
 ) -> io::Result<()> {
-    output.write_all(sitemap_index_prefix().as_bytes())?;
+    output.write_all(SITEMAP_INDEX_PREFIX.as_bytes())?;
     for shard in shards {
         let path = sitemap_shard_location_path_and_query(shard.number).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "invalid sitemap shard number")
@@ -547,20 +547,12 @@ fn render_sitemap_index_from_shards(
     Ok(render_sitemap_index_from_entries(&entries))
 }
 
-fn urlset_prefix() -> String {
-    format!(r#"{SITEMAP_XML_DECLARATION}<urlset xmlns="{SITEMAP_XML_NAMESPACE}">"#)
-}
-
-fn sitemap_index_prefix() -> String {
-    format!(r#"{SITEMAP_XML_DECLARATION}<sitemapindex xmlns="{SITEMAP_XML_NAMESPACE}">"#)
-}
-
 fn urlset_document_len(entries_len: usize) -> usize {
-    urlset_prefix().len() + entries_len + SITEMAP_URLSET_CLOSE.len()
+    SITEMAP_URLSET_PREFIX.len() + entries_len + SITEMAP_URLSET_CLOSE.len()
 }
 
 fn sitemap_index_document_len(entries_len: usize) -> usize {
-    sitemap_index_prefix().len() + entries_len + SITEMAP_INDEX_CLOSE.len()
+    SITEMAP_INDEX_PREFIX.len() + entries_len + SITEMAP_INDEX_CLOSE.len()
 }
 
 #[cfg(test)]
