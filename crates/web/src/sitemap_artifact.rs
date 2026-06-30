@@ -344,16 +344,20 @@ fn build_sitemap_artifact_in_temp(
     temp_dir: &Utf8Path,
 ) -> Result<SitemapArtifact> {
     let mut paths = vec![canonical_home_path()];
-    if let Ok(candidates) = search.sitemap_candidates(snapshot) {
-        paths.extend(candidates.iter().map(sitemap_candidate_path));
-    }
+    let candidates = search
+        .sitemap_candidates(snapshot)
+        .context("failed to collect sitemap candidates")?;
+    paths.extend(candidates.iter().map(sitemap_candidate_path));
+
     for (source_id, source) in &config.sources {
         let Some(ref_id) = source.default_ref.as_deref() else {
             continue;
         };
         if search
             .source_has_indexable_entries(snapshot, source_id, ref_id)
-            .unwrap_or(false)
+            .with_context(|| {
+                format!("failed to check indexable entries for source {source_id} ref {ref_id}")
+            })?
         {
             paths.push(canonical_source_path(config, source_id, ref_id));
         }

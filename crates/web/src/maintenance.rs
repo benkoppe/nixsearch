@@ -120,8 +120,13 @@ async fn run_loop(
         };
 
         if reloaded {
-            refresh_sitemap_artifact(&config, search.clone(), &sitemap_artifacts).await;
-            run_cleanup_after_reload(&config).await;
+            if refresh_sitemap_artifact(&config, search.clone(), &sitemap_artifacts).await {
+                run_cleanup_after_reload(&config).await;
+            } else {
+                tracing::warn!(
+                    "skipping post-reload cleanup to preserve previous sitemap artifact"
+                );
+            }
         }
 
         if !modes.scheduled_enabled && !modes.recovery_enabled {
@@ -373,9 +378,9 @@ async fn refresh_sitemap_artifact(
     config: &Arc<AppConfig>,
     search: SearchService,
     sitemap_artifacts: &SitemapArtifacts,
-) {
+) -> bool {
     if !config.public_seo_enabled() {
-        return;
+        return true;
     }
 
     match sitemap_artifact::ensure_current_sitemap_artifact(Arc::clone(config), search).await {
@@ -386,11 +391,13 @@ async fn refresh_sitemap_artifact(
                 "prepared sitemap artifact for served generation"
             );
             sitemap_artifacts.set_current(artifact);
+            true
         }
         Err(error) => {
             tracing::error!(
                 "failed to prepare sitemap artifact for served generation; continuing to serve previous sitemap artifact: {error:#}"
             );
+            false
         }
     }
 }

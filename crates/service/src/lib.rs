@@ -64,6 +64,7 @@ impl LazySeoFacts {
 
     fn get_or_load(
         &self,
+        config: &AppConfig,
         generation: &PublishedGeneration,
         index: &SearchIndex,
     ) -> SeoFactsResult<Arc<IndexVerifiedSeoFacts>> {
@@ -72,7 +73,7 @@ impl LazySeoFacts {
         }
 
         let loaded = self
-            .load(generation, index)
+            .load(config, generation, index)
             .map(Arc::new)
             .map_err(|error| {
                 tracing::warn!(
@@ -88,12 +89,14 @@ impl LazySeoFacts {
 
     fn load(
         &self,
+        config: &AppConfig,
         generation: &PublishedGeneration,
         index: &SearchIndex,
     ) -> Result<IndexVerifiedSeoFacts> {
         if self.integrity_attested {
-            let sidecar = SeoFactsArtifact::read_manifest_checked(generation)?;
-            return Ok(IndexVerifiedSeoFacts::from_integrity_attested_manifest_checked(sidecar));
+            let validator = GenerationValidator::new(IndexStore::new(&config.data.index_dir));
+            let sidecar = validator.read_integrity_attested_seo_facts(generation)?;
+            return Ok(IndexVerifiedSeoFacts::from_integrity_attested(sidecar));
         }
 
         SeoFactsArtifact::read_index_verified(generation, index)
@@ -824,7 +827,11 @@ impl SearchService {
     ) -> SeoFactsResult<Arc<IndexVerifiedSeoFacts>> {
         let seo_facts = snapshot.seo_facts.as_ref().ok_or(SeoFactsUnavailable)?;
 
-        seo_facts.get_or_load(snapshot.published_generation(), &snapshot.index)
+        seo_facts.get_or_load(
+            &self.config,
+            snapshot.published_generation(),
+            &snapshot.index,
+        )
     }
 
     fn ref_allowed_to_be_indexed(&self, source: &SourceConfig, ref_id: &str) -> bool {
