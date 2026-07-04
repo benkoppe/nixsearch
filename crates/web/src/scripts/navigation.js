@@ -836,11 +836,21 @@
 
   function syncModalState() {
     const dialog = document.getElementById("entry-modal");
+    const root = document.documentElement;
+    const open = !!dialog && dialog.open;
 
-    document.documentElement.classList.toggle(
-      "modal-open",
-      !!dialog && dialog.open,
-    );
+    if (open) {
+      if (!root.classList.contains("modal-open")) {
+        root.classList.toggle(
+          "modal-scrollbar-gutter",
+          window.innerWidth > root.clientWidth,
+        );
+      }
+      root.classList.add("modal-open");
+    } else {
+      root.classList.remove("modal-open");
+      root.classList.remove("modal-scrollbar-gutter");
+    }
 
     if (dialog && !dialog.dataset.modalStateBound) {
       dialog.dataset.modalStateBound = "true";
@@ -996,7 +1006,19 @@
     try {
       syncModalState();
     } catch {
-      document.documentElement.classList.toggle("modal-open", isEntryModalOpen());
+      const root = document.documentElement;
+      if (isEntryModalOpen()) {
+        if (!root.classList.contains("modal-open")) {
+          root.classList.toggle(
+            "modal-scrollbar-gutter",
+            window.innerWidth > root.clientWidth,
+          );
+        }
+        root.classList.add("modal-open");
+      } else {
+        root.classList.remove("modal-open");
+        root.classList.remove("modal-scrollbar-gutter");
+      }
     }
   }
 
@@ -1205,11 +1227,13 @@
       const container = ensureEntryModalContainer();
       container.innerHTML = "";
       document.documentElement.classList.remove("modal-open");
+      document.documentElement.classList.remove("modal-scrollbar-gutter");
 
       try {
         syncModalState();
       } catch {
         document.documentElement.classList.remove("modal-open");
+        document.documentElement.classList.remove("modal-scrollbar-gutter");
       }
 
       try {

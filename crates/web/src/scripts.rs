@@ -159,6 +159,16 @@ mod tests {
         assert!(script.contains("optimisticallyRemoveEntryModal()"));
         assert!(script.contains("container.innerHTML = \"\";"));
         assert!(script.contains("classList.remove(\"modal-open\")"));
+        assert!(script.contains("classList.remove(\"modal-scrollbar-gutter\")"));
+    }
+
+    #[test]
+    fn navigation_script_reserves_modal_scrollbar_gutter_conditionally() {
+        let script = navigation_script();
+
+        assert!(script.contains("window.innerWidth > root.clientWidth"));
+        assert!(script.contains("modal-scrollbar-gutter"));
+        assert!(script.contains("if (!root.classList.contains(\"modal-open\"))"));
     }
 
     #[test]
@@ -345,7 +355,10 @@ mod tests {
 
     #[test]
     fn dialog_reconcile_script_loads_asset() {
-        assert!(dialog_reconcile_script().contains("entry-modal"));
-        assert!(dialog_reconcile_script().contains("showModal"));
+        let script = dialog_reconcile_script();
+
+        assert!(script.contains("entry-modal"));
+        assert!(script.contains("showModal"));
+        assert!(script.contains("modal-scrollbar-gutter"));
     }
 }

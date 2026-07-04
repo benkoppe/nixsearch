@@ -64,6 +64,12 @@ html.modal-open {
   overflow: hidden;
 }
 
+html.modal-open.modal-scrollbar-gutter {
+  /* Keep the app shell width stable when modal scroll locking removes an
+     existing viewport scrollbar. */
+  scrollbar-gutter: stable;
+}
+
 /* ─── Sticky header ─── */
 
 .header {
