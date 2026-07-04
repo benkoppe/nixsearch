@@ -6,6 +6,8 @@
   const VIRTUAL_REPLACE_LIMIT = PAGE_SIZE * 3;
   const VIRTUAL_JUMP_GAP = PAGE_SIZE * 4;
   const VIRTUAL_JUMP_DELTA = PAGE_SIZE * 3;
+  const MODAL_OPEN_CLASS = "modal-open";
+  const MODAL_SCROLLBAR_GUTTER_CLASS = "modal-scrollbar-gutter";
   let generationId = readGenerationId();
   let generationChanging = false;
   let generationChangeWatchdog = null;
@@ -834,23 +836,32 @@
     document.documentElement.classList.remove("footer-browser-compact");
   }
 
-  function syncModalState() {
-    const dialog = document.getElementById("entry-modal");
+  function hasViewportScrollbar(root = document.documentElement) {
+    return window.innerWidth > root.clientWidth;
+  }
+
+  function applyModalRootState(open) {
     const root = document.documentElement;
-    const open = !!dialog && dialog.open;
 
     if (open) {
-      if (!root.classList.contains("modal-open")) {
+      if (!root.classList.contains(MODAL_OPEN_CLASS)) {
         root.classList.toggle(
-          "modal-scrollbar-gutter",
-          window.innerWidth > root.clientWidth,
+          MODAL_SCROLLBAR_GUTTER_CLASS,
+          hasViewportScrollbar(root),
         );
       }
-      root.classList.add("modal-open");
+      root.classList.add(MODAL_OPEN_CLASS);
     } else {
-      root.classList.remove("modal-open");
-      root.classList.remove("modal-scrollbar-gutter");
+      root.classList.remove(MODAL_OPEN_CLASS);
+      root.classList.remove(MODAL_SCROLLBAR_GUTTER_CLASS);
     }
+  }
+
+  function syncModalState() {
+    const dialog = document.getElementById("entry-modal");
+    const open = !!dialog && dialog.open;
+
+    applyModalRootState(open);
 
     if (dialog && !dialog.dataset.modalStateBound) {
       dialog.dataset.modalStateBound = "true";
@@ -1006,19 +1017,7 @@
     try {
       syncModalState();
     } catch {
-      const root = document.documentElement;
-      if (isEntryModalOpen()) {
-        if (!root.classList.contains("modal-open")) {
-          root.classList.toggle(
-            "modal-scrollbar-gutter",
-            window.innerWidth > root.clientWidth,
-          );
-        }
-        root.classList.add("modal-open");
-      } else {
-        root.classList.remove("modal-open");
-        root.classList.remove("modal-scrollbar-gutter");
-      }
+      applyModalRootState(isEntryModalOpen());
     }
   }
 
@@ -1226,14 +1225,12 @@
 
       const container = ensureEntryModalContainer();
       container.innerHTML = "";
-      document.documentElement.classList.remove("modal-open");
-      document.documentElement.classList.remove("modal-scrollbar-gutter");
+      applyModalRootState(false);
 
       try {
         syncModalState();
       } catch {
-        document.documentElement.classList.remove("modal-open");
-        document.documentElement.classList.remove("modal-scrollbar-gutter");
+        applyModalRootState(false);
       }
 
       try {

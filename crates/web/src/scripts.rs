@@ -158,17 +158,20 @@ mod tests {
         assert!(script.contains("reconcileSameUrl: true"));
         assert!(script.contains("optimisticallyRemoveEntryModal()"));
         assert!(script.contains("container.innerHTML = \"\";"));
-        assert!(script.contains("classList.remove(\"modal-open\")"));
-        assert!(script.contains("classList.remove(\"modal-scrollbar-gutter\")"));
+        assert!(script.contains("applyModalRootState(false)"));
     }
 
     #[test]
     fn navigation_script_reserves_modal_scrollbar_gutter_conditionally() {
         let script = navigation_script();
 
-        assert!(script.contains("window.innerWidth > root.clientWidth"));
-        assert!(script.contains("modal-scrollbar-gutter"));
-        assert!(script.contains("if (!root.classList.contains(\"modal-open\"))"));
+        assert!(script.contains("const MODAL_OPEN_CLASS = \"modal-open\";"));
+        assert!(script.contains(
+            "const MODAL_SCROLLBAR_GUTTER_CLASS = \"modal-scrollbar-gutter\";"
+        ));
+        assert!(script.contains("function applyModalRootState(open)"));
+        assert!(script.contains("hasViewportScrollbar(root)"));
+        assert!(script.contains("if (!root.classList.contains(MODAL_OPEN_CLASS))"));
     }
 
     #[test]
