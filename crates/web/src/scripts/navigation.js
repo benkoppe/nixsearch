@@ -1225,7 +1225,6 @@
 
       const container = ensureEntryModalContainer();
       container.innerHTML = "";
-      applyModalRootState(false);
 
       try {
         syncModalState();

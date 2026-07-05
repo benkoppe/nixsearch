@@ -10,6 +10,8 @@
   if (window.nixsearchSyncModalState) {
     window.nixsearchSyncModalState();
   } else {
+    // Keep this fallback aligned with applyModalRootState() in navigation.js;
+    // it runs only before the main navigation script is available.
     const root = document.documentElement;
     if (dialog && dialog.open) {
       if (!root.classList.contains("modal-open")) {

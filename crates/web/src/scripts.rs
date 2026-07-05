@@ -172,6 +172,13 @@ mod tests {
         assert!(script.contains("function applyModalRootState(open)"));
         assert!(script.contains("hasViewportScrollbar(root)"));
         assert!(script.contains("if (!root.classList.contains(MODAL_OPEN_CLASS))"));
+
+        let apply = script.find("function applyModalRootState(open)").unwrap();
+        let measure = script[apply..].find("hasViewportScrollbar(root)").unwrap();
+        let add_open = script[apply..]
+            .find("root.classList.add(MODAL_OPEN_CLASS)")
+            .unwrap();
+        assert!(measure < add_open);
     }
 
     #[test]
@@ -362,6 +369,14 @@ mod tests {
 
         assert!(script.contains("entry-modal"));
         assert!(script.contains("showModal"));
-        assert!(script.contains("modal-scrollbar-gutter"));
+        assert!(script.contains("window.nixsearchSyncModalState"));
+        assert!(script.contains("window.nixsearchSyncModalState();"));
+        assert!(script.contains("Keep this fallback aligned with applyModalRootState()"));
+        assert!(script.contains("if (!root.classList.contains(\"modal-open\"))"));
+        assert!(script.contains("window.innerWidth > root.clientWidth"));
+        assert!(script.contains("root.classList.add(\"modal-open\")"));
+        assert!(script.contains(
+            "root.classList.remove(\"modal-scrollbar-gutter\")"
+        ));
     }
 }
