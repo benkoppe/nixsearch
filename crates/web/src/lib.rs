@@ -1839,8 +1839,14 @@ mod tests {
             request_body(app, "/fixtures/programs.git.enable?q=git&source=all").await;
 
         assert_eq!(status, StatusCode::OK);
-        assert_no_canonical(&body);
-        assert_no_open_graph(&body);
+        assert_has_canonical(
+            &body,
+            "https://search.example.com/fixtures/programs.git.enable",
+        );
+        assert_og_url(
+            &body,
+            "https://search.example.com/fixtures/programs.git.enable",
+        );
         assert!(body.contains(r#"<script id="initial-history-metadata" type="application/json">"#));
         assert!(body.contains(r#""returnHeadMetadata":{"#));
         assert!(body.contains(r#""returnHeadMetadataUrl":"/?q=git""#));
@@ -2099,8 +2105,11 @@ mod tests {
         assert!(body.contains("for "));
         assert_populated_modal(&body);
         assert_h1_count(&body, 1);
-        assert_no_canonical(&body);
-        assert_has_robots(&body);
+        assert_has_canonical(
+            &body,
+            "https://search.example.com/fixtures/programs.git.enable",
+        );
+        assert_no_robots(&body);
     }
 
     #[tokio::test]
@@ -2233,7 +2242,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_pages_emit_noindex_without_canonical() {
+    async fn all_source_search_pages_emit_noindex_without_canonical() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_options_index(&index_dir);
@@ -2245,6 +2254,35 @@ mod tests {
         assert_no_canonical(&body);
         assert_has_robots(&body);
         assert_no_open_graph(&body);
+    }
+
+    #[tokio::test]
+    async fn clean_named_source_search_page_emits_canonical() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+        let (status, body) = request_body(app, "/fixtures?q=git").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_has_canonical(&body, "https://search.example.com/fixtures?q=git");
+        assert_og_url(&body, "https://search.example.com/fixtures?q=git");
+        assert_no_robots(&body);
+    }
+
+    #[tokio::test]
+    async fn empty_named_source_search_page_emits_noindex_without_canonical() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+        let (status, body) = request_body(app, "/fixtures?q=definitelynotindexed").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_no_canonical(&body);
+        assert_has_robots(&body);
     }
 
     #[tokio::test]
@@ -2262,7 +2300,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn contextual_entry_url_emits_noindex_without_canonical() {
+    async fn paginated_named_source_search_pages_emit_noindex_without_canonical() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+        let (status, body) = request_body(app, "/fixtures?q=git&page=2").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_no_canonical(&body);
+        assert_has_robots(&body);
+    }
+
+    #[tokio::test]
+    async fn contextual_entry_url_canonicalizes_to_clean_entry() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_options_index(&index_dir);
@@ -2270,6 +2322,37 @@ mod tests {
         let app = test_app(app_config_with_public_url(&index_dir));
         let (status, body) =
             request_body(app, "/fixtures/programs.git.enable?q=git&page=2&source=all").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_has_canonical(
+            &body,
+            "https://search.example.com/fixtures/programs.git.enable",
+        );
+        assert_no_robots(&body);
+    }
+
+    #[tokio::test]
+    async fn non_default_ref_search_page_emits_noindex_without_canonical() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_fixture_options_index_for_refs(&index_dir, &[REF_SMALL, REF_STABLE]);
+
+        let app = test_app(multi_ref_app_config_with_public_url(&index_dir));
+        let (status, body) = request_body(app, "/fixtures?q=git&ref=stable").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_no_canonical(&body);
+        assert_has_robots(&body);
+    }
+
+    #[tokio::test]
+    async fn ref_set_search_page_emits_noindex_without_canonical() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_fixture_options_index_for_refs(&index_dir, &[REF_SMALL, REF_STABLE]);
+
+        let app = test_app(multi_ref_app_config_with_public_url(&index_dir));
+        let (status, body) = request_body(app, "/fixtures?q=git&ref_set=single").await;
 
         assert_eq!(status, StatusCode::OK);
         assert_no_canonical(&body);
@@ -2811,8 +2894,10 @@ mod tests {
         assert!(body.contains("entry-modal"));
         assert!(body.contains("nixsearchApplyModalPatch"));
         assert!(body.contains("nixsearchApplyHeadMetadata"));
-        assert!(body.contains(r#""canonicalUrl":null"#));
-        assert!(body.contains(r#""robots":"noindex,follow""#));
+        assert!(body.contains(
+            r#""canonicalUrl":"https://search.example.com/fixtures/programs.git.enable""#
+        ));
+        assert!(body.contains(r#""robots":null"#));
     }
 
     #[tokio::test]
@@ -2864,7 +2949,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn state_events_emits_noindex_head_metadata_for_search_page() {
+    async fn state_events_emits_noindex_head_metadata_for_all_source_search_page() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_options_index(&index_dir);
@@ -2878,6 +2963,23 @@ mod tests {
         assert!(body.contains("nixsearchApplyHeadMetadata"));
         assert!(body.contains(r#""canonicalUrl":null"#));
         assert!(body.contains(r#""robots":"noindex,follow""#));
+    }
+
+    #[tokio::test]
+    async fn state_events_emits_canonical_head_metadata_for_named_source_search_page() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+        let generation_id = current_generation_id(&index_dir);
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+        let uri = with_generation("/-/state/events?url=%2Ffixtures%3Fq%3Dgit", &generation_id);
+        let (status, body) = request_body(app, &uri).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("nixsearchApplyHeadMetadata"));
+        assert!(body.contains(r#""canonicalUrl":"https://search.example.com/fixtures?q=git""#));
+        assert!(body.contains(r#""robots":null"#));
     }
 
     #[tokio::test]

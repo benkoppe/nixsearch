@@ -14,7 +14,10 @@ use crate::request::{
 };
 use crate::robots::ROBOTS_NOINDEX_FOLLOW;
 use crate::source_labels::{source_display_name, source_kind_noun};
-use crate::urls::{canonical_entry_path_for_document, canonical_home_path, canonical_source_path};
+use crate::urls::{
+    canonical_entry_path_for_document, canonical_home_path, canonical_search_path,
+    canonical_source_path,
+};
 
 const DEFAULT_DESCRIPTION: &str = "Search the Nix ecosystem";
 const META_DESCRIPTION_MAX_GRAPHEMES: usize = 160;
@@ -234,10 +237,6 @@ fn page_index_metadata(
         EntryData::Found(entry) => {
             let document = &entry.document;
 
-            if request_has_entry_context(request) {
-                return noindex_metadata();
-            }
-
             if !entry.annotation.unique_within_kind {
                 return noindex_metadata();
             }
@@ -269,7 +268,19 @@ fn page_index_metadata(
         return noindex_metadata();
     }
 
-    if normalized_query(&request.query).is_some() || request.query.page.unwrap_or(1) > 1 {
+    if let Some(q) = normalized_query(&request.query) {
+        return search_index_metadata(
+            state,
+            request,
+            page_state,
+            served_generation,
+            content,
+            page_urls,
+            q,
+        );
+    }
+
+    if request.query.page.unwrap_or(1) > 1 {
         return noindex_metadata();
     }
 
@@ -308,16 +319,54 @@ fn page_index_metadata(
     }
 }
 
-fn request_has_entry_context(request: &PageRequest) -> bool {
-    normalized_query(&request.query).is_some()
-        || request
-            .query
-            .ref_set
-            .as_deref()
-            .and_then(non_empty)
-            .is_some()
-        || request.query.source.is_some()
-        || request.query.page.unwrap_or(1) > 1
+fn search_index_metadata(
+    state: &AppState,
+    request: &PageRequest,
+    page_state: &PageState,
+    served_generation: &ServedGenerationSnapshot,
+    content: MetadataContent<'_>,
+    page_urls: &PageUrls,
+    q: &str,
+) -> IndexMetadata {
+    let MetadataContent::SearchResults(result) = content else {
+        return noindex_metadata();
+    };
+
+    if result.total == 0 || request.query.page.unwrap_or(1) > 1 || request.query.source.is_some() {
+        return noindex_metadata();
+    }
+
+    let PublicRoute::Source { source } = &request.route else {
+        return noindex_metadata();
+    };
+
+    if !matches!(&page_state.source_filter, SourceFilter::Named(named_source) if named_source == source)
+    {
+        return noindex_metadata();
+    }
+
+    let Some(ref_id) = page_state.source_ref.as_deref() else {
+        return noindex_metadata();
+    };
+
+    if !source_uses_default_ref(&state.config, source, ref_id) {
+        return noindex_metadata();
+    }
+
+    source_index_metadata(
+        state
+            .search
+            .source_has_indexable_entries(served_generation, source, ref_id),
+        page_urls.absolute_url(&canonical_search_path(&state.config, source, ref_id, q)),
+    )
+}
+
+fn source_uses_default_ref(config: &AppConfig, source: &str, ref_id: &str) -> bool {
+    config
+        .sources
+        .get(source)
+        .and_then(|source| source.default_ref.as_deref())
+        == Some(ref_id)
 }
 
 fn source_index_metadata(

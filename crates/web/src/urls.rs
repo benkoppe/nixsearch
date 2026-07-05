@@ -45,6 +45,17 @@ pub fn canonical_source_path(config: &AppConfig, source: &str, ref_id: &str) -> 
     )
 }
 
+pub fn canonical_search_path(config: &AppConfig, source: &str, ref_id: &str, q: &str) -> String {
+    search_url_for(
+        Some(source),
+        &PageQuery {
+            q: Some(q.to_owned()),
+            ref_id: ref_id_for_link(config, source, ref_id),
+            ..PageQuery::default()
+        },
+    )
+}
+
 pub fn sitemap_candidate_path(candidate: &SitemapCandidate) -> String {
     entry_url_for(&candidate.source, &candidate.name, &PageQuery::default())
 }
