@@ -25,13 +25,19 @@ pub(crate) fn source_opensearch_xml(
         let source_name = source_display_name(config, source);
         let path = source_path(source);
         render_description(
-            &format!("nixsearch {source_name}"),
+            &source_short_name(source),
             &format!("Search {source_name} with nixsearch"),
             &format!("{origin}{path}"),
             &format!("{origin}{path}?q={{searchTerms}}"),
             &format!("{origin}/favicon.ico"),
         )
     })
+}
+
+fn source_short_name(source: &str) -> String {
+    const MAX_SHORT_NAME_CHARS: usize = 16;
+
+    source.chars().take(MAX_SHORT_NAME_CHARS).collect()
 }
 
 fn render_description(
@@ -98,8 +104,24 @@ mod tests {
 
         let xml = source_opensearch_xml(&config, "https://search.example.com", "fixtures").unwrap();
 
-        assert!(xml.contains("<ShortName>nixsearch Fixtures</ShortName>"));
+        assert!(xml.contains("<ShortName>fixtures</ShortName>"));
+        assert!(xml.contains("<Description>Search Fixtures with nixsearch</Description>"));
         assert!(xml.contains(r#"template="https://search.example.com/fixtures?q={searchTerms}""#));
         assert!(xml.contains("<SearchForm>https://search.example.com/fixtures</SearchForm>"));
+    }
+
+    #[test]
+    fn source_short_name_is_capped_to_opensearch_limit() {
+        assert_eq!(source_short_name("home-manager"), "home-manager");
+        assert_eq!(
+            source_short_name("source-name-longer-than-limit"),
+            "source-name-long"
+        );
+        assert!(
+            source_short_name("source-name-longer-than-limit")
+                .chars()
+                .count()
+                <= 16
+        );
     }
 }

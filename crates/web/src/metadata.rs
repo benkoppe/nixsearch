@@ -357,12 +357,37 @@ fn search_index_metadata(
         return noindex_metadata();
     }
 
+    let canonical_q = canonical_search_query(q);
+
     canonical_metadata(page_urls.absolute_url(&canonical_search_path(
         &state.config,
         source,
         ref_id,
-        q,
+        &canonical_q,
     )))
+}
+
+fn canonical_search_query(query: &str) -> String {
+    let trimmed = query.trim();
+
+    if search_query_uses_structured_syntax(trimmed) {
+        return trimmed.to_owned();
+    }
+
+    trimmed
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn search_query_uses_structured_syntax(query: &str) -> bool {
+    query.chars().any(|ch| {
+        matches!(
+            ch,
+            ':' | '"' | '(' | ')' | '+' | '^' | '~' | '*' | '?' | '\\' | '[' | ']' | '{' | '}'
+        )
+    })
 }
 
 fn search_result_has_public_seo_hit(
@@ -560,8 +585,8 @@ mod tests {
     use crate::request::{PageQuery, PageRequest, PublicRoute, SourceFilter};
 
     use super::{
-        IndexMetadata, META_DESCRIPTION_MAX_GRAPHEMES, description_for, meta_description,
-        noindex_head_metadata, page_metadata, title_for, title_for_entry,
+        IndexMetadata, META_DESCRIPTION_MAX_GRAPHEMES, canonical_search_query, description_for,
+        meta_description, noindex_head_metadata, page_metadata, title_for, title_for_entry,
     };
 
     fn config() -> nixsearch_config::app::AppConfig {
@@ -829,6 +854,17 @@ mod tests {
             ),
             "programs.git.enable · Enable Git support."
         );
+    }
+
+    #[test]
+    fn canonical_search_query_normalizes_simple_free_text() {
+        assert_eq!(canonical_search_query("  Git\tGrep  "), "git grep");
+    }
+
+    #[test]
+    fn canonical_search_query_preserves_structured_query_case() {
+        assert_eq!(canonical_search_query("  name:Git  "), "name:Git");
+        assert_eq!(canonical_search_query("  \"Git Grep\"  "), "\"Git Grep\"");
     }
 
     #[test]

@@ -1134,11 +1134,7 @@ mod tests {
 
         let response = request_test_response(app, "/opensearch.xml?source=fixtures").await;
         assert_eq!(response.status, StatusCode::OK);
-        assert!(
-            response
-                .body
-                .contains("<ShortName>nixsearch Fixtures</ShortName>")
-        );
+        assert!(response.body.contains("<ShortName>fixtures</ShortName>"));
         assert!(
             response
                 .body
@@ -2510,6 +2506,21 @@ mod tests {
 
         let app = test_app(app_config_with_public_url(&index_dir));
         let (status, body) = request_body(app, "/fixtures?q=git").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_has_canonical(&body, "https://search.example.com/fixtures?q=git");
+        assert_og_url(&body, "https://search.example.com/fixtures?q=git");
+        assert_no_robots(&body);
+    }
+
+    #[tokio::test]
+    async fn named_source_search_page_canonicalizes_simple_query_spelling() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+        let (status, body) = request_body(app, "/fixtures?q=%20Git%20").await;
 
         assert_eq!(status, StatusCode::OK);
         assert_has_canonical(&body, "https://search.example.com/fixtures?q=git");
