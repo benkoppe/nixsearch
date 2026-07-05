@@ -90,26 +90,38 @@ impl From<io::Error> for SitemapWriteError {
 pub(crate) struct SitemapPlan {
     origin: String,
     paths: Vec<String>,
+    lastmod: Option<String>,
     shards: Vec<SitemapShard>,
 }
 
 impl SitemapPlan {
+    #[cfg(test)]
     pub(crate) fn new(
         origin: String,
+        paths: Vec<String>,
+        limits: SitemapLimits,
+    ) -> Result<Self, SitemapRenderError> {
+        Self::with_lastmod(origin, paths, None, limits)
+    }
+
+    pub(crate) fn with_lastmod(
+        origin: String,
         mut paths: Vec<String>,
+        lastmod: Option<String>,
         limits: SitemapLimits,
     ) -> Result<Self, SitemapRenderError> {
         paths.sort();
         paths.dedup();
-        let paths = representable_sitemap_paths(&origin, paths, limits)?;
-        let shards = shard_sitemap_paths(&origin, &paths, limits)?;
+        let paths = representable_sitemap_paths(&origin, paths, lastmod.as_deref(), limits)?;
+        let shards = shard_sitemap_paths(&origin, &paths, lastmod.as_deref(), limits)?;
         if shards.len() > 1 {
-            render_sitemap_index(&origin, &shards, limits)?;
+            render_sitemap_index(&origin, &shards, lastmod.as_deref(), limits)?;
         }
 
         Ok(Self {
             origin,
             paths,
+            lastmod,
             shards,
         })
     }
@@ -128,7 +140,7 @@ impl SitemapPlan {
         if self.shards.len() == 1 {
             self.write_urlset_for_shard(&self.shards[0], writer)
         } else {
-            write_sitemap_index(&self.origin, &self.shards, writer)
+            write_sitemap_index(&self.origin, &self.shards, self.lastmod.as_deref(), writer)
         }
     }
 
@@ -162,9 +174,13 @@ impl SitemapPlan {
             SitemapQuery::EntryPoint if self.shards.len() == 1 => Ok(SitemapDocument::Urlset(
                 self.render_urlset_for_shard(&self.shards[0]),
             )),
-            SitemapQuery::EntryPoint => Ok(SitemapDocument::Index(
-                render_sitemap_index_from_shards(&self.origin, &self.shards)?,
-            )),
+            SitemapQuery::EntryPoint => {
+                Ok(SitemapDocument::Index(render_sitemap_index_from_shards(
+                    &self.origin,
+                    &self.shards,
+                    self.lastmod.as_deref(),
+                )?))
+            }
             SitemapQuery::Shard(_) if self.shards.len() <= 1 => {
                 Err(SitemapRenderError::ShardNotAvailable)
             }
@@ -182,6 +198,7 @@ impl SitemapPlan {
         render_urlset_from_paths(
             &self.origin,
             &self.paths[shard.path_range.clone()],
+            self.lastmod.as_deref(),
             shard.byte_len,
         )
     }
@@ -191,7 +208,12 @@ impl SitemapPlan {
         shard: &SitemapShard,
         writer: &mut W,
     ) -> io::Result<()> {
-        write_urlset_from_paths(&self.origin, &self.paths[shard.path_range.clone()], writer)
+        write_urlset_from_paths(
+            &self.origin,
+            &self.paths[shard.path_range.clone()],
+            self.lastmod.as_deref(),
+            writer,
+        )
     }
 }
 
@@ -208,10 +230,16 @@ pub(crate) fn protocol_sitemap_limits() -> SitemapLimits {
 pub(crate) fn render_sitemap_entrypoint(
     origin: &str,
     paths: Vec<String>,
+    lastmod: Option<&str>,
     raw_query: Option<&str>,
     limits: SitemapLimits,
 ) -> Result<SitemapDocument, SitemapRenderError> {
-    let plan = SitemapPlan::new(origin.to_owned(), paths, limits)?;
+    let plan = SitemapPlan::with_lastmod(
+        origin.to_owned(),
+        paths,
+        lastmod.map(ToOwned::to_owned),
+        limits,
+    )?;
     plan.render(raw_query)
 }
 
@@ -284,24 +312,37 @@ fn sitemap_shard_location_path_and_query(number: usize) -> Option<String> {
 }
 
 #[cfg(test)]
-fn render_url_entry(origin: &str, path: &str) -> String {
-    render_loc_entry("url", origin, path)
+fn render_url_entry(origin: &str, path: &str, lastmod: Option<&str>) -> String {
+    render_loc_entry("url", origin, path, lastmod)
 }
 
+#[cfg(test)]
 fn render_index_entry(origin: &str, shard_number: usize) -> Option<String> {
+    render_index_entry_with_lastmod(origin, shard_number, None)
+}
+
+fn render_index_entry_with_lastmod(
+    origin: &str,
+    shard_number: usize,
+    lastmod: Option<&str>,
+) -> Option<String> {
     let path = sitemap_shard_location_path_and_query(shard_number)?;
 
-    Some(render_loc_entry("sitemap", origin, &path))
+    Some(render_loc_entry("sitemap", origin, &path, lastmod))
 }
 
-fn render_loc_entry(element: &str, origin: &str, path: &str) -> String {
-    let mut rendered = String::with_capacity(render_loc_entry_len(element, origin, path));
-    push_loc_entry(&mut rendered, element, origin, path);
+fn render_loc_entry(element: &str, origin: &str, path: &str, lastmod: Option<&str>) -> String {
+    let mut rendered = String::with_capacity(render_loc_entry_len(element, origin, path, lastmod));
+    push_loc_entry(&mut rendered, element, origin, path, lastmod);
     rendered
 }
 
-fn render_loc_entry_len(element: &str, origin: &str, path: &str) -> usize {
-    (2 * element.len()) + 16 + encoded_text_len(origin) + encoded_text_len(path)
+fn render_loc_entry_len(element: &str, origin: &str, path: &str, lastmod: Option<&str>) -> usize {
+    let lastmod_len = lastmod
+        .map(|lastmod| "<lastmod></lastmod>".len() + encoded_text_len(lastmod))
+        .unwrap_or(0);
+
+    (2 * element.len()) + 16 + encoded_text_len(origin) + encoded_text_len(path) + lastmod_len
 }
 
 fn encoded_text_len(value: &str) -> usize {
@@ -315,13 +356,25 @@ fn encoded_text_len(value: &str) -> usize {
     })
 }
 
-fn push_loc_entry(output: &mut String, element: &str, origin: &str, path: &str) {
+fn push_loc_entry(
+    output: &mut String,
+    element: &str,
+    origin: &str,
+    path: &str,
+    lastmod: Option<&str>,
+) {
     output.push('<');
     output.push_str(element);
     output.push_str("><loc>");
     let url = format!("{origin}{path}");
     html_escape::encode_text_to_string(&url, output);
-    output.push_str("</loc></");
+    output.push_str("</loc>");
+    if let Some(lastmod) = lastmod {
+        output.push_str("<lastmod>");
+        html_escape::encode_text_to_string(lastmod, output);
+        output.push_str("</lastmod>");
+    }
+    output.push_str("</");
     output.push_str(element);
     output.push('>');
 }
@@ -331,13 +384,20 @@ fn write_loc_entry<W: Write>(
     element: &str,
     origin: &str,
     path: &str,
+    lastmod: Option<&str>,
 ) -> io::Result<()> {
     output.write_all(b"<")?;
     output.write_all(element.as_bytes())?;
     output.write_all(b"><loc>")?;
     let url = format!("{origin}{path}");
     html_escape::encode_text_to_writer(&url, output)?;
-    output.write_all(b"</loc></")?;
+    output.write_all(b"</loc>")?;
+    if let Some(lastmod) = lastmod {
+        output.write_all(b"<lastmod>")?;
+        html_escape::encode_text_to_writer(lastmod, output)?;
+        output.write_all(b"</lastmod>")?;
+    }
+    output.write_all(b"</")?;
     output.write_all(element.as_bytes())?;
     output.write_all(b">")?;
 
@@ -357,11 +417,16 @@ fn render_urlset_from_entries(entries: &[String]) -> String {
 }
 
 #[cfg(test)]
-fn render_urlset_from_paths(origin: &str, paths: &[String], byte_len: usize) -> String {
+fn render_urlset_from_paths(
+    origin: &str,
+    paths: &[String],
+    lastmod: Option<&str>,
+    byte_len: usize,
+) -> String {
     let mut rendered = String::with_capacity(byte_len);
     rendered.push_str(SITEMAP_URLSET_PREFIX);
     for path in paths {
-        push_loc_entry(&mut rendered, "url", origin, path);
+        push_loc_entry(&mut rendered, "url", origin, path, lastmod);
     }
     rendered.push_str(SITEMAP_URLSET_CLOSE);
     rendered
@@ -370,11 +435,12 @@ fn render_urlset_from_paths(origin: &str, paths: &[String], byte_len: usize) -> 
 fn write_urlset_from_paths<W: Write>(
     origin: &str,
     paths: &[String],
+    lastmod: Option<&str>,
     output: &mut W,
 ) -> io::Result<()> {
     output.write_all(SITEMAP_URLSET_PREFIX.as_bytes())?;
     for path in paths {
-        write_loc_entry(output, "url", origin, path)?;
+        write_loc_entry(output, "url", origin, path, lastmod)?;
     }
     output.write_all(SITEMAP_URLSET_CLOSE.as_bytes())?;
 
@@ -395,6 +461,7 @@ fn render_sitemap_index_from_entries(entries: &[String]) -> String {
 fn shard_sitemap_paths(
     origin: &str,
     paths: &[String],
+    lastmod: Option<&str>,
     limits: SitemapLimits,
 ) -> Result<Vec<SitemapShard>, SitemapRenderError> {
     if limits.max_urlset_urls == 0 || urlset_document_len(0) > limits.max_urlset_bytes {
@@ -407,7 +474,7 @@ fn shard_sitemap_paths(
     let mut entries_len = 0;
 
     for (path_index, path) in paths.iter().enumerate() {
-        let entry_len = render_loc_entry_len("url", origin, path);
+        let entry_len = render_loc_entry_len("url", origin, path, lastmod);
 
         let next_count = entries_count + 1;
         let next_len = urlset_document_len(entries_len + entry_len);
@@ -438,6 +505,7 @@ fn shard_sitemap_paths(
 fn representable_sitemap_paths(
     origin: &str,
     mut paths: Vec<String>,
+    lastmod: Option<&str>,
     limits: SitemapLimits,
 ) -> Result<Vec<String>, SitemapRenderError> {
     if limits.max_urlset_urls == 0 || urlset_document_len(0) > limits.max_urlset_bytes {
@@ -446,7 +514,7 @@ fn representable_sitemap_paths(
 
     let mut skipped_entries = 0;
     paths.retain(|path| {
-        let entry_len = render_loc_entry_len("url", origin, path);
+        let entry_len = render_loc_entry_len("url", origin, path, lastmod);
         let fits = urlset_document_len(entry_len) <= limits.max_urlset_bytes;
         if !fits {
             skipped_entries += 1;
@@ -497,6 +565,7 @@ fn push_sitemap_shard(
 fn write_sitemap_index<W: Write>(
     origin: &str,
     shards: &[SitemapShard],
+    lastmod: Option<&str>,
     output: &mut W,
 ) -> io::Result<()> {
     output.write_all(SITEMAP_INDEX_PREFIX.as_bytes())?;
@@ -504,7 +573,7 @@ fn write_sitemap_index<W: Write>(
         let path = sitemap_shard_location_path_and_query(shard.number).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "invalid sitemap shard number")
         })?;
-        write_loc_entry(output, "sitemap", origin, &path)?;
+        write_loc_entry(output, "sitemap", origin, &path, lastmod)?;
     }
     output.write_all(SITEMAP_INDEX_CLOSE.as_bytes())?;
 
@@ -514,6 +583,7 @@ fn write_sitemap_index<W: Write>(
 fn render_sitemap_index(
     origin: &str,
     shards: &[SitemapShard],
+    lastmod: Option<&str>,
     limits: SitemapLimits,
 ) -> Result<String, SitemapRenderError> {
     if shards.len() > limits.max_index_entries || shards.len() > SITEMAP_MAX_SHARD_NUMBER {
@@ -524,7 +594,7 @@ fn render_sitemap_index(
         return Err(SitemapRenderError::IndexTooLarge);
     }
 
-    let rendered = render_sitemap_index_from_shards(origin, shards)?;
+    let rendered = render_sitemap_index_from_shards(origin, shards, lastmod)?;
 
     if rendered.len() > limits.max_index_bytes {
         return Err(SitemapRenderError::IndexTooLarge);
@@ -536,11 +606,13 @@ fn render_sitemap_index(
 fn render_sitemap_index_from_shards(
     origin: &str,
     shards: &[SitemapShard],
+    lastmod: Option<&str>,
 ) -> Result<String, SitemapRenderError> {
     let entries = shards
         .iter()
         .map(|shard| {
-            render_index_entry(origin, shard.number).ok_or(SitemapRenderError::IndexTooLarge)
+            render_index_entry_with_lastmod(origin, shard.number, lastmod)
+                .ok_or(SitemapRenderError::IndexTooLarge)
         })
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -644,6 +716,7 @@ mod tests {
         let shards = shard_sitemap_paths(
             ORIGIN,
             &path_values,
+            None,
             limits(1, 1_000_000, 50_000, 1_000_000),
         )
         .unwrap();
@@ -656,8 +729,8 @@ mod tests {
 
     #[test]
     fn shard_sitemap_paths_splits_by_full_document_byte_size() {
-        let first = render_url_entry(ORIGIN, "/a");
-        let second = render_url_entry(ORIGIN, "/b");
+        let first = render_url_entry(ORIGIN, "/a", None);
+        let second = render_url_entry(ORIGIN, "/b", None);
         let one_entry_len = render_urlset_from_entries(std::slice::from_ref(&first)).len();
         let two_entry_len = render_urlset_from_entries(&[first, second]).len();
 
@@ -665,6 +738,7 @@ mod tests {
         let shards = shard_sitemap_paths(
             ORIGIN,
             &path_values,
+            None,
             limits(50_000, two_entry_len - 1, 50_000, 1_000_000),
         )
         .unwrap();
@@ -676,11 +750,12 @@ mod tests {
 
     #[test]
     fn exact_byte_limit_fits() {
-        let entry = render_url_entry(ORIGIN, "/a");
+        let entry = render_url_entry(ORIGIN, "/a", None);
         let document_len = render_urlset_from_entries(std::slice::from_ref(&entry)).len();
         let document = render_sitemap_entrypoint(
             ORIGIN,
             paths(&["/a"]),
+            None,
             None,
             limits(1, document_len, 50_000, 1_000_000),
         )
@@ -692,10 +767,11 @@ mod tests {
     #[test]
     fn byte_accounting_matches_rendered_urlset_length() {
         let path_values = paths(&["/a", "/b"]);
-        let shards = shard_sitemap_paths(ORIGIN, &path_values, generous_limits()).unwrap();
+        let shards = shard_sitemap_paths(ORIGIN, &path_values, None, generous_limits()).unwrap();
         let rendered = render_urlset_from_paths(
             ORIGIN,
             &path_values[shards[0].path_range.clone()],
+            None,
             shards[0].byte_len,
         );
 
@@ -703,14 +779,32 @@ mod tests {
     }
 
     #[test]
+    fn byte_accounting_matches_rendered_urlset_length_with_lastmod() {
+        let path_values = paths(&["/a", "/b"]);
+        let lastmod = "2026-07-05T12:34:56Z";
+        let shards =
+            shard_sitemap_paths(ORIGIN, &path_values, Some(lastmod), generous_limits()).unwrap();
+        let rendered = render_urlset_from_paths(
+            ORIGIN,
+            &path_values[shards[0].path_range.clone()],
+            Some(lastmod),
+            shards[0].byte_len,
+        );
+
+        assert_eq!(shards[0].byte_len, rendered.len());
+        assert!(rendered.contains("<lastmod>2026-07-05T12:34:56Z</lastmod>"));
+    }
+
+    #[test]
     fn oversized_single_entry_is_skipped() {
-        let short_entry = render_url_entry(ORIGIN, "/ok");
+        let short_entry = render_url_entry(ORIGIN, "/ok", None);
         let short_document_len =
             render_urlset_from_entries(std::slice::from_ref(&short_entry)).len();
         let rendered = document_body(
             render_sitemap_entrypoint(
                 ORIGIN,
                 paths(&["/ok", "/this-path-is-too-long-to-fit"]),
+                None,
                 None,
                 limits(50_000, short_document_len, 50_000, 1_000_000),
             )
@@ -756,7 +850,8 @@ mod tests {
     #[test]
     fn entrypoint_renders_urlset_for_single_shard() {
         let document =
-            render_sitemap_entrypoint(ORIGIN, paths(&["/"]), None, generous_limits()).unwrap();
+            render_sitemap_entrypoint(ORIGIN, paths(&["/"]), None, None, generous_limits())
+                .unwrap();
         let SitemapDocument::Urlset(body) = document else {
             panic!("expected urlset");
         };
@@ -767,10 +862,30 @@ mod tests {
     }
 
     #[test]
+    fn entrypoint_renders_lastmod_for_urlset() {
+        let document = render_sitemap_entrypoint(
+            ORIGIN,
+            paths(&["/"]),
+            Some("2026-07-05T12:34:56Z"),
+            None,
+            generous_limits(),
+        )
+        .unwrap();
+        let SitemapDocument::Urlset(body) = document else {
+            panic!("expected urlset");
+        };
+
+        assert!(body.contains(
+            "<url><loc>https://search.example.com/</loc><lastmod>2026-07-05T12:34:56Z</lastmod></url>"
+        ));
+    }
+
+    #[test]
     fn entrypoint_renders_sitemap_index_for_multiple_shards() {
         let document = render_sitemap_entrypoint(
             ORIGIN,
             paths(&["/", "/a"]),
+            None,
             None,
             limits(1, 1_000_000, 50_000, 1_000_000),
         )
@@ -785,10 +900,30 @@ mod tests {
     }
 
     #[test]
+    fn entrypoint_renders_lastmod_for_sitemap_index() {
+        let document = render_sitemap_entrypoint(
+            ORIGIN,
+            paths(&["/", "/a"]),
+            Some("2026-07-05T12:34:56Z"),
+            None,
+            limits(1, 1_000_000, 50_000, 1_000_000),
+        )
+        .unwrap();
+        let SitemapDocument::Index(body) = document else {
+            panic!("expected sitemap index");
+        };
+
+        assert!(body.contains(
+            "<sitemap><loc>https://search.example.com/sitemap.xml?shard=00001</loc><lastmod>2026-07-05T12:34:56Z</lastmod></sitemap>"
+        ));
+    }
+
+    #[test]
     fn shard_query_renders_selected_urlset_only_for_multiple_shards() {
         let document = render_sitemap_entrypoint(
             ORIGIN,
             paths(&["/", "/a"]),
+            None,
             Some("shard=00002"),
             limits(1, 1_000_000, 50_000, 1_000_000),
         )
@@ -807,6 +942,7 @@ mod tests {
             render_sitemap_entrypoint(
                 ORIGIN,
                 paths(&["/"]),
+                None,
                 Some("shard=00001"),
                 generous_limits(),
             ),
@@ -820,6 +956,7 @@ mod tests {
             render_sitemap_entrypoint(
                 ORIGIN,
                 paths(&["/", "/a"]),
+                None,
                 Some("shard=00003"),
                 limits(1, 1_000_000, 50_000, 1_000_000),
             ),
@@ -830,7 +967,13 @@ mod tests {
     #[test]
     fn malformed_query_preserves_query_error() {
         assert_eq!(
-            render_sitemap_entrypoint(ORIGIN, paths(&["/"]), Some("foo=bar"), generous_limits()),
+            render_sitemap_entrypoint(
+                ORIGIN,
+                paths(&["/"]),
+                None,
+                Some("foo=bar"),
+                generous_limits()
+            ),
             Err(SitemapRenderError::MalformedQuery(
                 SitemapQueryError::UnknownQuery
             ))
@@ -844,6 +987,7 @@ mod tests {
                 ORIGIN,
                 paths(&["/", "/a"]),
                 None,
+                None,
                 limits(1, 1_000_000, 1, 1_000_000),
             ),
             Err(SitemapRenderError::IndexTooLarge)
@@ -856,6 +1000,7 @@ mod tests {
             render_sitemap_entrypoint(
                 ORIGIN,
                 paths(&["/", "/a"]),
+                None,
                 Some("shard=00001"),
                 limits(1, 1_000_000, 1, 1_000_000),
             ),
@@ -870,6 +1015,7 @@ mod tests {
                 ORIGIN,
                 paths(&["/", "/a"]),
                 None,
+                None,
                 limits(1, 1_000_000, 50_000, sitemap_index_document_len(0)),
             ),
             Err(SitemapRenderError::IndexTooLarge)
@@ -878,7 +1024,11 @@ mod tests {
 
     #[test]
     fn xml_escapes_url_and_index_locations() {
-        let url_entry = render_url_entry("https://example.com&x=<tag>", "/fixtures/git?ref=small");
+        let url_entry = render_url_entry(
+            "https://example.com&x=<tag>",
+            "/fixtures/git?ref=small",
+            None,
+        );
         let index_entry = render_index_entry("https://example.com&x=<tag>", 1).unwrap();
 
         assert!(url_entry.contains("https://example.com&amp;x=&lt;tag&gt;/fixtures/git?ref=small"));
@@ -891,9 +1041,14 @@ mod tests {
 
     #[test]
     fn entrypoint_sorts_and_deduplicates_paths() {
-        let document =
-            render_sitemap_entrypoint(ORIGIN, paths(&["/b", "/a", "/a"]), None, generous_limits())
-                .unwrap();
+        let document = render_sitemap_entrypoint(
+            ORIGIN,
+            paths(&["/b", "/a", "/a"]),
+            None,
+            None,
+            generous_limits(),
+        )
+        .unwrap();
         let body = document_body(document);
         let a_index = body.find("/a</loc>").unwrap();
         let b_index = body.find("/b</loc>").unwrap();

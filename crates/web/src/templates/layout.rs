@@ -15,6 +15,7 @@ use crate::metadata::{MetadataContent, PageHeadMetadataInput, PageMetadata};
 use crate::origin::PageUrls;
 use crate::request::{PageRequest, PageState, SourceFilter};
 use crate::scripts::{datastar_script_url, navigation_script_url, style_css_url};
+use crate::source_labels::source_display_name;
 use crate::urls::source_path;
 
 use super::footer;
@@ -148,6 +149,15 @@ pub fn render_full_page(page: FullPageRender<'_>) -> Markup {
                 }
                 link rel="icon" type="image/x-icon" href="/favicon.ico";
                 link rel="apple-touch-icon" href="/apple-touch-icon.png";
+                @if state.config.public_seo_enabled() {
+                    link rel="search" type="application/opensearchdescription+xml" title="nixsearch" href="/opensearch.xml";
+                    @for source_id in state.config.sources.keys() {
+                        link rel="search"
+                            type="application/opensearchdescription+xml"
+                            title=(format!("nixsearch {}", source_display_name(&state.config, source_id)))
+                            href=(format!("{}/opensearch.xml", source_path(source_id)));
+                    }
+                }
                 link rel="stylesheet" href=(style_css_url());
                 script type="module" src=(datastar_script_url()) {}
                 (analytics_script(&state.config.server.analytics_script))

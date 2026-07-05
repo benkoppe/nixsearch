@@ -17,6 +17,7 @@ mod entry;
 mod handlers;
 mod maintenance;
 mod metadata;
+mod opensearch;
 mod origin;
 mod reconciliation;
 mod render_docs;
@@ -122,6 +123,7 @@ fn app_router(state: AppState) -> Router {
         .nest("/-", internal_routes)
         .route("/robots.txt", get(handlers::robots_txt))
         .route("/sitemap.xml", get(handlers::sitemap_xml))
+        .route("/opensearch.xml", get(handlers::root_opensearch_xml))
         .route("/sitemaps", get(handlers::sitemaps_not_found))
         .route("/sitemaps/{*path}", get(handlers::sitemaps_not_found))
         .route("/favicon.ico", get(handlers::favicon))
@@ -493,8 +495,8 @@ mod tests {
     use nixsearch_index::store::IndexStore;
     use nixsearch_index_test_support::{
         assert_canonical_options_manifest_targets, index_target, options_target,
-        publish_canonical_options_index, publish_documents_with_manifest_targets,
-        publish_fixture_options_index_for_refs,
+        publish_canonical_options_index, publish_canonical_options_index_with_generated_at,
+        publish_documents_with_manifest_targets, publish_fixture_options_index_for_refs,
     };
     use nixsearch_service::{SearchService, ServingGenerationPolicy};
     use nixsearch_test_support::{
@@ -1058,6 +1060,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn opensearch_routes_use_configured_public_origin() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+
+        let response = request_test_response(app.clone(), "/opensearch.xml").await;
+        assert_eq!(response.status, StatusCode::OK);
+        assert!(
+            response
+                .content_type
+                .starts_with("application/opensearchdescription+xml")
+        );
+        assert_eq!(
+            response.cache_control.as_deref(),
+            Some("public, max-age=604800")
+        );
+        assert!(response.body.contains("<ShortName>nixsearch</ShortName>"));
+        assert!(
+            response
+                .body
+                .contains(r#"template="https://search.example.com/?q={searchTerms}""#)
+        );
+        assert!(
+            response
+                .body
+                .contains("<SearchForm>https://search.example.com/</SearchForm>")
+        );
+
+        let response = request_test_response(app, "/fixtures/opensearch.xml").await;
+        assert_eq!(response.status, StatusCode::OK);
+        assert!(
+            response
+                .body
+                .contains("<ShortName>nixsearch Fixtures</ShortName>")
+        );
+        assert!(
+            response
+                .body
+                .contains(r#"template="https://search.example.com/fixtures?q={searchTerms}""#)
+        );
+    }
+
+    #[tokio::test]
+    async fn opensearch_not_found_responses_emit_x_robots_noindex_header() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let public_app = test_app(app_config_with_public_url(&index_dir));
+        assert_eq!(
+            request_x_robots_tag(public_app, "/missing/opensearch.xml")
+                .await
+                .as_deref(),
+            Some(crate::robots::X_ROBOTS_TAG_NOINDEX_NOFOLLOW)
+        );
+
+        let private_app = test_app(app_config(&index_dir));
+        assert_eq!(
+            request_x_robots_tag(private_app, "/opensearch.xml")
+                .await
+                .as_deref(),
+            Some(crate::robots::X_ROBOTS_TAG_NOINDEX_NOFOLLOW)
+        );
+    }
+
+    #[tokio::test]
     async fn internal_endpoints_emit_x_robots_noindex_header() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
@@ -1143,6 +1213,12 @@ mod tests {
             r#"<link rel="stylesheet" href="{}">"#,
             crate::scripts::style_css_url()
         )));
+        assert!(response.body.contains(
+            r#"<link rel="search" type="application/opensearchdescription+xml" title="nixsearch" href="/opensearch.xml">"#
+        ));
+        assert!(response.body.contains(
+            r#"<link rel="search" type="application/opensearchdescription+xml" title="nixsearch Fixtures" href="/fixtures/opensearch.xml">"#
+        ));
         assert!(response.body.contains(&format!(
             r#"<script type="module" src="{}"></script>"#,
             crate::scripts::datastar_script_url()
@@ -1163,7 +1239,7 @@ mod tests {
 
         let app = test_app(app_config_with_public_url(&index_dir));
 
-        for uri in ["/", "/sitemap.xml"] {
+        for uri in ["/", "/sitemap.xml", "/opensearch.xml"] {
             assert_eq!(request_x_robots_tag(app.clone(), uri).await, None, "{uri}");
         }
     }
@@ -1229,6 +1305,21 @@ mod tests {
         let body = request_sitemap(app).await;
 
         assert_sitemap_has_path(&body, "/");
+    }
+
+    #[tokio::test]
+    async fn sitemap_includes_generation_lastmod() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index_with_generated_at(
+            &index_dir,
+            time::OffsetDateTime::UNIX_EPOCH + time::Duration::hours(1),
+        );
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+        let body = request_sitemap(app).await;
+
+        assert!(body.contains("<lastmod>1970-01-01T01:00:00Z</lastmod>"));
     }
 
     #[tokio::test]

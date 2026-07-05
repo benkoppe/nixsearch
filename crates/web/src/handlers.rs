@@ -18,6 +18,7 @@ use crate::AppState;
 use crate::DEFAULT_LIMIT;
 use crate::entry::{AnnotatedEntryDocument, EntryData};
 use crate::metadata::{self, PageHeadMetadataInput, PageMetadata};
+use crate::opensearch;
 use crate::origin::{PageUrls, page_urls, page_urls_for_public_uri, public_path_and_query};
 use crate::reconciliation::RequestGeneration;
 use crate::request::{
@@ -111,6 +112,44 @@ pub async fn sitemap_xml(State(state): State<AppState>, _headers: HeaderMap, uri
     }
 }
 
+pub async fn root_opensearch_xml(State(state): State<AppState>) -> Response {
+    if !state.config.public_seo_enabled() {
+        return sitemaps_not_found().await;
+    }
+
+    let Some(origin) = crate::origin::configured_public_origin(&state.config) else {
+        return sitemaps_not_found().await;
+    };
+
+    opensearch_response(opensearch::root_opensearch_xml(&origin))
+}
+
+async fn source_opensearch_xml_response(state: &AppState, source: &str) -> Response {
+    if !state.config.public_seo_enabled() {
+        return sitemaps_not_found().await;
+    }
+
+    let Some(origin) = crate::origin::configured_public_origin(&state.config) else {
+        return sitemaps_not_found().await;
+    };
+    let Some(body) = opensearch::source_opensearch_xml(&state.config, &origin, source) else {
+        return sitemaps_not_found().await;
+    };
+
+    opensearch_response(body)
+}
+
+fn opensearch_response(body: String) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, opensearch::OPENSEARCH_CONTENT_TYPE),
+            (header::CACHE_CONTROL, "public, max-age=604800"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
 pub async fn sitemaps_not_found() -> Response {
     robots::add_noindex_header(
         (
@@ -136,6 +175,10 @@ fn sitemap_unavailable() -> Response {
 }
 
 pub async fn public_page(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
+    if let Some(source) = source_opensearch_source(&uri) {
+        return source_opensearch_xml_response(&state, &source).await;
+    }
+
     match normalized_public_uri(&uri) {
         Ok(Some(target)) => {
             return (StatusCode::PERMANENT_REDIRECT, [(header::LOCATION, target)]).into_response();
@@ -160,6 +203,25 @@ pub async fn public_page(State(state): State<AppState>, headers: HeaderMap, uri:
         page_urls(state.config.as_ref(), &headers, &uri),
         request,
     )
+}
+
+fn source_opensearch_source(uri: &Uri) -> Option<String> {
+    if uri.query().is_some() {
+        return None;
+    }
+
+    let raw_source = uri
+        .path()
+        .strip_prefix('/')?
+        .strip_suffix("/opensearch.xml")?;
+    if raw_source.is_empty() || raw_source.contains('/') {
+        return None;
+    }
+
+    percent_encoding::percent_decode_str(raw_source)
+        .decode_utf8()
+        .ok()
+        .map(|source| source.into_owned())
 }
 
 fn normalized_public_uri(uri: &Uri) -> std::result::Result<Option<String>, String> {

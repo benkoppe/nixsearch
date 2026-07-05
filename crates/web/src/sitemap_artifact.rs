@@ -9,6 +9,8 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use camino::{Utf8Path, Utf8PathBuf};
 use sha2::{Digest, Sha256};
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 use tokio_util::io::ReaderStream;
 
 use nixsearch_config::app::AppConfig;
@@ -22,7 +24,7 @@ use crate::sitemap::{
 };
 use crate::urls::{canonical_home_path, canonical_source_path, sitemap_candidate_path};
 
-const SITEMAP_ARTIFACT_SCHEMA_VERSION: u32 = 1;
+const SITEMAP_ARTIFACT_SCHEMA_VERSION: u32 = 2;
 const SITEMAP_ARTIFACT_DIR: &str = "sitemap";
 const SITEMAP_ARTIFACT_TEMP_PREFIX: &str = ".tmp";
 const SITEMAP_ARTIFACT_MANIFEST: &str = "manifest.json";
@@ -134,6 +136,7 @@ struct SitemapArtifactManifest {
     schema_version: u32,
     generation_id: String,
     origin: String,
+    lastmod: String,
     root: SitemapArtifactFileManifest,
     shards: Vec<SitemapArtifactShardManifest>,
 }
@@ -225,6 +228,9 @@ fn load_sitemap_artifact(
     }
     if manifest.origin != origin {
         bail!("sitemap artifact origin does not match configured public origin");
+    }
+    if manifest.lastmod != sitemap_lastmod(generation.manifest.generated_at) {
+        bail!("sitemap artifact lastmod does not match current generation timestamp");
     }
 
     if manifest.root.file.as_str() != SITEMAP_ROOT_FILE {
@@ -344,6 +350,7 @@ fn build_sitemap_artifact_in_temp(
     temp_dir: &Utf8Path,
 ) -> Result<SitemapArtifact> {
     let mut paths = vec![canonical_home_path()];
+    let lastmod = sitemap_lastmod(generation.manifest.generated_at);
     let candidates = search
         .sitemap_candidates(snapshot)
         .context("failed to collect sitemap candidates")?;
@@ -363,8 +370,13 @@ fn build_sitemap_artifact_in_temp(
         }
     }
 
-    let plan = SitemapPlan::new(origin.to_owned(), paths, protocol_sitemap_limits())
-        .map_err(sitemap_render_error)?;
+    let plan = SitemapPlan::with_lastmod(
+        origin.to_owned(),
+        paths,
+        Some(lastmod.clone()),
+        protocol_sitemap_limits(),
+    )
+    .map_err(sitemap_render_error)?;
     let root = write_sitemap_root(temp_dir, &plan)?;
     let mut shard_manifests = Vec::new();
 
@@ -387,6 +399,7 @@ fn build_sitemap_artifact_in_temp(
         schema_version: SITEMAP_ARTIFACT_SCHEMA_VERSION,
         generation_id: generation.manifest.generation_id.clone(),
         origin: origin.to_owned(),
+        lastmod,
         root: SitemapArtifactFileManifest {
             file: SITEMAP_ROOT_FILE.to_owned(),
             bytes: root.bytes,
@@ -538,6 +551,12 @@ fn sitemap_shard_file_name(query_value: &str) -> String {
 
 fn etag(sha256: &str) -> String {
     format!(r#""sitemap-{sha256}""#)
+}
+
+fn sitemap_lastmod(generated_at: OffsetDateTime) -> String {
+    generated_at
+        .format(&Rfc3339)
+        .expect("RFC3339 formatting should not fail for OffsetDateTime")
 }
 
 fn sitemap_render_error(error: SitemapRenderError) -> anyhow::Error {
