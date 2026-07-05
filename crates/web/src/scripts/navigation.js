@@ -6,6 +6,8 @@
   const VIRTUAL_REPLACE_LIMIT = PAGE_SIZE * 3;
   const VIRTUAL_JUMP_GAP = PAGE_SIZE * 4;
   const VIRTUAL_JUMP_DELTA = PAGE_SIZE * 3;
+  const MODAL_OPEN_CLASS = "modal-open";
+  const MODAL_SCROLLBAR_GUTTER_CLASS = "modal-scrollbar-gutter";
   let generationId = readGenerationId();
   let generationChanging = false;
   let generationChangeWatchdog = null;
@@ -834,13 +836,32 @@
     document.documentElement.classList.remove("footer-browser-compact");
   }
 
+  function hasViewportScrollbar(root = document.documentElement) {
+    return window.innerWidth > root.clientWidth;
+  }
+
+  function applyModalRootState(open) {
+    const root = document.documentElement;
+
+    if (open) {
+      if (!root.classList.contains(MODAL_OPEN_CLASS)) {
+        root.classList.toggle(
+          MODAL_SCROLLBAR_GUTTER_CLASS,
+          hasViewportScrollbar(root),
+        );
+      }
+      root.classList.add(MODAL_OPEN_CLASS);
+    } else {
+      root.classList.remove(MODAL_OPEN_CLASS);
+      root.classList.remove(MODAL_SCROLLBAR_GUTTER_CLASS);
+    }
+  }
+
   function syncModalState() {
     const dialog = document.getElementById("entry-modal");
+    const open = !!dialog && dialog.open;
 
-    document.documentElement.classList.toggle(
-      "modal-open",
-      !!dialog && dialog.open,
-    );
+    applyModalRootState(open);
 
     if (dialog && !dialog.dataset.modalStateBound) {
       dialog.dataset.modalStateBound = "true";
@@ -996,7 +1017,7 @@
     try {
       syncModalState();
     } catch {
-      document.documentElement.classList.toggle("modal-open", isEntryModalOpen());
+      applyModalRootState(isEntryModalOpen());
     }
   }
 
@@ -1204,12 +1225,11 @@
 
       const container = ensureEntryModalContainer();
       container.innerHTML = "";
-      document.documentElement.classList.remove("modal-open");
 
       try {
         syncModalState();
       } catch {
-        document.documentElement.classList.remove("modal-open");
+        applyModalRootState(false);
       }
 
       try {

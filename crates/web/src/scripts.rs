@@ -158,7 +158,27 @@ mod tests {
         assert!(script.contains("reconcileSameUrl: true"));
         assert!(script.contains("optimisticallyRemoveEntryModal()"));
         assert!(script.contains("container.innerHTML = \"\";"));
-        assert!(script.contains("classList.remove(\"modal-open\")"));
+        assert!(script.contains("applyModalRootState(false)"));
+    }
+
+    #[test]
+    fn navigation_script_reserves_modal_scrollbar_gutter_conditionally() {
+        let script = navigation_script();
+
+        assert!(script.contains("const MODAL_OPEN_CLASS = \"modal-open\";"));
+        assert!(script.contains(
+            "const MODAL_SCROLLBAR_GUTTER_CLASS = \"modal-scrollbar-gutter\";"
+        ));
+        assert!(script.contains("function applyModalRootState(open)"));
+        assert!(script.contains("hasViewportScrollbar(root)"));
+        assert!(script.contains("if (!root.classList.contains(MODAL_OPEN_CLASS))"));
+
+        let apply = script.find("function applyModalRootState(open)").unwrap();
+        let measure = script[apply..].find("hasViewportScrollbar(root)").unwrap();
+        let add_open = script[apply..]
+            .find("root.classList.add(MODAL_OPEN_CLASS)")
+            .unwrap();
+        assert!(measure < add_open);
     }
 
     #[test]
@@ -345,7 +365,18 @@ mod tests {
 
     #[test]
     fn dialog_reconcile_script_loads_asset() {
-        assert!(dialog_reconcile_script().contains("entry-modal"));
-        assert!(dialog_reconcile_script().contains("showModal"));
+        let script = dialog_reconcile_script();
+
+        assert!(script.contains("entry-modal"));
+        assert!(script.contains("showModal"));
+        assert!(script.contains("window.nixsearchSyncModalState"));
+        assert!(script.contains("window.nixsearchSyncModalState();"));
+        assert!(script.contains("Keep this fallback aligned with applyModalRootState()"));
+        assert!(script.contains("if (!root.classList.contains(\"modal-open\"))"));
+        assert!(script.contains("window.innerWidth > root.clientWidth"));
+        assert!(script.contains("root.classList.add(\"modal-open\")"));
+        assert!(script.contains(
+            "root.classList.remove(\"modal-scrollbar-gutter\")"
+        ));
     }
 }
