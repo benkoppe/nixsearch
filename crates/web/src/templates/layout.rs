@@ -9,13 +9,12 @@ use nixsearch_index::search::SearchResult;
 use nixsearch_service::ServedGenerationSnapshot;
 
 use crate::AppState;
-use crate::DATASTAR_JS_URL;
 use crate::RECONCILE_EVENTS_URL;
 use crate::entry::EntryData;
 use crate::metadata::{MetadataContent, PageHeadMetadataInput, PageMetadata};
 use crate::origin::PageUrls;
 use crate::request::{PageRequest, PageState, SourceFilter};
-use crate::scripts::navigation_script;
+use crate::scripts::{datastar_script_url, navigation_script_url, style_css_url};
 use crate::urls::source_path;
 
 use super::footer;
@@ -24,8 +23,6 @@ use super::modal;
 use super::results;
 use super::search;
 use super::source_tag;
-
-static CSS: &str = include_str!("../../style.css");
 
 #[derive(Clone, Copy)]
 pub enum ResultsContent<'a> {
@@ -151,9 +148,9 @@ pub fn render_full_page(page: FullPageRender<'_>) -> Markup {
                 }
                 link rel="icon" type="image/x-icon" href="/favicon.ico";
                 link rel="apple-touch-icon" href="/apple-touch-icon.png";
-                script type="module" src=(DATASTAR_JS_URL) {}
+                link rel="stylesheet" href=(style_css_url());
+                script type="module" src=(datastar_script_url()) {}
                 (analytics_script(&state.config.server.analytics_script))
-                style { (PreEscaped(CSS)) }
                 noscript {
                     style { ".js-ref-radios { display: none; } dialog#entry-modal { display: block; z-index: 201; } .modal-backdrop { display: block; position: fixed; inset: 0; z-index: 200; background: rgb(0 0 0 / 0.6); }" }
                 }
@@ -190,7 +187,7 @@ pub fn render_full_page(page: FullPageRender<'_>) -> Markup {
                         (PreEscaped(initial_history_metadata))
                     }
                 }
-                script { (PreEscaped(navigation_script())) }
+                script src=(navigation_script_url()) {}
             }
         }
     }

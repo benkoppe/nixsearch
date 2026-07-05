@@ -2,7 +2,7 @@ use std::convert::Infallible;
 
 use axum::Json;
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode, Uri, header};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri, header};
 use axum::response::Response;
 use axum::response::{Html, IntoResponse, Sse, sse::Event};
 use datastar::prelude::{ExecuteScript, PatchElements};
@@ -25,7 +25,7 @@ use crate::request::{
     page_request_from_public_uri, page_state, public_uri,
 };
 use crate::robots;
-use crate::scripts::datastar_script;
+use crate::scripts::{datastar_script, navigation_script, style_css as style_css_asset};
 use crate::sitemap::validate_sitemap_query;
 use crate::sitemap_artifact::SitemapArtifactLookupError;
 use crate::templates;
@@ -55,9 +55,27 @@ pub async fn apple_touch_icon() -> impl IntoResponse {
 
 pub async fn datastar_js() -> impl IntoResponse {
     (
-        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        asset_headers("text/javascript; charset=utf-8"),
         datastar_script(),
     )
+}
+
+pub async fn navigation_js() -> impl IntoResponse {
+    (
+        asset_headers("text/javascript; charset=utf-8"),
+        navigation_script(),
+    )
+}
+
+pub async fn style_css() -> impl IntoResponse {
+    (asset_headers("text/css; charset=utf-8"), style_css_asset())
+}
+
+fn asset_headers(content_type: &'static str) -> [(HeaderName, &'static str); 2] {
+    [
+        (header::CONTENT_TYPE, content_type),
+        (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+    ]
 }
 
 pub async fn robots_txt(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
@@ -758,7 +776,12 @@ fn render_full_page_response(
         initial_return_metadata: initial_return_metadata.as_ref(),
     });
 
-    Html(markup.into_string()).into_response()
+    let mut response = Html(markup.into_string()).into_response();
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=300"),
+    );
+    response
 }
 
 fn render_full_page_error_response(

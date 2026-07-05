@@ -33,9 +33,11 @@ const DEFAULT_LIMIT: usize = 50;
 const MAX_PAGE: usize = 1000;
 const MAX_OFFSET: usize = (MAX_PAGE - 1) * DEFAULT_LIMIT;
 
-const DATASTAR_JS_URL: &str = "/-/assets/datastar.js";
+const DATASTAR_JS_PATH: &str = "/-/assets/datastar.js";
+const NAVIGATION_JS_PATH: &str = "/-/assets/navigation.js";
 const RECONCILE_EVENTS_URL: &str = "/-/state/events";
 const RESULTS_SLICE_URL: &str = "/-/results/slice";
+const STYLE_CSS_PATH: &str = "/-/assets/style.css";
 
 #[derive(Debug, Clone)]
 struct AppState {
@@ -112,6 +114,8 @@ fn app_router(state: AppState) -> Router {
         .route("/state/events", get(handlers::state_events))
         .route("/results/slice", get(handlers::results_slice))
         .route("/assets/datastar.js", get(handlers::datastar_js))
+        .route("/assets/navigation.js", get(handlers::navigation_js))
+        .route("/assets/style.css", get(handlers::style_css))
         .layer(middleware::map_response(robots::add_noindex_header));
 
     Router::new()
@@ -529,6 +533,7 @@ mod tests {
 
     struct TestResponse {
         status: StatusCode,
+        cache_control: Option<String>,
         content_type: String,
         location: Option<String>,
         x_robots_tag: Option<String>,
@@ -570,6 +575,11 @@ mod tests {
             .await
             .unwrap();
         let status = response.status();
+        let cache_control = response
+            .headers()
+            .get("cache-control")
+            .and_then(|value| value.to_str().ok())
+            .map(ToOwned::to_owned);
         let content_type = response
             .headers()
             .get("content-type")
@@ -590,6 +600,7 @@ mod tests {
 
         TestResponse {
             status,
+            cache_control,
             content_type,
             location,
             x_robots_tag,
@@ -1064,6 +1075,8 @@ mod tests {
             "/-/health",
             "/-/state/events?url=%2F",
             "/-/assets/datastar.js",
+            "/-/assets/navigation.js",
+            "/-/assets/style.css",
             result_slice_uri.as_str(),
         ] {
             assert_eq!(
@@ -1072,6 +1085,74 @@ mod tests {
                 "{uri}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn static_assets_are_served_with_long_lived_cache_headers() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+
+        for (uri, expected_content_type, expected_body) in [
+            (
+                crate::scripts::datastar_script_url(),
+                "text/javascript",
+                "datastar",
+            ),
+            (
+                crate::scripts::navigation_script_url(),
+                "text/javascript",
+                "nixsearch-reconcile",
+            ),
+            (crate::scripts::style_css_url(), "text/css", ":root"),
+        ] {
+            let response = request_test_response(app.clone(), uri).await;
+
+            assert_eq!(response.status, StatusCode::OK, "{uri}");
+            assert!(
+                response.content_type.starts_with(expected_content_type),
+                "{uri}: {}",
+                response.content_type
+            );
+            assert_eq!(
+                response.cache_control.as_deref(),
+                Some("public, max-age=31536000, immutable"),
+                "{uri}"
+            );
+            assert!(response.body.contains(expected_body), "{uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn full_page_uses_external_css_and_navigation_assets() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+        let response = request_test_response(app, "/").await;
+
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(
+            response.cache_control.as_deref(),
+            Some("public, max-age=300")
+        );
+        assert!(response.body.contains(&format!(
+            r#"<link rel="stylesheet" href="{}">"#,
+            crate::scripts::style_css_url()
+        )));
+        assert!(response.body.contains(&format!(
+            r#"<script type="module" src="{}"></script>"#,
+            crate::scripts::datastar_script_url()
+        )));
+        assert!(response.body.contains(&format!(
+            r#"<script src="{}"></script>"#,
+            crate::scripts::navigation_script_url()
+        )));
+        assert!(!response.body.contains("const RECONCILE_EVENT"));
+        assert!(!response.body.contains("color-scheme: dark"));
     }
 
     #[tokio::test]
