@@ -750,6 +750,48 @@ mod tests {
         );
     }
 
+    fn publish_public_internal_and_hidden_options_index(index_dir: &camino::Utf8Path) {
+        let context = ingest_context_for(SOURCE_FIXTURES, REF_SMALL);
+
+        let mut internal = match option_doc_for(&context, "internal.entry", "Internal option.") {
+            SearchDocument::Option(option) => option,
+            SearchDocument::Package(_) => unreachable!(),
+        };
+        internal.internal = Some(true);
+
+        let mut hidden = match option_doc_for(&context, "hidden.entry", "Hidden option.") {
+            SearchDocument::Option(option) => option,
+            SearchDocument::Package(_) => unreachable!(),
+        };
+        hidden.visible = Some(false);
+
+        publish_documents_with_manifest_targets(
+            index_dir,
+            time::OffsetDateTime::now_utc(),
+            vec![
+                option_doc_for(&context, "public.entry", "Public option."),
+                SearchDocument::Option(internal),
+                SearchDocument::Option(hidden),
+            ],
+            vec![options_target(SOURCE_FIXTURES, REF_SMALL, 3)],
+        );
+    }
+
+    fn publish_opensearch_entry_options_index(index_dir: &camino::Utf8Path) {
+        let context = ingest_context_for(SOURCE_FIXTURES, REF_SMALL);
+
+        publish_documents_with_manifest_targets(
+            index_dir,
+            time::OffsetDateTime::now_utc(),
+            vec![option_doc_for(
+                &context,
+                "opensearch.xml",
+                "OpenSearch option.",
+            )],
+            vec![options_target(SOURCE_FIXTURES, REF_SMALL, 1)],
+        );
+    }
+
     fn remove_current_seo_sidecar(index_dir: &camino::Utf8Path) {
         let store = IndexStore::new(index_dir);
         let current = store.current_path().unwrap();
@@ -1090,7 +1132,7 @@ mod tests {
                 .contains("<SearchForm>https://search.example.com/</SearchForm>")
         );
 
-        let response = request_test_response(app, "/fixtures/opensearch.xml").await;
+        let response = request_test_response(app, "/opensearch.xml?source=fixtures").await;
         assert_eq!(response.status, StatusCode::OK);
         assert!(
             response
@@ -1105,6 +1147,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn source_opensearch_path_remains_available_for_entries() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_opensearch_entry_options_index(&index_dir);
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+        let (status, body) = request_body(app, "/fixtures/opensearch.xml").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("opensearch.xml"));
+        assert_has_canonical(&body, "https://search.example.com/fixtures/opensearch.xml");
+        assert!(!body.contains("OpenSearchDescription"));
+    }
+
+    #[tokio::test]
     async fn opensearch_not_found_responses_emit_x_robots_noindex_header() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
@@ -1112,7 +1169,7 @@ mod tests {
 
         let public_app = test_app(app_config_with_public_url(&index_dir));
         assert_eq!(
-            request_x_robots_tag(public_app, "/missing/opensearch.xml")
+            request_x_robots_tag(public_app, "/opensearch.xml?source=missing")
                 .await
                 .as_deref(),
             Some(crate::robots::X_ROBOTS_TAG_NOINDEX_NOFOLLOW)
@@ -1196,6 +1253,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn static_assets_require_matching_fingerprints_for_immutable_cache() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+
+        for uri in ["/-/assets/style.css", "/-/assets/style.css?v=wrong"] {
+            let response = request_test_response(app.clone(), uri).await;
+
+            assert_eq!(response.status, StatusCode::NOT_FOUND, "{uri}");
+            assert_eq!(response.cache_control.as_deref(), Some("no-store"), "{uri}");
+            assert!(!response.body.contains(":root"), "{uri}");
+        }
+    }
+
+    #[tokio::test]
     async fn full_page_uses_external_css_and_navigation_assets() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
@@ -1217,7 +1291,7 @@ mod tests {
             r#"<link rel="search" type="application/opensearchdescription+xml" title="nixsearch" href="/opensearch.xml">"#
         ));
         assert!(response.body.contains(
-            r#"<link rel="search" type="application/opensearchdescription+xml" title="nixsearch Fixtures" href="/fixtures/opensearch.xml">"#
+            r#"<link rel="search" type="application/opensearchdescription+xml" title="nixsearch Fixtures" href="/opensearch.xml?source=fixtures">"#
         ));
         assert!(response.body.contains(&format!(
             r#"<script type="module" src="{}"></script>"#,
@@ -2451,6 +2525,20 @@ mod tests {
 
         let app = test_app(app_config_with_public_url(&index_dir));
         let (status, body) = request_body(app, "/fixtures?q=definitelynotindexed").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_no_canonical(&body);
+        assert_has_robots(&body);
+    }
+
+    #[tokio::test]
+    async fn search_page_matching_only_hidden_entries_emits_noindex_without_canonical() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_public_internal_and_hidden_options_index(&index_dir);
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+        let (status, body) = request_body(app, "/fixtures?q=hidden").await;
 
         assert_eq!(status, StatusCode::OK);
         assert_no_canonical(&body);

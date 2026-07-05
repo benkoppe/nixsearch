@@ -14,7 +14,9 @@ const RESULTS_SLICE_URL_PLACEHOLDER: &str = "__RESULTS_SLICE_URL__";
 const SOURCE_ALL_VALUE_PLACEHOLDER: &str = "__SOURCE_ALL_VALUE__";
 
 static DATASTAR_SCRIPT_URL: LazyLock<String> =
-    LazyLock::new(|| fingerprinted_asset_url(DATASTAR_JS_PATH, datastar_script()));
+    LazyLock::new(|| fingerprinted_asset_url(DATASTAR_JS_PATH, datastar_script_fingerprint()));
+static DATASTAR_SCRIPT_FINGERPRINT: LazyLock<String> =
+    LazyLock::new(|| asset_fingerprint(datastar_script()));
 static NAVIGATION_SCRIPT: LazyLock<String> = LazyLock::new(|| {
     include_str!("scripts/navigation.js")
         .replace(RESULTS_SLICE_URL_PLACEHOLDER, RESULTS_SLICE_URL)
@@ -22,10 +24,13 @@ static NAVIGATION_SCRIPT: LazyLock<String> = LazyLock::new(|| {
         .replace(SOURCE_ALL_VALUE_PLACEHOLDER, QuerySource::All.as_str())
 });
 static NAVIGATION_SCRIPT_URL: LazyLock<String> =
-    LazyLock::new(|| fingerprinted_asset_url(NAVIGATION_JS_PATH, navigation_script()));
+    LazyLock::new(|| fingerprinted_asset_url(NAVIGATION_JS_PATH, navigation_script_fingerprint()));
+static NAVIGATION_SCRIPT_FINGERPRINT: LazyLock<String> =
+    LazyLock::new(|| asset_fingerprint(navigation_script()));
 static STYLE_CSS: &str = include_str!("../style.css");
 static STYLE_CSS_URL: LazyLock<String> =
-    LazyLock::new(|| fingerprinted_asset_url(STYLE_CSS_PATH, style_css()));
+    LazyLock::new(|| fingerprinted_asset_url(STYLE_CSS_PATH, style_css_fingerprint()));
+static STYLE_CSS_FINGERPRINT: LazyLock<String> = LazyLock::new(|| asset_fingerprint(style_css()));
 
 pub fn datastar_script() -> &'static str {
     include_str!(env!(
@@ -36,6 +41,10 @@ pub fn datastar_script() -> &'static str {
 
 pub fn datastar_script_url() -> &'static str {
     DATASTAR_SCRIPT_URL.as_str()
+}
+
+pub fn datastar_script_fingerprint() -> &'static str {
+    DATASTAR_SCRIPT_FINGERPRINT.as_str()
 }
 
 #[cfg(test)]
@@ -51,6 +60,10 @@ pub fn navigation_script_url() -> &'static str {
     NAVIGATION_SCRIPT_URL.as_str()
 }
 
+pub fn navigation_script_fingerprint() -> &'static str {
+    NAVIGATION_SCRIPT_FINGERPRINT.as_str()
+}
+
 pub fn style_css() -> &'static str {
     STYLE_CSS
 }
@@ -59,10 +72,16 @@ pub fn style_css_url() -> &'static str {
     STYLE_CSS_URL.as_str()
 }
 
-fn fingerprinted_asset_url(path: &str, body: &str) -> String {
-    let digest = Sha256::digest(body.as_bytes());
-    let fingerprint = hex::encode(&digest[..8]);
+pub fn style_css_fingerprint() -> &'static str {
+    STYLE_CSS_FINGERPRINT.as_str()
+}
 
+fn asset_fingerprint(body: &str) -> String {
+    let digest = Sha256::digest(body.as_bytes());
+    hex::encode(&digest[..8])
+}
+
+fn fingerprinted_asset_url(path: &str, fingerprint: &str) -> String {
     format!("{path}?v={fingerprint}")
 }
 

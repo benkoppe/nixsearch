@@ -26,7 +26,10 @@ use crate::request::{
     page_request_from_public_uri, page_state, public_uri,
 };
 use crate::robots;
-use crate::scripts::{datastar_script, navigation_script, style_css as style_css_asset};
+use crate::scripts::{
+    datastar_script, datastar_script_fingerprint, navigation_script, navigation_script_fingerprint,
+    style_css as style_css_asset, style_css_fingerprint,
+};
 use crate::sitemap::validate_sitemap_query;
 use crate::sitemap_artifact::SitemapArtifactLookupError;
 use crate::templates;
@@ -54,22 +57,31 @@ pub async fn apple_touch_icon() -> impl IntoResponse {
     )
 }
 
-pub async fn datastar_js() -> impl IntoResponse {
-    (
-        asset_headers("text/javascript; charset=utf-8"),
+pub async fn datastar_js(uri: Uri) -> Response {
+    asset_response(
+        &uri,
+        "text/javascript; charset=utf-8",
         datastar_script(),
+        datastar_script_fingerprint(),
     )
 }
 
-pub async fn navigation_js() -> impl IntoResponse {
-    (
-        asset_headers("text/javascript; charset=utf-8"),
+pub async fn navigation_js(uri: Uri) -> Response {
+    asset_response(
+        &uri,
+        "text/javascript; charset=utf-8",
         navigation_script(),
+        navigation_script_fingerprint(),
     )
 }
 
-pub async fn style_css() -> impl IntoResponse {
-    (asset_headers("text/css; charset=utf-8"), style_css_asset())
+pub async fn style_css(uri: Uri) -> Response {
+    asset_response(
+        &uri,
+        "text/css; charset=utf-8",
+        style_css_asset(),
+        style_css_fingerprint(),
+    )
 }
 
 fn asset_headers(content_type: &'static str) -> [(HeaderName, &'static str); 2] {
@@ -77,6 +89,33 @@ fn asset_headers(content_type: &'static str) -> [(HeaderName, &'static str); 2] 
         (header::CONTENT_TYPE, content_type),
         (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
     ]
+}
+
+fn asset_response(
+    uri: &Uri,
+    content_type: &'static str,
+    body: &'static str,
+    expected_fingerprint: &str,
+) -> Response {
+    if !asset_fingerprint_matches(uri.query(), expected_fingerprint) {
+        return (
+            StatusCode::NOT_FOUND,
+            [
+                (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            "not found",
+        )
+            .into_response();
+    }
+
+    (asset_headers(content_type), body).into_response()
+}
+
+fn asset_fingerprint_matches(raw_query: Option<&str>, expected_fingerprint: &str) -> bool {
+    raw_query
+        .and_then(|query| query.strip_prefix("v="))
+        .is_some_and(|value| !value.contains('&') && value == expected_fingerprint)
 }
 
 pub async fn robots_txt(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
@@ -112,31 +151,56 @@ pub async fn sitemap_xml(State(state): State<AppState>, _headers: HeaderMap, uri
     }
 }
 
-pub async fn root_opensearch_xml(State(state): State<AppState>) -> Response {
+pub async fn root_opensearch_xml(State(state): State<AppState>, uri: Uri) -> Response {
     if !state.config.public_seo_enabled() {
         return sitemaps_not_found().await;
     }
 
+    let source = match opensearch_source_query(&uri) {
+        Ok(source) => source,
+        Err(()) => return sitemaps_not_found().await,
+    };
+
     let Some(origin) = crate::origin::configured_public_origin(&state.config) else {
         return sitemaps_not_found().await;
     };
+
+    if let Some(source) = source {
+        let Some(body) = opensearch::source_opensearch_xml(&state.config, &origin, &source) else {
+            return sitemaps_not_found().await;
+        };
+
+        return opensearch_response(body);
+    }
 
     opensearch_response(opensearch::root_opensearch_xml(&origin))
 }
 
-async fn source_opensearch_xml_response(state: &AppState, source: &str) -> Response {
-    if !state.config.public_seo_enabled() {
-        return sitemaps_not_found().await;
+fn opensearch_source_query(uri: &Uri) -> Result<Option<String>, ()> {
+    let Some(raw_query) = uri.query() else {
+        return Ok(None);
+    };
+    if raw_query.is_empty() {
+        return Ok(None);
     }
 
-    let Some(origin) = crate::origin::configured_public_origin(&state.config) else {
-        return sitemaps_not_found().await;
-    };
-    let Some(body) = opensearch::source_opensearch_xml(&state.config, &origin, source) else {
-        return sitemaps_not_found().await;
-    };
+    let mut source = None;
+    for part in raw_query.split('&') {
+        let (key, value) = part.split_once('=').unwrap_or((part, ""));
+        if key != "source" || source.is_some() {
+            return Err(());
+        }
+        let value = percent_encoding::percent_decode_str(value)
+            .decode_utf8()
+            .map_err(|_| ())?;
+        let value = value.trim();
+        if value.is_empty() {
+            return Err(());
+        }
+        source = Some(value.to_owned());
+    }
 
-    opensearch_response(body)
+    Ok(source)
 }
 
 fn opensearch_response(body: String) -> Response {
@@ -175,10 +239,6 @@ fn sitemap_unavailable() -> Response {
 }
 
 pub async fn public_page(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
-    if let Some(source) = source_opensearch_source(&uri) {
-        return source_opensearch_xml_response(&state, &source).await;
-    }
-
     match normalized_public_uri(&uri) {
         Ok(Some(target)) => {
             return (StatusCode::PERMANENT_REDIRECT, [(header::LOCATION, target)]).into_response();
@@ -203,25 +263,6 @@ pub async fn public_page(State(state): State<AppState>, headers: HeaderMap, uri:
         page_urls(state.config.as_ref(), &headers, &uri),
         request,
     )
-}
-
-fn source_opensearch_source(uri: &Uri) -> Option<String> {
-    if uri.query().is_some() {
-        return None;
-    }
-
-    let raw_source = uri
-        .path()
-        .strip_prefix('/')?
-        .strip_suffix("/opensearch.xml")?;
-    if raw_source.is_empty() || raw_source.contains('/') {
-        return None;
-    }
-
-    percent_encoding::percent_decode_str(raw_source)
-        .decode_utf8()
-        .ok()
-        .map(|source| source.into_owned())
 }
 
 fn normalized_public_uri(uri: &Uri) -> std::result::Result<Option<String>, String> {

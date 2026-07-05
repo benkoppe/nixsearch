@@ -3,7 +3,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use nixsearch_config::app::AppConfig;
 use nixsearch_core::document::SearchDocument;
-use nixsearch_index::search::SearchResult;
+use nixsearch_index::search::{SearchHit, SearchResult};
 use nixsearch_service::{SeoFactsResult, ServedGenerationSnapshot};
 
 use crate::AppState;
@@ -353,12 +353,32 @@ fn search_index_metadata(
         return noindex_metadata();
     }
 
-    source_index_metadata(
-        state
-            .search
-            .source_has_indexable_entries(served_generation, source, ref_id),
-        page_urls.absolute_url(&canonical_search_path(&state.config, source, ref_id, q)),
-    )
+    if !search_result_has_public_seo_hit(state, served_generation, &result.hits) {
+        return noindex_metadata();
+    }
+
+    canonical_metadata(page_urls.absolute_url(&canonical_search_path(
+        &state.config,
+        source,
+        ref_id,
+        q,
+    )))
+}
+
+fn search_result_has_public_seo_hit(
+    state: &AppState,
+    served_generation: &ServedGenerationSnapshot,
+    hits: &[SearchHit],
+) -> bool {
+    hits.iter().any(|hit| {
+        hit.document.is_seo_eligible_entry()
+            && matches!(
+                state
+                    .search
+                    .document_allowed_for_public_seo(served_generation, &hit.document),
+                Ok(true)
+            )
+    })
 }
 
 fn source_uses_default_ref(config: &AppConfig, source: &str, ref_id: &str) -> bool {

@@ -155,7 +155,7 @@ pub fn render_full_page(page: FullPageRender<'_>) -> Markup {
                         link rel="search"
                             type="application/opensearchdescription+xml"
                             title=(format!("nixsearch {}", source_display_name(&state.config, source_id)))
-                            href=(format!("{}/opensearch.xml", source_path(source_id)));
+                            href=(format!("/opensearch.xml?source={source_id}"));
                     }
                 }
                 link rel="stylesheet" href=(style_css_url());

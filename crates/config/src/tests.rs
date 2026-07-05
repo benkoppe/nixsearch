@@ -905,6 +905,7 @@ fn rejects_reserved_source_ids() {
         "-",
         "robots.txt",
         "sitemap.xml",
+        "opensearch.xml",
         "sitemaps",
         "favicon.ico",
         "apple-touch-icon.png",
