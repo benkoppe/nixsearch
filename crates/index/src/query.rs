@@ -8,6 +8,10 @@ use crate::schema::IndexFields;
 use crate::search::{SearchIndex, SearchScope};
 use crate::tokenize::{compact_identifier, dedup_preserving_order, tokenized_query_terms};
 
+pub fn query_uses_structured_syntax(query: &str) -> bool {
+    tantivy::query_grammar::parse_query(query.trim()).is_ok_and(|ast| ast_uses_query_syntax(&ast))
+}
+
 impl SearchIndex {
     pub(crate) fn build_query(
         &self,
@@ -475,4 +479,34 @@ fn fuzzy_boost(distance: u8, field_boost: f32) -> f32 {
     };
 
     field_boost * distance_boost
+}
+
+#[cfg(test)]
+mod tests {
+    use super::query_uses_structured_syntax;
+
+    #[test]
+    fn detects_boolean_word_operators_as_structured() {
+        assert!(query_uses_structured_syntax("firefox AND programs"));
+        assert!(query_uses_structured_syntax("firefox OR chromium"));
+        assert!(query_uses_structured_syntax("firefox NOT programs"));
+    }
+
+    #[test]
+    fn detects_symbol_and_field_syntax_as_structured() {
+        assert!(query_uses_structured_syntax("firefox -programs"));
+        assert!(query_uses_structured_syntax("name:Git"));
+        assert!(query_uses_structured_syntax("\"Git Grep\""));
+    }
+
+    #[test]
+    fn plain_text_queries_are_not_structured() {
+        assert!(!query_uses_structured_syntax("Git Grep"));
+        assert!(!query_uses_structured_syntax("git   grep"));
+    }
+
+    #[test]
+    fn malformed_queries_are_not_structured() {
+        assert!(!query_uses_structured_syntax("\"unclosed"));
+    }
 }

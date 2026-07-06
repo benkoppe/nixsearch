@@ -14,4 +14,6 @@ pub mod store;
 mod tokenize;
 pub mod writer;
 
+pub use query::query_uses_structured_syntax;
+
 const WRITER_MEMORY_BYTES: usize = 50_000_000;

@@ -3,6 +3,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use nixsearch_config::app::AppConfig;
 use nixsearch_core::document::SearchDocument;
+use nixsearch_index::query_uses_structured_syntax;
 use nixsearch_index::search::{SearchHit, SearchResult};
 use nixsearch_service::{SeoFactsResult, ServedGenerationSnapshot};
 
@@ -361,7 +362,7 @@ fn search_index_metadata(
 fn canonical_search_query(query: &str) -> String {
     let trimmed = query.trim();
 
-    if search_query_uses_structured_syntax(trimmed) {
+    if query_uses_structured_syntax(trimmed) {
         return trimmed.to_owned();
     }
 
@@ -370,28 +371,6 @@ fn canonical_search_query(query: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .to_lowercase()
-}
-
-fn search_query_uses_structured_syntax(query: &str) -> bool {
-    query.chars().any(|ch| {
-        matches!(
-            ch,
-            ':' | '"'
-                | '('
-                | ')'
-                | '+'
-                | '-'
-                | '^'
-                | '~'
-                | '*'
-                | '?'
-                | '\\'
-                | '['
-                | ']'
-                | '{'
-                | '}'
-        )
-    })
 }
 
 fn document_is_public_seo_indexable(
@@ -878,6 +857,18 @@ mod tests {
         assert_eq!(canonical_search_query("  \"Git Grep\"  "), "\"Git Grep\"");
         assert_eq!(canonical_search_query("  -Git  "), "-Git");
         assert_eq!(canonical_search_query("  foo -Bar  "), "foo -Bar");
+        assert_eq!(
+            canonical_search_query("  firefox AND programs  "),
+            "firefox AND programs"
+        );
+        assert_eq!(
+            canonical_search_query("  firefox OR chromium  "),
+            "firefox OR chromium"
+        );
+        assert_eq!(
+            canonical_search_query("  firefox NOT programs  "),
+            "firefox NOT programs"
+        );
     }
 
     #[test]
