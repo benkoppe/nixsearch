@@ -90,7 +90,7 @@ impl From<io::Error> for SitemapWriteError {
 pub(crate) struct SitemapPlan {
     origin: String,
     paths: Vec<String>,
-    lastmod: Option<String>,
+    sitemap_index_lastmod: Option<String>,
     shards: Vec<SitemapShard>,
 }
 
@@ -112,8 +112,8 @@ impl SitemapPlan {
     ) -> Result<Self, SitemapRenderError> {
         paths.sort();
         paths.dedup();
-        let paths = representable_sitemap_paths(&origin, paths, lastmod.as_deref(), limits)?;
-        let shards = shard_sitemap_paths(&origin, &paths, lastmod.as_deref(), limits)?;
+        let paths = representable_sitemap_paths(&origin, paths, None, limits)?;
+        let shards = shard_sitemap_paths(&origin, &paths, None, limits)?;
         if shards.len() > 1 {
             render_sitemap_index(&origin, &shards, lastmod.as_deref(), limits)?;
         }
@@ -121,7 +121,7 @@ impl SitemapPlan {
         Ok(Self {
             origin,
             paths,
-            lastmod,
+            sitemap_index_lastmod: lastmod,
             shards,
         })
     }
@@ -140,7 +140,12 @@ impl SitemapPlan {
         if self.shards.len() == 1 {
             self.write_urlset_for_shard(&self.shards[0], writer)
         } else {
-            write_sitemap_index(&self.origin, &self.shards, self.lastmod.as_deref(), writer)
+            write_sitemap_index(
+                &self.origin,
+                &self.shards,
+                self.sitemap_index_lastmod.as_deref(),
+                writer,
+            )
         }
     }
 
@@ -178,7 +183,7 @@ impl SitemapPlan {
                 Ok(SitemapDocument::Index(render_sitemap_index_from_shards(
                     &self.origin,
                     &self.shards,
-                    self.lastmod.as_deref(),
+                    self.sitemap_index_lastmod.as_deref(),
                 )?))
             }
             SitemapQuery::Shard(_) if self.shards.len() <= 1 => {
@@ -198,7 +203,7 @@ impl SitemapPlan {
         render_urlset_from_paths(
             &self.origin,
             &self.paths[shard.path_range.clone()],
-            self.lastmod.as_deref(),
+            None,
             shard.byte_len,
         )
     }
@@ -211,7 +216,7 @@ impl SitemapPlan {
         write_urlset_from_paths(
             &self.origin,
             &self.paths[shard.path_range.clone()],
-            self.lastmod.as_deref(),
+            None,
             writer,
         )
     }
@@ -779,20 +784,26 @@ mod tests {
     }
 
     #[test]
-    fn byte_accounting_matches_rendered_urlset_length_with_lastmod() {
+    fn byte_accounting_matches_rendered_urlset_length_with_index_lastmod() {
         let path_values = paths(&["/a", "/b"]);
         let lastmod = "2026-07-05T12:34:56Z";
-        let shards =
-            shard_sitemap_paths(ORIGIN, &path_values, Some(lastmod), generous_limits()).unwrap();
+        let plan = SitemapPlan::with_lastmod(
+            ORIGIN.to_owned(),
+            path_values.clone(),
+            Some(lastmod.to_owned()),
+            generous_limits(),
+        )
+        .unwrap();
+        let shard = &plan.shards[0];
         let rendered = render_urlset_from_paths(
             ORIGIN,
-            &path_values[shards[0].path_range.clone()],
-            Some(lastmod),
-            shards[0].byte_len,
+            &path_values[shard.path_range.clone()],
+            None,
+            shard.byte_len,
         );
 
-        assert_eq!(shards[0].byte_len, rendered.len());
-        assert!(rendered.contains("<lastmod>2026-07-05T12:34:56Z</lastmod>"));
+        assert_eq!(shard.byte_len, rendered.len());
+        assert!(!rendered.contains("<lastmod>"));
     }
 
     #[test]
@@ -862,7 +873,7 @@ mod tests {
     }
 
     #[test]
-    fn entrypoint_renders_lastmod_for_urlset() {
+    fn entrypoint_omits_generation_lastmod_for_urlset() {
         let document = render_sitemap_entrypoint(
             ORIGIN,
             paths(&["/"]),
@@ -875,9 +886,26 @@ mod tests {
             panic!("expected urlset");
         };
 
-        assert!(body.contains(
-            "<url><loc>https://search.example.com/</loc><lastmod>2026-07-05T12:34:56Z</lastmod></url>"
-        ));
+        assert!(body.contains("<url><loc>https://search.example.com/</loc></url>"));
+        assert!(!body.contains("<lastmod>"));
+    }
+
+    #[test]
+    fn sitemap_index_lastmod_does_not_leak_into_shards() {
+        let document = render_sitemap_entrypoint(
+            ORIGIN,
+            paths(&["/", "/a"]),
+            Some("2026-07-05T12:34:56Z"),
+            Some("shard=00001"),
+            limits(1, 1_000_000, 50_000, 1_000_000),
+        )
+        .unwrap();
+        let SitemapDocument::Urlset(body) = document else {
+            panic!("expected urlset");
+        };
+
+        assert!(body.contains("<url><loc>https://search.example.com/</loc></url>"));
+        assert!(!body.contains("<lastmod>"));
     }
 
     #[test]

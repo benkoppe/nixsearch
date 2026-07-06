@@ -1378,7 +1378,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sitemap_includes_generation_lastmod() {
+    async fn sitemap_urlset_omits_generation_lastmod() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_options_index_with_generated_at(
@@ -1389,7 +1389,48 @@ mod tests {
         let app = test_app(app_config_with_public_url(&index_dir));
         let body = request_sitemap(app).await;
 
-        assert!(body.contains("<lastmod>1970-01-01T01:00:00Z</lastmod>"));
+        assert!(!body.contains("<lastmod>"));
+    }
+
+    #[tokio::test]
+    async fn sitemap_returns_503_when_artifact_generation_is_stale() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let config = Arc::new(app_config_with_public_url(&index_dir));
+        let old_search = SearchService::open_current(Arc::clone(&config)).unwrap();
+        let sitemap_artifacts = crate::sitemap_artifact::SitemapArtifacts::default();
+        sitemap_artifacts.set_current(
+            crate::sitemap_artifact::ensure_current_sitemap_artifact_blocking(
+                Arc::clone(&config),
+                old_search,
+            )
+            .unwrap(),
+        );
+
+        let context = ingest_context_for(SOURCE_FIXTURES, REF_SMALL);
+        publish_documents_with_manifest_targets(
+            &index_dir,
+            time::OffsetDateTime::UNIX_EPOCH + time::Duration::hours(2),
+            vec![option_doc_for(
+                &context,
+                "programs.ripgrep.enable",
+                "Ripgrep option.",
+            )],
+            vec![options_target(SOURCE_FIXTURES, REF_SMALL, 1)],
+        );
+        let search = SearchService::open_current(Arc::clone(&config)).unwrap();
+
+        let app = app_router(AppState {
+            config,
+            search,
+            sitemap_artifacts,
+        });
+        let response = request_test_response(app, "/sitemap.xml").await;
+
+        assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.body, "sitemap temporarily unavailable");
     }
 
     #[tokio::test]

@@ -143,6 +143,17 @@ pub async fn sitemap_xml(State(state): State<AppState>, _headers: HeaderMap, uri
         return sitemap_unavailable();
     };
 
+    let snapshot = state.search.snapshot();
+    let served_generation_id = &snapshot.manifest().generation_id;
+    if artifact.generation_id() != served_generation_id {
+        tracing::warn!(
+            artifact_generation_id = artifact.generation_id(),
+            served_generation_id,
+            "sitemap artifact generation does not match served search generation"
+        );
+        return sitemap_unavailable();
+    }
+
     match artifact.file_for_query(raw_query) {
         Ok(file) => file.serve_response().await,
         Err(
