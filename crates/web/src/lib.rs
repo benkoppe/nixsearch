@@ -123,7 +123,7 @@ fn app_router(state: AppState) -> Router {
         .nest("/-", internal_routes)
         .route("/robots.txt", get(handlers::robots_txt))
         .route("/sitemap.xml", get(handlers::sitemap_xml))
-        .route("/opensearch.xml", get(handlers::root_opensearch_xml))
+        .route("/opensearch.xml", get(handlers::opensearch_xml))
         .route("/sitemaps", get(handlers::sitemaps_not_found))
         .route("/sitemaps/{*path}", get(handlers::sitemaps_not_found))
         .route("/favicon.ico", get(handlers::favicon))
@@ -1171,6 +1171,14 @@ mod tests {
             Some(crate::robots::X_ROBOTS_TAG_NOINDEX_NOFOLLOW)
         );
 
+        let public_app = test_app(app_config_with_public_url(&index_dir));
+        assert_eq!(
+            request_x_robots_tag(public_app, "/opensearch.xml?source=%20fixtures%20")
+                .await
+                .as_deref(),
+            Some(crate::robots::X_ROBOTS_TAG_NOINDEX_NOFOLLOW)
+        );
+
         let private_app = test_app(app_config(&index_dir));
         assert_eq!(
             request_x_robots_tag(private_app, "/opensearch.xml")
@@ -1419,6 +1427,43 @@ mod tests {
                 "Ripgrep option.",
             )],
             vec![options_target(SOURCE_FIXTURES, REF_SMALL, 1)],
+        );
+        let search = SearchService::open_current(Arc::clone(&config)).unwrap();
+
+        let app = app_router(AppState {
+            config,
+            search,
+            sitemap_artifacts,
+        });
+        let response = request_test_response(app, "/sitemap.xml").await;
+
+        assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.body, "sitemap temporarily unavailable");
+    }
+
+    #[tokio::test]
+    async fn sitemap_returns_503_when_artifact_lastmod_is_stale() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index_with_generated_at(
+            &index_dir,
+            time::OffsetDateTime::UNIX_EPOCH + time::Duration::hours(1),
+        );
+
+        let config = Arc::new(app_config_with_public_url(&index_dir));
+        let old_search = SearchService::open_current(Arc::clone(&config)).unwrap();
+        let sitemap_artifacts = crate::sitemap_artifact::SitemapArtifacts::default();
+        sitemap_artifacts.set_current(
+            crate::sitemap_artifact::ensure_current_sitemap_artifact_blocking(
+                Arc::clone(&config),
+                old_search,
+            )
+            .unwrap(),
+        );
+
+        publish_canonical_options_index_with_generated_at(
+            &index_dir,
+            time::OffsetDateTime::UNIX_EPOCH + time::Duration::hours(2),
         );
         let search = SearchService::open_current(Arc::clone(&config)).unwrap();
 

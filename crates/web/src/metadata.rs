@@ -241,16 +241,7 @@ fn page_index_metadata(
                 return noindex_metadata();
             }
 
-            if !document.is_seo_eligible_entry() {
-                return noindex_metadata();
-            }
-
-            if !matches!(
-                state
-                    .search
-                    .document_allowed_for_public_seo(served_generation, document),
-                Ok(true)
-            ) {
+            if !document_is_public_seo_indexable(state, served_generation, document) {
                 return noindex_metadata();
             }
 
@@ -385,9 +376,36 @@ fn search_query_uses_structured_syntax(query: &str) -> bool {
     query.chars().any(|ch| {
         matches!(
             ch,
-            ':' | '"' | '(' | ')' | '+' | '^' | '~' | '*' | '?' | '\\' | '[' | ']' | '{' | '}'
+            ':' | '"'
+                | '('
+                | ')'
+                | '+'
+                | '-'
+                | '^'
+                | '~'
+                | '*'
+                | '?'
+                | '\\'
+                | '['
+                | ']'
+                | '{'
+                | '}'
         )
     })
+}
+
+fn document_is_public_seo_indexable(
+    state: &AppState,
+    served_generation: &ServedGenerationSnapshot,
+    document: &SearchDocument,
+) -> bool {
+    document.is_seo_eligible_entry()
+        && matches!(
+            state
+                .search
+                .document_allowed_for_public_seo(served_generation, document),
+            Ok(true)
+        )
 }
 
 fn search_result_has_public_seo_hit(
@@ -395,15 +413,8 @@ fn search_result_has_public_seo_hit(
     served_generation: &ServedGenerationSnapshot,
     hits: &[SearchHit],
 ) -> bool {
-    hits.iter().any(|hit| {
-        hit.document.is_seo_eligible_entry()
-            && matches!(
-                state
-                    .search
-                    .document_allowed_for_public_seo(served_generation, &hit.document),
-                Ok(true)
-            )
-    })
+    hits.iter()
+        .any(|hit| document_is_public_seo_indexable(state, served_generation, &hit.document))
 }
 
 fn source_uses_default_ref(config: &AppConfig, source: &str, ref_id: &str) -> bool {
@@ -865,6 +876,8 @@ mod tests {
     fn canonical_search_query_preserves_structured_query_case() {
         assert_eq!(canonical_search_query("  name:Git  "), "name:Git");
         assert_eq!(canonical_search_query("  \"Git Grep\"  "), "\"Git Grep\"");
+        assert_eq!(canonical_search_query("  -Git  "), "-Git");
+        assert_eq!(canonical_search_query("  foo -Bar  "), "foo -Bar");
     }
 
     #[test]

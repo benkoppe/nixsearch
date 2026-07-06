@@ -7,6 +7,7 @@ use axum::response::Response;
 use axum::response::{Html, IntoResponse, Sse, sse::Event};
 use datastar::prelude::{ExecuteScript, PatchElements};
 use futures_util::stream;
+use sha2::{Digest, Sha256};
 
 use nixsearch_index::search::{EntryFactsStatus, EntryLookupResult, SearchResult};
 use nixsearch_service::{
@@ -30,7 +31,6 @@ use crate::scripts::{
     datastar_script, datastar_script_fingerprint, navigation_script, navigation_script_fingerprint,
     style_css as style_css_asset, style_css_fingerprint,
 };
-use crate::sitemap::validate_sitemap_query;
 use crate::sitemap_artifact::SitemapArtifactLookupError;
 use crate::templates;
 use crate::templates::layout::{
@@ -134,26 +134,25 @@ pub async fn sitemap_xml(State(state): State<AppState>, _headers: HeaderMap, uri
         return sitemaps_not_found().await;
     }
 
-    let raw_query = uri.query();
-    if validate_sitemap_query(raw_query).is_err() {
-        return sitemaps_not_found().await;
-    }
-
     let Some(artifact) = state.sitemap_artifacts.current() else {
         return sitemap_unavailable();
     };
 
     let snapshot = state.search.snapshot();
     let served_generation_id = &snapshot.manifest().generation_id;
-    if artifact.generation_id() != served_generation_id {
+    let served_lastmod = crate::sitemap_artifact::sitemap_lastmod(snapshot.manifest().generated_at);
+    if artifact.generation_id() != served_generation_id || artifact.lastmod() != served_lastmod {
         tracing::warn!(
             artifact_generation_id = artifact.generation_id(),
             served_generation_id,
+            artifact_lastmod = artifact.lastmod(),
+            served_lastmod,
             "sitemap artifact generation does not match served search generation"
         );
         return sitemap_unavailable();
     }
 
+    let raw_query = uri.query();
     match artifact.file_for_query(raw_query) {
         Ok(file) => file.serve_response().await,
         Err(
@@ -162,7 +161,7 @@ pub async fn sitemap_xml(State(state): State<AppState>, _headers: HeaderMap, uri
     }
 }
 
-pub async fn root_opensearch_xml(State(state): State<AppState>, uri: Uri) -> Response {
+pub async fn opensearch_xml(State(state): State<AppState>, uri: Uri) -> Response {
     if !state.config.public_seo_enabled() {
         return sitemaps_not_found().await;
     }
@@ -204,21 +203,34 @@ fn opensearch_source_query(uri: &Uri) -> Result<Option<String>, ()> {
         let value = percent_encoding::percent_decode_str(value)
             .decode_utf8()
             .map_err(|_| ())?;
-        let value = value.trim();
-        if value.is_empty() {
+        if value.is_empty() || value.trim() != value {
             return Err(());
         }
-        source = Some(value.to_owned());
+        source = Some(value.into_owned());
     }
 
     Ok(source)
 }
 
 fn opensearch_response(body: String) -> Response {
+    let etag = format!(
+        r#""opensearch-{}""#,
+        hex::encode(&Sha256::digest(body.as_bytes())[..16])
+    );
     (
         [
-            (header::CONTENT_TYPE, opensearch::OPENSEARCH_CONTENT_TYPE),
-            (header::CACHE_CONTROL, "public, max-age=604800"),
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static(opensearch::OPENSEARCH_CONTENT_TYPE),
+            ),
+            (
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("public, max-age=604800"),
+            ),
+            (
+                header::ETAG,
+                HeaderValue::from_str(&etag).expect("generated ETag should be a valid header"),
+            ),
         ],
         body,
     )

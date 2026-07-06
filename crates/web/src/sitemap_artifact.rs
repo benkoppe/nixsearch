@@ -59,6 +59,7 @@ impl SitemapArtifacts {
 pub(crate) struct SitemapArtifact {
     generation_id: String,
     origin: String,
+    lastmod: String,
     root: SitemapArtifactFile,
     shards: BTreeMap<usize, SitemapArtifactFile>,
 }
@@ -70,6 +71,10 @@ impl SitemapArtifact {
 
     pub(crate) fn origin(&self) -> &str {
         &self.origin
+    }
+
+    pub(crate) fn lastmod(&self) -> &str {
+        &self.lastmod
     }
 
     pub(crate) fn file_for_query(
@@ -256,6 +261,7 @@ fn load_sitemap_artifact(
     Ok(SitemapArtifact {
         generation_id: manifest.generation_id,
         origin: manifest.origin,
+        lastmod: manifest.lastmod,
         root,
         shards,
     })
@@ -370,7 +376,7 @@ fn build_sitemap_artifact_in_temp(
         }
     }
 
-    let plan = SitemapPlan::with_lastmod(
+    let plan = SitemapPlan::with_sitemap_index_lastmod(
         origin.to_owned(),
         paths,
         Some(lastmod.clone()),
@@ -553,7 +559,7 @@ fn etag(sha256: &str) -> String {
     format!(r#""sitemap-{sha256}""#)
 }
 
-fn sitemap_lastmod(generated_at: OffsetDateTime) -> String {
+pub(crate) fn sitemap_lastmod(generated_at: OffsetDateTime) -> String {
     generated_at
         .format(&Rfc3339)
         .expect("RFC3339 formatting should not fail for OffsetDateTime")
