@@ -236,7 +236,7 @@ fn page_index_metadata(
 
     match entry {
         EntryData::Found(entry) => {
-            if request_has_entry_context(request) {
+            if request.has_search_return_context() {
                 return noindex_metadata();
             }
 
@@ -313,18 +313,6 @@ fn page_index_metadata(
             )
         }
     }
-}
-
-fn request_has_entry_context(request: &PageRequest) -> bool {
-    normalized_query(&request.query).is_some()
-        || request
-            .query
-            .ref_set
-            .as_deref()
-            .and_then(non_empty)
-            .is_some()
-        || request.query.source.is_some()
-        || request.query.page.unwrap_or(1) > 1
 }
 
 fn search_index_metadata(
