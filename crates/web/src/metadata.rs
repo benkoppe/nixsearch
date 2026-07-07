@@ -236,6 +236,10 @@ fn page_index_metadata(
 
     match entry {
         EntryData::Found(entry) => {
+            if request_has_entry_context(request) {
+                return noindex_metadata();
+            }
+
             let document = &entry.document;
 
             if !entry.annotation.unique_within_kind {
@@ -309,6 +313,18 @@ fn page_index_metadata(
             )
         }
     }
+}
+
+fn request_has_entry_context(request: &PageRequest) -> bool {
+    normalized_query(&request.query).is_some()
+        || request
+            .query
+            .ref_set
+            .as_deref()
+            .and_then(non_empty)
+            .is_some()
+        || request.query.source.is_some()
+        || request.query.page.unwrap_or(1) > 1
 }
 
 fn search_index_metadata(

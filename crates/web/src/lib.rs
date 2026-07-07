@@ -2212,14 +2212,8 @@ mod tests {
             request_body(app, "/fixtures/programs.git.enable?q=git&source=all").await;
 
         assert_eq!(status, StatusCode::OK);
-        assert_has_canonical(
-            &body,
-            "https://search.example.com/fixtures/programs.git.enable",
-        );
-        assert_og_url(
-            &body,
-            "https://search.example.com/fixtures/programs.git.enable",
-        );
+        assert_no_canonical(&body);
+        assert_has_robots(&body);
         assert!(body.contains(r#"<script id="initial-history-metadata" type="application/json">"#));
         assert!(body.contains(r#""returnHeadMetadata":{"#));
         assert!(body.contains(r#""returnHeadMetadataUrl":"/?q=git""#));
@@ -2478,11 +2472,8 @@ mod tests {
         assert!(body.contains("for "));
         assert_populated_modal(&body);
         assert_h1_count(&body, 1);
-        assert_has_canonical(
-            &body,
-            "https://search.example.com/fixtures/programs.git.enable",
-        );
-        assert_no_robots(&body);
+        assert_no_canonical(&body);
+        assert_has_robots(&body);
     }
 
     #[tokio::test]
@@ -2716,7 +2707,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn contextual_entry_url_canonicalizes_to_clean_entry() {
+    async fn contextual_entry_url_emits_noindex_without_canonical() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_options_index(&index_dir);
@@ -2726,11 +2717,8 @@ mod tests {
             request_body(app, "/fixtures/programs.git.enable?q=git&page=2&source=all").await;
 
         assert_eq!(status, StatusCode::OK);
-        assert_has_canonical(
-            &body,
-            "https://search.example.com/fixtures/programs.git.enable",
-        );
-        assert_no_robots(&body);
+        assert_no_canonical(&body);
+        assert_has_robots(&body);
     }
 
     #[tokio::test]
@@ -3296,10 +3284,8 @@ mod tests {
         assert!(body.contains("entry-modal"));
         assert!(body.contains("nixsearchApplyModalPatch"));
         assert!(body.contains("nixsearchApplyHeadMetadata"));
-        assert!(body.contains(
-            r#""canonicalUrl":"https://search.example.com/fixtures/programs.git.enable""#
-        ));
-        assert!(body.contains(r#""robots":null"#));
+        assert!(body.contains(r#""canonicalUrl":null"#));
+        assert!(body.contains(r#""robots":"noindex,follow""#));
     }
 
     #[tokio::test]
