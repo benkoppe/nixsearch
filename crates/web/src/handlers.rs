@@ -31,6 +31,7 @@ use crate::scripts::{
     datastar_script, datastar_script_fingerprint, navigation_script, navigation_script_fingerprint,
     style_css as style_css_asset, style_css_fingerprint,
 };
+use crate::sitemap::sitemap_shard_number_from_query;
 use crate::sitemap_artifact::SitemapArtifactLookupError;
 use crate::templates;
 use crate::templates::layout::{
@@ -97,8 +98,17 @@ fn asset_response(
     body: &'static str,
     expected_fingerprint: &str,
 ) -> Response {
-    if !asset_fingerprint_matches(uri.query(), expected_fingerprint) {
-        return (
+    match asset_fingerprint_status(uri.query(), expected_fingerprint) {
+        AssetFingerprintStatus::Current => (asset_headers(content_type), body).into_response(),
+        AssetFingerprintStatus::Stale => (
+            [
+                (header::CONTENT_TYPE, content_type),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            body,
+        )
+            .into_response(),
+        AssetFingerprintStatus::Invalid => (
             StatusCode::NOT_FOUND,
             [
                 (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
@@ -106,16 +116,39 @@ fn asset_response(
             ],
             "not found",
         )
-            .into_response();
+            .into_response(),
     }
-
-    (asset_headers(content_type), body).into_response()
 }
 
-fn asset_fingerprint_matches(raw_query: Option<&str>, expected_fingerprint: &str) -> bool {
-    raw_query
-        .and_then(|query| query.strip_prefix("v="))
-        .is_some_and(|value| !value.contains('&') && value == expected_fingerprint)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AssetFingerprintStatus {
+    Current,
+    Stale,
+    Invalid,
+}
+
+fn asset_fingerprint_status(
+    raw_query: Option<&str>,
+    expected_fingerprint: &str,
+) -> AssetFingerprintStatus {
+    let Some(value) = raw_query.and_then(|query| query.strip_prefix("v=")) else {
+        return AssetFingerprintStatus::Invalid;
+    };
+    if value.contains('&') || value.is_empty() {
+        return AssetFingerprintStatus::Invalid;
+    }
+    if value == expected_fingerprint {
+        return AssetFingerprintStatus::Current;
+    }
+    if value.len() == expected_fingerprint.len()
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return AssetFingerprintStatus::Stale;
+    }
+
+    AssetFingerprintStatus::Invalid
 }
 
 pub async fn robots_txt(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
@@ -131,6 +164,10 @@ pub async fn robots_txt(State(state): State<AppState>, headers: HeaderMap, uri: 
 
 pub async fn sitemap_xml(State(state): State<AppState>, _headers: HeaderMap, uri: Uri) -> Response {
     if !state.config.public_seo_enabled() {
+        return sitemaps_not_found().await;
+    }
+
+    if sitemap_shard_number_from_query(uri.query()).is_err() {
         return sitemaps_not_found().await;
     }
 
@@ -905,7 +942,7 @@ fn render_full_page_response(
     let mut response = Html(markup.into_string()).into_response();
     response.headers_mut().insert(
         header::CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=300"),
+        HeaderValue::from_static("public, no-cache"),
     );
     response
 }

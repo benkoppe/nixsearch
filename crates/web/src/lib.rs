@@ -1274,6 +1274,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_static_asset_fingerprints_serve_current_asset_without_caching() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+        let response = request_test_response(app, "/-/assets/style.css?v=0000000000000000").await;
+
+        assert_eq!(response.status, StatusCode::OK);
+        assert!(response.content_type.starts_with("text/css"));
+        assert_eq!(response.cache_control.as_deref(), Some("no-store"));
+        assert!(response.body.contains(":root"));
+    }
+
+    #[tokio::test]
     async fn full_page_uses_external_css_and_navigation_assets() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
@@ -1283,10 +1298,7 @@ mod tests {
         let response = request_test_response(app, "/").await;
 
         assert_eq!(response.status, StatusCode::OK);
-        assert_eq!(
-            response.cache_control.as_deref(),
-            Some("public, max-age=300")
-        );
+        assert_eq!(response.cache_control.as_deref(), Some("public, no-cache"));
         assert!(response.body.contains(&format!(
             r#"<link rel="stylesheet" href="{}">"#,
             crate::scripts::style_css_url()
@@ -1344,6 +1356,29 @@ mod tests {
             request_x_robots_tag(private_app, "/sitemap.xml")
                 .await
                 .as_deref(),
+            Some(crate::robots::X_ROBOTS_TAG_NOINDEX_NOFOLLOW)
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_sitemap_queries_return_404_without_artifact() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let config = Arc::new(app_config_with_public_url(&index_dir));
+        let search = SearchService::open_current(Arc::clone(&config)).unwrap();
+        let app = app_router(AppState {
+            config,
+            search,
+            sitemap_artifacts: crate::sitemap_artifact::SitemapArtifacts::default(),
+        });
+        let response = request_test_response(app, "/sitemap.xml?foo=bar").await;
+
+        assert_eq!(response.status, StatusCode::NOT_FOUND);
+        assert_eq!(response.body, "not found");
+        assert_eq!(
+            response.x_robots_tag.as_deref(),
             Some(crate::robots::X_ROBOTS_TAG_NOINDEX_NOFOLLOW)
         );
     }
@@ -1435,10 +1470,15 @@ mod tests {
             search,
             sitemap_artifacts,
         });
-        let response = request_test_response(app, "/sitemap.xml").await;
+        let response = request_test_response(app.clone(), "/sitemap.xml").await;
 
         assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(response.body, "sitemap temporarily unavailable");
+
+        let response = request_test_response(app, "/sitemap.xml?foo=bar").await;
+
+        assert_eq!(response.status, StatusCode::NOT_FOUND);
+        assert_eq!(response.body, "not found");
     }
 
     #[tokio::test]
@@ -1472,10 +1512,15 @@ mod tests {
             search,
             sitemap_artifacts,
         });
-        let response = request_test_response(app, "/sitemap.xml").await;
+        let response = request_test_response(app.clone(), "/sitemap.xml").await;
 
         assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(response.body, "sitemap temporarily unavailable");
+
+        let response = request_test_response(app, "/sitemap.xml?foo=bar").await;
+
+        assert_eq!(response.status, StatusCode::NOT_FOUND);
+        assert_eq!(response.body, "not found");
     }
 
     #[tokio::test]
