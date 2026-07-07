@@ -37,6 +37,7 @@ const RESERVED_SOURCE_IDS: &[&str] = &[
     "..",
     "robots.txt",
     "sitemap.xml",
+    "opensearch.xml",
     "sitemaps",
     "favicon.ico",
     "apple-touch-icon.png",

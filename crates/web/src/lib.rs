@@ -17,6 +17,7 @@ mod entry;
 mod handlers;
 mod maintenance;
 mod metadata;
+mod opensearch;
 mod origin;
 mod reconciliation;
 mod render_docs;
@@ -33,9 +34,11 @@ const DEFAULT_LIMIT: usize = 50;
 const MAX_PAGE: usize = 1000;
 const MAX_OFFSET: usize = (MAX_PAGE - 1) * DEFAULT_LIMIT;
 
-const DATASTAR_JS_URL: &str = "/-/assets/datastar.js";
+const DATASTAR_JS_PATH: &str = "/-/assets/datastar.js";
+const NAVIGATION_JS_PATH: &str = "/-/assets/navigation.js";
 const RECONCILE_EVENTS_URL: &str = "/-/state/events";
 const RESULTS_SLICE_URL: &str = "/-/results/slice";
+const STYLE_CSS_PATH: &str = "/-/assets/style.css";
 
 #[derive(Debug, Clone)]
 struct AppState {
@@ -112,12 +115,15 @@ fn app_router(state: AppState) -> Router {
         .route("/state/events", get(handlers::state_events))
         .route("/results/slice", get(handlers::results_slice))
         .route("/assets/datastar.js", get(handlers::datastar_js))
+        .route("/assets/navigation.js", get(handlers::navigation_js))
+        .route("/assets/style.css", get(handlers::style_css))
         .layer(middleware::map_response(robots::add_noindex_header));
 
     Router::new()
         .nest("/-", internal_routes)
         .route("/robots.txt", get(handlers::robots_txt))
         .route("/sitemap.xml", get(handlers::sitemap_xml))
+        .route("/opensearch.xml", get(handlers::opensearch_xml))
         .route("/sitemaps", get(handlers::sitemaps_not_found))
         .route("/sitemaps/{*path}", get(handlers::sitemaps_not_found))
         .route("/favicon.ico", get(handlers::favicon))
@@ -489,8 +495,8 @@ mod tests {
     use nixsearch_index::store::IndexStore;
     use nixsearch_index_test_support::{
         assert_canonical_options_manifest_targets, index_target, options_target,
-        publish_canonical_options_index, publish_documents_with_manifest_targets,
-        publish_fixture_options_index_for_refs,
+        publish_canonical_options_index, publish_canonical_options_index_with_generated_at,
+        publish_documents_with_manifest_targets, publish_fixture_options_index_for_refs,
     };
     use nixsearch_service::{SearchService, ServingGenerationPolicy};
     use nixsearch_test_support::{
@@ -529,6 +535,7 @@ mod tests {
 
     struct TestResponse {
         status: StatusCode,
+        cache_control: Option<String>,
         content_type: String,
         location: Option<String>,
         x_robots_tag: Option<String>,
@@ -570,6 +577,11 @@ mod tests {
             .await
             .unwrap();
         let status = response.status();
+        let cache_control = response
+            .headers()
+            .get("cache-control")
+            .and_then(|value| value.to_str().ok())
+            .map(ToOwned::to_owned);
         let content_type = response
             .headers()
             .get("content-type")
@@ -590,6 +602,7 @@ mod tests {
 
         TestResponse {
             status,
+            cache_control,
             content_type,
             location,
             x_robots_tag,
@@ -734,6 +747,48 @@ mod tests {
                 SearchDocument::Option(hidden),
             ],
             vec![options_target(SOURCE_FIXTURES, REF_SMALL, 2)],
+        );
+    }
+
+    fn publish_public_internal_and_hidden_options_index(index_dir: &camino::Utf8Path) {
+        let context = ingest_context_for(SOURCE_FIXTURES, REF_SMALL);
+
+        let mut internal = match option_doc_for(&context, "internal.entry", "Internal option.") {
+            SearchDocument::Option(option) => option,
+            SearchDocument::Package(_) => unreachable!(),
+        };
+        internal.internal = Some(true);
+
+        let mut hidden = match option_doc_for(&context, "hidden.entry", "Hidden option.") {
+            SearchDocument::Option(option) => option,
+            SearchDocument::Package(_) => unreachable!(),
+        };
+        hidden.visible = Some(false);
+
+        publish_documents_with_manifest_targets(
+            index_dir,
+            time::OffsetDateTime::now_utc(),
+            vec![
+                option_doc_for(&context, "public.entry", "Public option."),
+                SearchDocument::Option(internal),
+                SearchDocument::Option(hidden),
+            ],
+            vec![options_target(SOURCE_FIXTURES, REF_SMALL, 3)],
+        );
+    }
+
+    fn publish_opensearch_entry_options_index(index_dir: &camino::Utf8Path) {
+        let context = ingest_context_for(SOURCE_FIXTURES, REF_SMALL);
+
+        publish_documents_with_manifest_targets(
+            index_dir,
+            time::OffsetDateTime::now_utc(),
+            vec![option_doc_for(
+                &context,
+                "opensearch.xml",
+                "OpenSearch option.",
+            )],
+            vec![options_target(SOURCE_FIXTURES, REF_SMALL, 1)],
         );
     }
 
@@ -1047,6 +1102,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn opensearch_routes_use_configured_public_origin() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+
+        let response = request_test_response(app.clone(), "/opensearch.xml").await;
+        assert_eq!(response.status, StatusCode::OK);
+        assert!(
+            response
+                .content_type
+                .starts_with("application/opensearchdescription+xml")
+        );
+        assert_eq!(
+            response.cache_control.as_deref(),
+            Some("public, max-age=604800")
+        );
+        assert!(response.body.contains("<ShortName>nixsearch</ShortName>"));
+        assert!(
+            response
+                .body
+                .contains(r#"template="https://search.example.com/?q={searchTerms}""#)
+        );
+        assert!(
+            response
+                .body
+                .contains("<SearchForm>https://search.example.com/</SearchForm>")
+        );
+
+        let response = request_test_response(app, "/opensearch.xml?source=fixtures").await;
+        assert_eq!(response.status, StatusCode::OK);
+        assert!(response.body.contains("<ShortName>fixtures</ShortName>"));
+        assert!(
+            response
+                .body
+                .contains(r#"template="https://search.example.com/fixtures?q={searchTerms}""#)
+        );
+    }
+
+    #[tokio::test]
+    async fn source_opensearch_path_remains_available_for_entries() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_opensearch_entry_options_index(&index_dir);
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+        let (status, body) = request_body(app, "/fixtures/opensearch.xml").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("opensearch.xml"));
+        assert_has_canonical(&body, "https://search.example.com/fixtures/opensearch.xml");
+        assert!(!body.contains("OpenSearchDescription"));
+    }
+
+    #[tokio::test]
+    async fn opensearch_not_found_responses_emit_x_robots_noindex_header() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let public_app = test_app(app_config_with_public_url(&index_dir));
+        assert_eq!(
+            request_x_robots_tag(public_app, "/opensearch.xml?source=missing")
+                .await
+                .as_deref(),
+            Some(crate::robots::X_ROBOTS_TAG_NOINDEX_NOFOLLOW)
+        );
+
+        let public_app = test_app(app_config_with_public_url(&index_dir));
+        assert_eq!(
+            request_x_robots_tag(public_app, "/opensearch.xml?source=%20fixtures%20")
+                .await
+                .as_deref(),
+            Some(crate::robots::X_ROBOTS_TAG_NOINDEX_NOFOLLOW)
+        );
+
+        let private_app = test_app(app_config(&index_dir));
+        assert_eq!(
+            request_x_robots_tag(private_app, "/opensearch.xml")
+                .await
+                .as_deref(),
+            Some(crate::robots::X_ROBOTS_TAG_NOINDEX_NOFOLLOW)
+        );
+    }
+
+    #[tokio::test]
     async fn internal_endpoints_emit_x_robots_noindex_header() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
@@ -1064,6 +1206,8 @@ mod tests {
             "/-/health",
             "/-/state/events?url=%2F",
             "/-/assets/datastar.js",
+            "/-/assets/navigation.js",
+            "/-/assets/style.css",
             result_slice_uri.as_str(),
         ] {
             assert_eq!(
@@ -1075,6 +1219,109 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn static_assets_are_served_with_long_lived_cache_headers() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+
+        for (uri, expected_content_type, expected_body) in [
+            (
+                crate::scripts::datastar_script_url(),
+                "text/javascript",
+                "datastar",
+            ),
+            (
+                crate::scripts::navigation_script_url(),
+                "text/javascript",
+                "nixsearch-reconcile",
+            ),
+            (crate::scripts::style_css_url(), "text/css", ":root"),
+        ] {
+            let response = request_test_response(app.clone(), uri).await;
+
+            assert_eq!(response.status, StatusCode::OK, "{uri}");
+            assert!(
+                response.content_type.starts_with(expected_content_type),
+                "{uri}: {}",
+                response.content_type
+            );
+            assert_eq!(
+                response.cache_control.as_deref(),
+                Some("public, max-age=31536000, immutable"),
+                "{uri}"
+            );
+            assert!(response.body.contains(expected_body), "{uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn static_assets_require_matching_fingerprints_for_immutable_cache() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+
+        for uri in ["/-/assets/style.css", "/-/assets/style.css?v=wrong"] {
+            let response = request_test_response(app.clone(), uri).await;
+
+            assert_eq!(response.status, StatusCode::NOT_FOUND, "{uri}");
+            assert_eq!(response.cache_control.as_deref(), Some("no-store"), "{uri}");
+            assert!(!response.body.contains(":root"), "{uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn stale_static_asset_fingerprints_serve_current_asset_without_caching() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+        let response = request_test_response(app, "/-/assets/style.css?v=0000000000000000").await;
+
+        assert_eq!(response.status, StatusCode::OK);
+        assert!(response.content_type.starts_with("text/css"));
+        assert_eq!(response.cache_control.as_deref(), Some("no-store"));
+        assert!(response.body.contains(":root"));
+    }
+
+    #[tokio::test]
+    async fn full_page_uses_external_css_and_navigation_assets() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+        let response = request_test_response(app, "/").await;
+
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(response.cache_control.as_deref(), Some("public, no-cache"));
+        assert!(response.body.contains(&format!(
+            r#"<link rel="stylesheet" href="{}">"#,
+            crate::scripts::style_css_url()
+        )));
+        assert!(response.body.contains(
+            r#"<link rel="search" type="application/opensearchdescription+xml" title="nixsearch" href="/opensearch.xml">"#
+        ));
+        assert!(response.body.contains(
+            r#"<link rel="search" type="application/opensearchdescription+xml" title="nixsearch Fixtures" href="/opensearch.xml?source=fixtures">"#
+        ));
+        assert!(response.body.contains(&format!(
+            r#"<script type="module" src="{}"></script>"#,
+            crate::scripts::datastar_script_url()
+        )));
+        assert!(response.body.contains(&format!(
+            r#"<script src="{}"></script>"#,
+            crate::scripts::navigation_script_url()
+        )));
+        assert!(!response.body.contains("const RECONCILE_EVENT"));
+        assert!(!response.body.contains("color-scheme: dark"));
+    }
+
+    #[tokio::test]
     async fn public_pages_and_sitemap_do_not_emit_x_robots_header() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
@@ -1082,7 +1329,7 @@ mod tests {
 
         let app = test_app(app_config_with_public_url(&index_dir));
 
-        for uri in ["/", "/sitemap.xml"] {
+        for uri in ["/", "/sitemap.xml", "/opensearch.xml"] {
             assert_eq!(request_x_robots_tag(app.clone(), uri).await, None, "{uri}");
         }
     }
@@ -1109,6 +1356,29 @@ mod tests {
             request_x_robots_tag(private_app, "/sitemap.xml")
                 .await
                 .as_deref(),
+            Some(crate::robots::X_ROBOTS_TAG_NOINDEX_NOFOLLOW)
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_sitemap_queries_return_404_without_artifact() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let config = Arc::new(app_config_with_public_url(&index_dir));
+        let search = SearchService::open_current(Arc::clone(&config)).unwrap();
+        let app = app_router(AppState {
+            config,
+            search,
+            sitemap_artifacts: crate::sitemap_artifact::SitemapArtifacts::default(),
+        });
+        let response = request_test_response(app, "/sitemap.xml?foo=bar").await;
+
+        assert_eq!(response.status, StatusCode::NOT_FOUND);
+        assert_eq!(response.body, "not found");
+        assert_eq!(
+            response.x_robots_tag.as_deref(),
             Some(crate::robots::X_ROBOTS_TAG_NOINDEX_NOFOLLOW)
         );
     }
@@ -1148,6 +1418,109 @@ mod tests {
         let body = request_sitemap(app).await;
 
         assert_sitemap_has_path(&body, "/");
+    }
+
+    #[tokio::test]
+    async fn sitemap_urlset_omits_generation_lastmod() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index_with_generated_at(
+            &index_dir,
+            time::OffsetDateTime::UNIX_EPOCH + time::Duration::hours(1),
+        );
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+        let body = request_sitemap(app).await;
+
+        assert!(!body.contains("<lastmod>"));
+    }
+
+    #[tokio::test]
+    async fn sitemap_returns_503_when_artifact_generation_is_stale() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let config = Arc::new(app_config_with_public_url(&index_dir));
+        let old_search = SearchService::open_current(Arc::clone(&config)).unwrap();
+        let sitemap_artifacts = crate::sitemap_artifact::SitemapArtifacts::default();
+        sitemap_artifacts.set_current(
+            crate::sitemap_artifact::ensure_current_sitemap_artifact_blocking(
+                Arc::clone(&config),
+                old_search,
+            )
+            .unwrap(),
+        );
+
+        let context = ingest_context_for(SOURCE_FIXTURES, REF_SMALL);
+        publish_documents_with_manifest_targets(
+            &index_dir,
+            time::OffsetDateTime::UNIX_EPOCH + time::Duration::hours(2),
+            vec![option_doc_for(
+                &context,
+                "programs.ripgrep.enable",
+                "Ripgrep option.",
+            )],
+            vec![options_target(SOURCE_FIXTURES, REF_SMALL, 1)],
+        );
+        let search = SearchService::open_current(Arc::clone(&config)).unwrap();
+
+        let app = app_router(AppState {
+            config,
+            search,
+            sitemap_artifacts,
+        });
+        let response = request_test_response(app.clone(), "/sitemap.xml").await;
+
+        assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.body, "sitemap temporarily unavailable");
+
+        let response = request_test_response(app, "/sitemap.xml?foo=bar").await;
+
+        assert_eq!(response.status, StatusCode::NOT_FOUND);
+        assert_eq!(response.body, "not found");
+    }
+
+    #[tokio::test]
+    async fn sitemap_returns_503_when_artifact_lastmod_is_stale() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index_with_generated_at(
+            &index_dir,
+            time::OffsetDateTime::UNIX_EPOCH + time::Duration::hours(1),
+        );
+
+        let config = Arc::new(app_config_with_public_url(&index_dir));
+        let old_search = SearchService::open_current(Arc::clone(&config)).unwrap();
+        let sitemap_artifacts = crate::sitemap_artifact::SitemapArtifacts::default();
+        sitemap_artifacts.set_current(
+            crate::sitemap_artifact::ensure_current_sitemap_artifact_blocking(
+                Arc::clone(&config),
+                old_search,
+            )
+            .unwrap(),
+        );
+
+        publish_canonical_options_index_with_generated_at(
+            &index_dir,
+            time::OffsetDateTime::UNIX_EPOCH + time::Duration::hours(2),
+        );
+        let search = SearchService::open_current(Arc::clone(&config)).unwrap();
+
+        let app = app_router(AppState {
+            config,
+            search,
+            sitemap_artifacts,
+        });
+        let response = request_test_response(app.clone(), "/sitemap.xml").await;
+
+        assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.body, "sitemap temporarily unavailable");
+
+        let response = request_test_response(app, "/sitemap.xml?foo=bar").await;
+
+        assert_eq!(response.status, StatusCode::NOT_FOUND);
+        assert_eq!(response.body, "not found");
     }
 
     #[tokio::test]
@@ -1840,7 +2213,7 @@ mod tests {
 
         assert_eq!(status, StatusCode::OK);
         assert_no_canonical(&body);
-        assert_no_open_graph(&body);
+        assert_has_robots(&body);
         assert!(body.contains(r#"<script id="initial-history-metadata" type="application/json">"#));
         assert!(body.contains(r#""returnHeadMetadata":{"#));
         assert!(body.contains(r#""returnHeadMetadataUrl":"/?q=git""#));
@@ -2233,7 +2606,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_pages_emit_noindex_without_canonical() {
+    async fn all_source_search_pages_emit_noindex_without_canonical() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_options_index(&index_dir);
@@ -2245,6 +2618,64 @@ mod tests {
         assert_no_canonical(&body);
         assert_has_robots(&body);
         assert_no_open_graph(&body);
+    }
+
+    #[tokio::test]
+    async fn clean_named_source_search_page_emits_canonical() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+        let (status, body) = request_body(app, "/fixtures?q=git").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_has_canonical(&body, "https://search.example.com/fixtures?q=git");
+        assert_og_url(&body, "https://search.example.com/fixtures?q=git");
+        assert_no_robots(&body);
+    }
+
+    #[tokio::test]
+    async fn named_source_search_page_canonicalizes_simple_query_spelling() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+        let (status, body) = request_body(app, "/fixtures?q=%20Git%20").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_has_canonical(&body, "https://search.example.com/fixtures?q=git");
+        assert_og_url(&body, "https://search.example.com/fixtures?q=git");
+        assert_no_robots(&body);
+    }
+
+    #[tokio::test]
+    async fn empty_named_source_search_page_emits_noindex_without_canonical() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+        let (status, body) = request_body(app, "/fixtures?q=definitelynotindexed").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_no_canonical(&body);
+        assert_has_robots(&body);
+    }
+
+    #[tokio::test]
+    async fn search_page_matching_only_hidden_entries_emits_noindex_without_canonical() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_public_internal_and_hidden_options_index(&index_dir);
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+        let (status, body) = request_body(app, "/fixtures?q=hidden").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_no_canonical(&body);
+        assert_has_robots(&body);
     }
 
     #[tokio::test]
@@ -2262,6 +2693,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn paginated_named_source_search_pages_emit_noindex_without_canonical() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+        let (status, body) = request_body(app, "/fixtures?q=git&page=2").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_no_canonical(&body);
+        assert_has_robots(&body);
+    }
+
+    #[tokio::test]
     async fn contextual_entry_url_emits_noindex_without_canonical() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
@@ -2270,6 +2715,34 @@ mod tests {
         let app = test_app(app_config_with_public_url(&index_dir));
         let (status, body) =
             request_body(app, "/fixtures/programs.git.enable?q=git&page=2&source=all").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_no_canonical(&body);
+        assert_has_robots(&body);
+    }
+
+    #[tokio::test]
+    async fn non_default_ref_search_page_emits_noindex_without_canonical() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_fixture_options_index_for_refs(&index_dir, &[REF_SMALL, REF_STABLE]);
+
+        let app = test_app(multi_ref_app_config_with_public_url(&index_dir));
+        let (status, body) = request_body(app, "/fixtures?q=git&ref=stable").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_no_canonical(&body);
+        assert_has_robots(&body);
+    }
+
+    #[tokio::test]
+    async fn ref_set_search_page_emits_noindex_without_canonical() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_fixture_options_index_for_refs(&index_dir, &[REF_SMALL, REF_STABLE]);
+
+        let app = test_app(multi_ref_app_config_with_public_url(&index_dir));
+        let (status, body) = request_body(app, "/fixtures?q=git&ref_set=single").await;
 
         assert_eq!(status, StatusCode::OK);
         assert_no_canonical(&body);
@@ -2864,7 +3337,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn state_events_emits_noindex_head_metadata_for_search_page() {
+    async fn state_events_emits_noindex_head_metadata_for_all_source_search_page() {
         let tempdir = tempdir().unwrap();
         let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
         publish_canonical_options_index(&index_dir);
@@ -2878,6 +3351,23 @@ mod tests {
         assert!(body.contains("nixsearchApplyHeadMetadata"));
         assert!(body.contains(r#""canonicalUrl":null"#));
         assert!(body.contains(r#""robots":"noindex,follow""#));
+    }
+
+    #[tokio::test]
+    async fn state_events_emits_canonical_head_metadata_for_named_source_search_page() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+        let generation_id = current_generation_id(&index_dir);
+
+        let app = test_app(app_config_with_public_url(&index_dir));
+        let uri = with_generation("/-/state/events?url=%2Ffixtures%3Fq%3Dgit", &generation_id);
+        let (status, body) = request_body(app, &uri).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("nixsearchApplyHeadMetadata"));
+        assert!(body.contains(r#""canonicalUrl":"https://search.example.com/fixtures?q=git""#));
+        assert!(body.contains(r#""robots":null"#));
     }
 
     #[tokio::test]

@@ -1,10 +1,36 @@
+use std::sync::LazyLock;
+
+use sha2::{Digest, Sha256};
+
+use crate::DATASTAR_JS_PATH;
 use crate::DEFAULT_LIMIT;
+use crate::NAVIGATION_JS_PATH;
 use crate::RESULTS_SLICE_URL;
+use crate::STYLE_CSS_PATH;
 use crate::request::QuerySource;
 
 const DEFAULT_LIMIT_PLACEHOLDER: &str = "__DEFAULT_LIMIT__";
 const RESULTS_SLICE_URL_PLACEHOLDER: &str = "__RESULTS_SLICE_URL__";
 const SOURCE_ALL_VALUE_PLACEHOLDER: &str = "__SOURCE_ALL_VALUE__";
+
+static DATASTAR_SCRIPT_URL: LazyLock<String> =
+    LazyLock::new(|| fingerprinted_asset_url(DATASTAR_JS_PATH, datastar_script_fingerprint()));
+static DATASTAR_SCRIPT_FINGERPRINT: LazyLock<String> =
+    LazyLock::new(|| asset_fingerprint(datastar_script()));
+static NAVIGATION_SCRIPT: LazyLock<String> = LazyLock::new(|| {
+    include_str!("scripts/navigation.js")
+        .replace(RESULTS_SLICE_URL_PLACEHOLDER, RESULTS_SLICE_URL)
+        .replace(DEFAULT_LIMIT_PLACEHOLDER, &DEFAULT_LIMIT.to_string())
+        .replace(SOURCE_ALL_VALUE_PLACEHOLDER, QuerySource::All.as_str())
+});
+static NAVIGATION_SCRIPT_URL: LazyLock<String> =
+    LazyLock::new(|| fingerprinted_asset_url(NAVIGATION_JS_PATH, navigation_script_fingerprint()));
+static NAVIGATION_SCRIPT_FINGERPRINT: LazyLock<String> =
+    LazyLock::new(|| asset_fingerprint(navigation_script()));
+static STYLE_CSS: &str = include_str!("../style.css");
+static STYLE_CSS_URL: LazyLock<String> =
+    LazyLock::new(|| fingerprinted_asset_url(STYLE_CSS_PATH, style_css_fingerprint()));
+static STYLE_CSS_FINGERPRINT: LazyLock<String> = LazyLock::new(|| asset_fingerprint(style_css()));
 
 pub fn datastar_script() -> &'static str {
     include_str!(env!(
@@ -13,16 +39,50 @@ pub fn datastar_script() -> &'static str {
     ))
 }
 
+pub fn datastar_script_url() -> &'static str {
+    DATASTAR_SCRIPT_URL.as_str()
+}
+
+pub fn datastar_script_fingerprint() -> &'static str {
+    DATASTAR_SCRIPT_FINGERPRINT.as_str()
+}
+
 #[cfg(test)]
 pub fn dialog_reconcile_script() -> &'static str {
     include_str!("scripts/dialog-reconcile.js")
 }
 
-pub fn navigation_script() -> String {
-    include_str!("scripts/navigation.js")
-        .replace(RESULTS_SLICE_URL_PLACEHOLDER, RESULTS_SLICE_URL)
-        .replace(DEFAULT_LIMIT_PLACEHOLDER, &DEFAULT_LIMIT.to_string())
-        .replace(SOURCE_ALL_VALUE_PLACEHOLDER, QuerySource::All.as_str())
+pub fn navigation_script() -> &'static str {
+    NAVIGATION_SCRIPT.as_str()
+}
+
+pub fn navigation_script_url() -> &'static str {
+    NAVIGATION_SCRIPT_URL.as_str()
+}
+
+pub fn navigation_script_fingerprint() -> &'static str {
+    NAVIGATION_SCRIPT_FINGERPRINT.as_str()
+}
+
+pub fn style_css() -> &'static str {
+    STYLE_CSS
+}
+
+pub fn style_css_url() -> &'static str {
+    STYLE_CSS_URL.as_str()
+}
+
+pub fn style_css_fingerprint() -> &'static str {
+    STYLE_CSS_FINGERPRINT.as_str()
+}
+
+fn asset_fingerprint(body: &str) -> String {
+    let digest = Sha256::digest(body.as_bytes());
+    hex::encode(&digest[..8])
+}
+
+fn fingerprinted_asset_url(path: &str, fingerprint: &str) -> String {
+    format!("{path}?v={fingerprint}")
 }
 
 #[cfg(test)]
@@ -166,9 +226,9 @@ mod tests {
         let script = navigation_script();
 
         assert!(script.contains("const MODAL_OPEN_CLASS = \"modal-open\";"));
-        assert!(script.contains(
-            "const MODAL_SCROLLBAR_GUTTER_CLASS = \"modal-scrollbar-gutter\";"
-        ));
+        assert!(
+            script.contains("const MODAL_SCROLLBAR_GUTTER_CLASS = \"modal-scrollbar-gutter\";")
+        );
         assert!(script.contains("function applyModalRootState(open)"));
         assert!(script.contains("hasViewportScrollbar(root)"));
         assert!(script.contains("if (!root.classList.contains(MODAL_OPEN_CLASS))"));
@@ -375,8 +435,6 @@ mod tests {
         assert!(script.contains("if (!root.classList.contains(\"modal-open\"))"));
         assert!(script.contains("window.innerWidth > root.clientWidth"));
         assert!(script.contains("root.classList.add(\"modal-open\")"));
-        assert!(script.contains(
-            "root.classList.remove(\"modal-scrollbar-gutter\")"
-        ));
+        assert!(script.contains("root.classList.remove(\"modal-scrollbar-gutter\")"));
     }
 }

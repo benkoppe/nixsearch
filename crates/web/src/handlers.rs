@@ -2,11 +2,12 @@ use std::convert::Infallible;
 
 use axum::Json;
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode, Uri, header};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri, header};
 use axum::response::Response;
 use axum::response::{Html, IntoResponse, Sse, sse::Event};
 use datastar::prelude::{ExecuteScript, PatchElements};
 use futures_util::stream;
+use sha2::{Digest, Sha256};
 
 use nixsearch_index::search::{EntryFactsStatus, EntryLookupResult, SearchResult};
 use nixsearch_service::{
@@ -18,6 +19,7 @@ use crate::AppState;
 use crate::DEFAULT_LIMIT;
 use crate::entry::{AnnotatedEntryDocument, EntryData};
 use crate::metadata::{self, PageHeadMetadataInput, PageMetadata};
+use crate::opensearch;
 use crate::origin::{PageUrls, page_urls, page_urls_for_public_uri, public_path_and_query};
 use crate::reconciliation::RequestGeneration;
 use crate::request::{
@@ -25,8 +27,11 @@ use crate::request::{
     page_request_from_public_uri, page_state, public_uri,
 };
 use crate::robots;
-use crate::scripts::datastar_script;
-use crate::sitemap::validate_sitemap_query;
+use crate::scripts::{
+    datastar_script, datastar_script_fingerprint, navigation_script, navigation_script_fingerprint,
+    style_css as style_css_asset, style_css_fingerprint,
+};
+use crate::sitemap::sitemap_shard_number_from_query;
 use crate::sitemap_artifact::SitemapArtifactLookupError;
 use crate::templates;
 use crate::templates::layout::{
@@ -53,11 +58,97 @@ pub async fn apple_touch_icon() -> impl IntoResponse {
     )
 }
 
-pub async fn datastar_js() -> impl IntoResponse {
-    (
-        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+pub async fn datastar_js(uri: Uri) -> Response {
+    asset_response(
+        &uri,
+        "text/javascript; charset=utf-8",
         datastar_script(),
+        datastar_script_fingerprint(),
     )
+}
+
+pub async fn navigation_js(uri: Uri) -> Response {
+    asset_response(
+        &uri,
+        "text/javascript; charset=utf-8",
+        navigation_script(),
+        navigation_script_fingerprint(),
+    )
+}
+
+pub async fn style_css(uri: Uri) -> Response {
+    asset_response(
+        &uri,
+        "text/css; charset=utf-8",
+        style_css_asset(),
+        style_css_fingerprint(),
+    )
+}
+
+fn asset_headers(content_type: &'static str) -> [(HeaderName, &'static str); 2] {
+    [
+        (header::CONTENT_TYPE, content_type),
+        (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+    ]
+}
+
+fn asset_response(
+    uri: &Uri,
+    content_type: &'static str,
+    body: &'static str,
+    expected_fingerprint: &str,
+) -> Response {
+    match asset_fingerprint_status(uri.query(), expected_fingerprint) {
+        AssetFingerprintStatus::Current => (asset_headers(content_type), body).into_response(),
+        AssetFingerprintStatus::Stale => (
+            [
+                (header::CONTENT_TYPE, content_type),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            body,
+        )
+            .into_response(),
+        AssetFingerprintStatus::Invalid => (
+            StatusCode::NOT_FOUND,
+            [
+                (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            "not found",
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AssetFingerprintStatus {
+    Current,
+    Stale,
+    Invalid,
+}
+
+fn asset_fingerprint_status(
+    raw_query: Option<&str>,
+    expected_fingerprint: &str,
+) -> AssetFingerprintStatus {
+    let Some(value) = raw_query.and_then(|query| query.strip_prefix("v=")) else {
+        return AssetFingerprintStatus::Invalid;
+    };
+    if value.contains('&') || value.is_empty() {
+        return AssetFingerprintStatus::Invalid;
+    }
+    if value == expected_fingerprint {
+        return AssetFingerprintStatus::Current;
+    }
+    if value.len() == expected_fingerprint.len()
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return AssetFingerprintStatus::Stale;
+    }
+
+    AssetFingerprintStatus::Invalid
 }
 
 pub async fn robots_txt(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
@@ -76,21 +167,109 @@ pub async fn sitemap_xml(State(state): State<AppState>, _headers: HeaderMap, uri
         return sitemaps_not_found().await;
     }
 
-    let raw_query = uri.query();
-    if validate_sitemap_query(raw_query).is_err() {
-        return sitemaps_not_found().await;
-    }
+    let shard_number = match sitemap_shard_number_from_query(uri.query()) {
+        Ok(shard_number) => shard_number,
+        Err(_) => return sitemaps_not_found().await,
+    };
 
     let Some(artifact) = state.sitemap_artifacts.current() else {
         return sitemap_unavailable();
     };
 
-    match artifact.file_for_query(raw_query) {
-        Ok(file) => file.serve_response().await,
-        Err(
-            SitemapArtifactLookupError::MalformedQuery | SitemapArtifactLookupError::ShardNotFound,
-        ) => sitemaps_not_found().await,
+    let snapshot = state.search.snapshot();
+    let served_generation_id = &snapshot.manifest().generation_id;
+    let served_lastmod = crate::sitemap_artifact::sitemap_lastmod(snapshot.manifest().generated_at);
+    if artifact.generation_id() != served_generation_id || artifact.lastmod() != served_lastmod {
+        tracing::warn!(
+            artifact_generation_id = artifact.generation_id(),
+            served_generation_id,
+            artifact_lastmod = artifact.lastmod(),
+            served_lastmod,
+            "sitemap artifact generation does not match served search generation"
+        );
+        return sitemap_unavailable();
     }
+
+    match artifact.file_for_shard_number(shard_number) {
+        Ok(file) => file.serve_response().await,
+        Err(SitemapArtifactLookupError::ShardNotFound) => sitemaps_not_found().await,
+    }
+}
+
+pub async fn opensearch_xml(State(state): State<AppState>, uri: Uri) -> Response {
+    if !state.config.public_seo_enabled() {
+        return sitemaps_not_found().await;
+    }
+
+    let source = match opensearch_source_query(&uri) {
+        Ok(source) => source,
+        Err(()) => return sitemaps_not_found().await,
+    };
+
+    let Some(origin) = crate::origin::configured_public_origin(&state.config) else {
+        return sitemaps_not_found().await;
+    };
+
+    if let Some(source) = source {
+        let Some(body) = opensearch::source_opensearch_xml(&state.config, &origin, &source) else {
+            return sitemaps_not_found().await;
+        };
+
+        return opensearch_response(body);
+    }
+
+    opensearch_response(opensearch::root_opensearch_xml(&origin))
+}
+
+fn opensearch_source_query(uri: &Uri) -> Result<Option<String>, ()> {
+    let Some(raw_query) = uri.query() else {
+        return Ok(None);
+    };
+    if raw_query.is_empty() {
+        return Ok(None);
+    }
+
+    let mut source = None;
+    for part in raw_query.split('&') {
+        let (key, value) = part.split_once('=').unwrap_or((part, ""));
+        if key != "source" || source.is_some() {
+            return Err(());
+        }
+        let value = percent_encoding::percent_decode_str(value)
+            .decode_utf8()
+            .map_err(|_| ())?;
+        if value.is_empty() || value.trim() != value {
+            return Err(());
+        }
+        source = Some(value.into_owned());
+    }
+
+    Ok(source)
+}
+
+fn opensearch_response(body: String) -> Response {
+    let etag = format!(
+        r#""opensearch-{}""#,
+        hex::encode(&Sha256::digest(body.as_bytes())[..16])
+    );
+    (
+        [
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static(opensearch::OPENSEARCH_CONTENT_TYPE),
+            ),
+            (
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("public, max-age=604800"),
+            ),
+            (
+                header::ETAG,
+                HeaderValue::from_str(&etag).expect("generated ETag should be a valid header"),
+            ),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 pub async fn sitemaps_not_found() -> Response {
@@ -758,7 +937,12 @@ fn render_full_page_response(
         initial_return_metadata: initial_return_metadata.as_ref(),
     });
 
-    Html(markup.into_string()).into_response()
+    let mut response = Html(markup.into_string()).into_response();
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, no-cache"),
+    );
+    response
 }
 
 fn render_full_page_error_response(

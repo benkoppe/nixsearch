@@ -3,7 +3,8 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use nixsearch_config::app::AppConfig;
 use nixsearch_core::document::SearchDocument;
-use nixsearch_index::search::SearchResult;
+use nixsearch_index::query_uses_structured_syntax;
+use nixsearch_index::search::{SearchHit, SearchResult};
 use nixsearch_service::{SeoFactsResult, ServedGenerationSnapshot};
 
 use crate::AppState;
@@ -14,7 +15,10 @@ use crate::request::{
 };
 use crate::robots::ROBOTS_NOINDEX_FOLLOW;
 use crate::source_labels::{source_display_name, source_kind_noun};
-use crate::urls::{canonical_entry_path_for_document, canonical_home_path, canonical_source_path};
+use crate::urls::{
+    canonical_entry_path_for_document, canonical_home_path, canonical_search_path,
+    canonical_source_path,
+};
 
 const DEFAULT_DESCRIPTION: &str = "Search the Nix ecosystem";
 const META_DESCRIPTION_MAX_GRAPHEMES: usize = 160;
@@ -232,26 +236,17 @@ fn page_index_metadata(
 
     match entry {
         EntryData::Found(entry) => {
-            let document = &entry.document;
-
-            if request_has_entry_context(request) {
+            if request.has_search_return_context() {
                 return noindex_metadata();
             }
+
+            let document = &entry.document;
 
             if !entry.annotation.unique_within_kind {
                 return noindex_metadata();
             }
 
-            if !document.is_seo_eligible_entry() {
-                return noindex_metadata();
-            }
-
-            if !matches!(
-                state
-                    .search
-                    .document_allowed_for_public_seo(served_generation, document),
-                Ok(true)
-            ) {
+            if !document_is_public_seo_indexable(state, served_generation, document) {
                 return noindex_metadata();
             }
 
@@ -269,7 +264,19 @@ fn page_index_metadata(
         return noindex_metadata();
     }
 
-    if normalized_query(&request.query).is_some() || request.query.page.unwrap_or(1) > 1 {
+    if let Some(q) = normalized_query(&request.query) {
+        return search_index_metadata(
+            state,
+            request,
+            page_state,
+            served_generation,
+            content,
+            page_urls,
+            q,
+        );
+    }
+
+    if request.query.page.unwrap_or(1) > 1 {
         return noindex_metadata();
     }
 
@@ -308,16 +315,97 @@ fn page_index_metadata(
     }
 }
 
-fn request_has_entry_context(request: &PageRequest) -> bool {
-    normalized_query(&request.query).is_some()
-        || request
-            .query
-            .ref_set
-            .as_deref()
-            .and_then(non_empty)
-            .is_some()
-        || request.query.source.is_some()
-        || request.query.page.unwrap_or(1) > 1
+fn search_index_metadata(
+    state: &AppState,
+    request: &PageRequest,
+    page_state: &PageState,
+    served_generation: &ServedGenerationSnapshot,
+    content: MetadataContent<'_>,
+    page_urls: &PageUrls,
+    q: &str,
+) -> IndexMetadata {
+    let MetadataContent::SearchResults(result) = content else {
+        return noindex_metadata();
+    };
+
+    if result.total == 0 || request.query.page.unwrap_or(1) > 1 || request.query.source.is_some() {
+        return noindex_metadata();
+    }
+
+    let PublicRoute::Source { source } = &request.route else {
+        return noindex_metadata();
+    };
+
+    if !matches!(&page_state.source_filter, SourceFilter::Named(named_source) if named_source == source)
+    {
+        return noindex_metadata();
+    }
+
+    let Some(ref_id) = page_state.source_ref.as_deref() else {
+        return noindex_metadata();
+    };
+
+    if !source_uses_default_ref(&state.config, source, ref_id) {
+        return noindex_metadata();
+    }
+
+    if !search_result_has_public_seo_hit(state, served_generation, &result.hits) {
+        return noindex_metadata();
+    }
+
+    let canonical_q = canonical_search_query(q);
+
+    canonical_metadata(page_urls.absolute_url(&canonical_search_path(
+        &state.config,
+        source,
+        ref_id,
+        &canonical_q,
+    )))
+}
+
+fn canonical_search_query(query: &str) -> String {
+    let trimmed = query.trim();
+
+    if query_uses_structured_syntax(trimmed) {
+        return trimmed.to_owned();
+    }
+
+    trimmed
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn document_is_public_seo_indexable(
+    state: &AppState,
+    served_generation: &ServedGenerationSnapshot,
+    document: &SearchDocument,
+) -> bool {
+    document.is_seo_eligible_entry()
+        && matches!(
+            state
+                .search
+                .document_allowed_for_public_seo(served_generation, document),
+            Ok(true)
+        )
+}
+
+fn search_result_has_public_seo_hit(
+    state: &AppState,
+    served_generation: &ServedGenerationSnapshot,
+    hits: &[SearchHit],
+) -> bool {
+    hits.iter()
+        .any(|hit| document_is_public_seo_indexable(state, served_generation, &hit.document))
+}
+
+fn source_uses_default_ref(config: &AppConfig, source: &str, ref_id: &str) -> bool {
+    config
+        .sources
+        .get(source)
+        .and_then(|source| source.default_ref.as_deref())
+        == Some(ref_id)
 }
 
 fn source_index_metadata(
@@ -491,8 +579,8 @@ mod tests {
     use crate::request::{PageQuery, PageRequest, PublicRoute, SourceFilter};
 
     use super::{
-        IndexMetadata, META_DESCRIPTION_MAX_GRAPHEMES, description_for, meta_description,
-        noindex_head_metadata, page_metadata, title_for, title_for_entry,
+        IndexMetadata, META_DESCRIPTION_MAX_GRAPHEMES, canonical_search_query, description_for,
+        meta_description, noindex_head_metadata, page_metadata, title_for, title_for_entry,
     };
 
     fn config() -> nixsearch_config::app::AppConfig {
@@ -759,6 +847,31 @@ mod tests {
                 &found_entry(document)
             ),
             "programs.git.enable · Enable Git support."
+        );
+    }
+
+    #[test]
+    fn canonical_search_query_normalizes_simple_free_text() {
+        assert_eq!(canonical_search_query("  Git\tGrep  "), "git grep");
+    }
+
+    #[test]
+    fn canonical_search_query_preserves_structured_query_case() {
+        assert_eq!(canonical_search_query("  name:Git  "), "name:Git");
+        assert_eq!(canonical_search_query("  \"Git Grep\"  "), "\"Git Grep\"");
+        assert_eq!(canonical_search_query("  -Git  "), "-Git");
+        assert_eq!(canonical_search_query("  foo -Bar  "), "foo -Bar");
+        assert_eq!(
+            canonical_search_query("  firefox AND programs  "),
+            "firefox AND programs"
+        );
+        assert_eq!(
+            canonical_search_query("  firefox OR chromium  "),
+            "firefox OR chromium"
+        );
+        assert_eq!(
+            canonical_search_query("  firefox NOT programs  "),
+            "firefox NOT programs"
         );
     }
 
