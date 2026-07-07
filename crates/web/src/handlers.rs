@@ -167,9 +167,10 @@ pub async fn sitemap_xml(State(state): State<AppState>, _headers: HeaderMap, uri
         return sitemaps_not_found().await;
     }
 
-    if sitemap_shard_number_from_query(uri.query()).is_err() {
-        return sitemaps_not_found().await;
-    }
+    let shard_number = match sitemap_shard_number_from_query(uri.query()) {
+        Ok(shard_number) => shard_number,
+        Err(_) => return sitemaps_not_found().await,
+    };
 
     let Some(artifact) = state.sitemap_artifacts.current() else {
         return sitemap_unavailable();
@@ -189,12 +190,9 @@ pub async fn sitemap_xml(State(state): State<AppState>, _headers: HeaderMap, uri
         return sitemap_unavailable();
     }
 
-    let raw_query = uri.query();
-    match artifact.file_for_query(raw_query) {
+    match artifact.file_for_shard_number(shard_number) {
         Ok(file) => file.serve_response().await,
-        Err(
-            SitemapArtifactLookupError::MalformedQuery | SitemapArtifactLookupError::ShardNotFound,
-        ) => sitemaps_not_found().await,
+        Err(SitemapArtifactLookupError::ShardNotFound) => sitemaps_not_found().await,
     }
 }
 

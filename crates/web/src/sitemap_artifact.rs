@@ -20,7 +20,7 @@ use nixsearch_service::{SearchService, ServedGenerationSnapshot};
 use crate::origin::configured_public_origin;
 use crate::sitemap::{
     SitemapPlan, SitemapRenderError, SitemapWriteError, protocol_sitemap_limits,
-    sitemap_shard_number_from_query, sitemap_shard_query_value,
+    sitemap_shard_query_value,
 };
 use crate::urls::{canonical_home_path, canonical_source_path, sitemap_candidate_path};
 
@@ -77,18 +77,17 @@ impl SitemapArtifact {
         &self.lastmod
     }
 
-    pub(crate) fn file_for_query(
+    pub(crate) fn file_for_shard_number(
         &self,
-        raw_query: Option<&str>,
+        shard_number: Option<usize>,
     ) -> Result<&SitemapArtifactFile, SitemapArtifactLookupError> {
-        match sitemap_shard_number_from_query(raw_query) {
-            Ok(None) => Ok(&self.root),
-            Ok(Some(number)) => self
-                .shards
-                .get(&number)
-                .ok_or(SitemapArtifactLookupError::ShardNotFound),
-            Err(_) => Err(SitemapArtifactLookupError::MalformedQuery),
-        }
+        let Some(number) = shard_number else {
+            return Ok(&self.root);
+        };
+
+        self.shards
+            .get(&number)
+            .ok_or(SitemapArtifactLookupError::ShardNotFound)
     }
 }
 
@@ -132,7 +131,6 @@ impl SitemapArtifactFile {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SitemapArtifactLookupError {
-    MalformedQuery,
     ShardNotFound,
 }
 
